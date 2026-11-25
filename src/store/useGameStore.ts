@@ -162,8 +162,8 @@ export interface TankUpgradeTier {
 }
 
 export const ENGINE_TIERS: EngineUpgradeTier[] = [
-  { tier: 0, name: 'D11 380 Euro 6', hp: 380, maxTorqueNm: 1850, priceEur: 0 },
-  { tier: 1, name: 'D13 540 Turbo-Compound', hp: 540, maxTorqueNm: 2650, priceEur: 18500 },
+  { tier: 0, name: 'D13 480 Euro 6', hp: 480, maxTorqueNm: 2500, priceEur: 0 },
+  { tier: 1, name: 'D13 540 Turbo-Compound', hp: 540, maxTorqueNm: 2800, priceEur: 18500 },
   { tier: 2, name: 'V8 750 Performance', hp: 750, maxTorqueNm: 3550, priceEur: 42000 },
 ];
 
@@ -303,6 +303,7 @@ interface PersistedCareerState {
   masterVolume: number;
   mobileControlsEnabled: boolean;
   mobileSteeringStyle: MobileSteeringStyle;
+  speedLimiterEnabled: boolean;
 }
 
 interface GameStoreState extends PersistedCareerState {
@@ -336,6 +337,7 @@ interface GameStoreState extends PersistedCareerState {
   setMasterVolume: (vol: number) => void;
   setMobileControlsEnabled: (enabled: boolean) => void;
   setMobileSteeringStyle: (style: MobileSteeringStyle) => void;
+  setSpeedLimiterEnabled: (enabled: boolean) => void;
 
   // Gameplay & economy actions
   setAvailableJobs: (jobs: FreightJob[]) => void;
@@ -430,6 +432,7 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   masterVolume: 0.6,
   mobileControlsEnabled: INITIAL_HARDWARE.isTouchDevice,
   mobileSteeringStyle: 'wheel',
+  speedLimiterEnabled: true,
 };
 
 let notificationSeq = 1;
@@ -491,6 +494,7 @@ export const useGameStore = create<GameStoreState>()(
       setMasterVolume: (masterVolume) => set({ masterVolume: Math.max(0, Math.min(1, masterVolume)) }),
       setMobileControlsEnabled: (mobileControlsEnabled) => set({ mobileControlsEnabled }),
       setMobileSteeringStyle: (mobileSteeringStyle) => set({ mobileSteeringStyle }),
+      setSpeedLimiterEnabled: (speedLimiterEnabled) => set({ speedLimiterEnabled }),
 
       setAvailableJobs: (availableJobs) => set({ availableJobs }),
 
@@ -760,6 +764,7 @@ export const useGameStore = create<GameStoreState>()(
         masterVolume: state.masterVolume,
         mobileControlsEnabled: state.mobileControlsEnabled,
         mobileSteeringStyle: state.mobileSteeringStyle,
+        speedLimiterEnabled: state.speedLimiterEnabled,
       }),
     }
   )

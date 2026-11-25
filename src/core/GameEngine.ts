@@ -171,7 +171,8 @@ export class GameEngine {
       onToggleHazards: () => this.physics.toggleHazards(),
       onCycleHeadlights: () => this.physics.cycleHeadlights(),
       onToggleParkingBrake: () => this.physics.toggleParkingBrake(),
-      onToggleCruiseControl: () => this.physics.toggleCruiseControl(),
+      onToggleCruiseControl: () =>
+        this.physics.toggleCruiseControl(useGameStore.getState().speedLimiterEnabled),
       onCycleRetarder: () => this.physics.cycleRetarder(),
       onToggleTrailer: () => this.handleToggleTrailer(),
       onShiftUp: () => this.physics.shiftUp(useGameStore.getState().transmissionMode),
@@ -597,6 +598,7 @@ export class GameEngine {
         cargoWeightTons: store.activeJob?.job.weightTons ?? 0,
         fuelLiters: store.fuelLiters,
         transmissionMode: store.transmissionMode,
+        speedLimiterEnabled: store.speedLimiterEnabled,
         truckHealth: store.truckHealth,
         onFuelBurned: (liters) => store.consumeFuel(liters),
         onDistanceKm: (km) => store.addCareerDistance(km),
@@ -662,7 +664,13 @@ export class GameEngine {
     const store = useGameStore.getState();
     const kmh = Math.abs(this.physics.speedMs) * 3.6;
     const gearLabel =
-      this.physics.gear === -1 ? 'R' : this.physics.gear === 0 ? 'N' : `A${this.physics.gear}`;
+      this.physics.gear <= -2
+        ? 'R2'
+        : this.physics.gear === -1
+        ? 'R1'
+        : this.physics.gear === 0
+        ? 'N'
+        : `${store.transmissionMode === 'auto' ? 'A' : 'M'}${this.physics.gear}`;
     const hitchDeg = (this.physics.hitchAngleRad * 180) / Math.PI;
 
     const currentCity = this.economy.detectCurrentCity(this.physics.x, this.physics.z);

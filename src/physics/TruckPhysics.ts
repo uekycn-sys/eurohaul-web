@@ -4,10 +4,26 @@ import { ENGINE_TIERS, HeadlightMode, TransmissionMode } from '../store/useGameS
 import { TruckVisualRefs } from '../graphics/TruckMeshBuilder';
 import { InputManager } from '../core/InputManager';
 
-const GEAR_RATIOS = [11.8, 9.2, 7.2, 5.6, 4.35, 3.4, 2.65, 2.05, 1.6, 1.25, 1.0, 0.82] as const;
-const REVERSE_RATIO = 9.5;
+// Realistic 12-speed European heavy-truck gearbox ratios (12th is 0.78 overdrive)
+const GEAR_RATIOS = [11.73, 9.21, 7.09, 5.57, 4.35, 3.41, 2.70, 2.12, 1.63, 1.28, 1.00, 0.78] as const;
+// 2 reverse gears: R1 (-10.78) and R2 (-3.50)
+const REVERSE_RATIOS = [-10.78, -3.50] as const;
+
 const FINAL_DRIVE = 3.08;
-const WHEEL_RADIUS = 0.52;
+const WHEEL_RADIUS = 0.50;
+const DRIVETRAIN_EFFICIENCY = 0.88;
+
+const IDLE_RPM = 650;
+const REDLINE_RPM = 2200;
+const CUTOFF_RPM = 2300;
+
+const TRACTOR_MASS_KG = 8000;
+const EMPTY_TRAILER_MASS_KG = 7000;
+const CRR_PAVED = 0.007;
+const CRR_OFFROAD = 0.06;
+// 0.5 * rho(1.225) * Cd(0.65) * A(9.5 m^2)
+const AERO_DRAG_COEFF = 0.5 * 1.225 * 0.65 * 9.5;
+
 const TRACTOR_WHEELBASE = 4.2;
 const HITCH_LOCAL_Z = -1.65;
 const KINGPIN_LOCAL_Z = 5.2;
@@ -21,14 +37,32 @@ function wrapAngle(a: number): number {
   return r;
 }
 
+/**
+ * Diesel torque curve normalized [0..1] around peak plateau (1000..1450 RPM).
+ */
+function evaluateTorqueFactor(rpm: number): number {
+  if (rpm >= CUTOFF_RPM) return 0;
+  if (rpm <= IDLE_RPM) return 0.68;
+  if (rpm < 1000) {
+    return THREE.MathUtils.lerp(0.68, 1.0, (rpm - IDLE_RPM) / (1000 - IDLE_RPM));
+  }
+  if (rpm <= 1450) {
+    return 1.0;
+  }
+  if (rpm <= REDLINE_RPM) {
+    return THREE.MathUtils.lerp(1.0, 0.58, (rpm - 1450) / (REDLINE_RPM - 1450));
+  }
+  return THREE.MathUtils.lerp(0.58, 0.0, (rpm - REDLINE_RPM) / (CUTOFF_RPM - REDLINE_RPM));
+}
+
 export interface CollisionEvent {
   impactSpeedKmh: number;
   label: string;
 }
 
 /**
- * Articulated tractor + semi-trailer physics model with 12-speed transmission,
- * torque curve, hydraulic retarder, cruise control, slope gravity, and cab suspension.
+ * Articulated tractor + semi-trailer physics model with 12-speed + 2-reverse transmission,
+ * SI-consistent dynamics, flat torque plateau, kickdown shifting, and electronic speed limiter.
  */
 export class TruckPhysics {
   // Tractor state
@@ -50,8 +84,8 @@ export class TruckPhysics {
   public hitchAngleRad = 0;
 
   // Powertrain & controls
-  public gear = 0; // -1 = R, 0 = N, 1..12 = Forward
-  public rpm = 650;
+  public gear = 1; // -2=R2, -1=R1, 0=N, 1..12=Forward
+  public rpm = IDLE_RPM;
   public parkingBrake = true;
   public cruiseControlKmh: number | null = null;
   public retarderLevel = 0; // 0..3
@@ -77,11 +111,13 @@ export class TruckPhysics {
   public lastCollision: CollisionEvent | null = null;
 
   private shiftTimerSec = 0;
+  private shiftCooldownSec = 0;
   private autoReverseHoldSec = 0;
   private blinkerClockSec = 0;
   private leftTurnPeakReached = false;
   private rightTurnPeakReached = false;
   private prevSpeedMs = 0;
+  private filteredAccelMs2 = 0;
   private collisionCooldownSec = 0;
 
   private readonly surfaceMain: SurfaceQueryResult = {
@@ -113,9 +149,12 @@ export class TruckPhysics {
     this.pitch = 0;
     this.speedMs = 0;
     this.prevSpeedMs = 0;
+    this.filteredAccelMs2 = 0;
     this.steerAngleRad = 0;
     this.gear = 1;
-    this.rpm = 650;
+    this.rpm = IDLE_RPM;
+    this.shiftTimerSec = 0;
+    this.shiftCooldownSec = 0;
     this.parkingBrake = true;
     this.cruiseControlKmh = null;
     this.retarderLevel = 0;
@@ -160,14 +199,15 @@ export class TruckPhysics {
     }
   }
 
-  public toggleCruiseControl(): void {
+  public toggleCruiseControl(speedLimiterEnabled = true): void {
     if (this.cruiseControlKmh !== null) {
       this.cruiseControlKmh = null;
       return;
     }
     const kmh = this.speedMs * 3.6;
+    const maxCruise = speedLimiterEnabled ? 90 : 110;
     if (kmh >= 25 && !this.parkingBrake && this.gear >= 1) {
-      this.cruiseControlKmh = Math.min(100, Math.round(kmh));
+      this.cruiseControlKmh = Math.min(maxCruise, Math.round(kmh));
     }
   }
 
@@ -179,21 +219,24 @@ export class TruckPhysics {
     if (mode === 'auto' && this.gear >= 1) {
       if (this.gear < 12) {
         this.gear += 1;
-        this.shiftTimerSec = 0.22;
+        this.shiftTimerSec = 0.2;
+        this.shiftCooldownSec = 0.65;
       }
       return;
     }
     if (this.gear < 12) {
       this.gear += 1;
-      this.shiftTimerSec = 0.24;
+      this.shiftTimerSec = 0.2;
+      this.shiftCooldownSec = 0.4;
     }
   }
 
   public shiftDown(mode: TransmissionMode): void {
     if (mode === 'auto' && this.gear <= 1 && Math.abs(this.speedMs) > 1.5) return;
-    if (this.gear > -1) {
+    if (this.gear > -2) {
       this.gear -= 1;
-      this.shiftTimerSec = 0.24;
+      this.shiftTimerSec = 0.2;
+      this.shiftCooldownSec = 0.4;
     }
   }
 
@@ -207,7 +250,6 @@ export class TruckPhysics {
       return { attached: false, changed: true };
     }
 
-    // Attempt re-hitching
     const hitchX = this.x + Math.sin(this.yaw) * HITCH_LOCAL_Z;
     const hitchZ = this.z + Math.cos(this.yaw) * HITCH_LOCAL_Z;
     const kingpinX = this.trailerX + Math.sin(this.trailerYaw) * KINGPIN_LOCAL_Z;
@@ -227,6 +269,13 @@ export class TruckPhysics {
     };
   }
 
+  private getGearRatio(gear: number): number {
+    if (gear === 0) return 0;
+    if (gear === -1) return REVERSE_RATIOS[0];
+    if (gear <= -2) return REVERSE_RATIOS[1];
+    return GEAR_RATIOS[Math.max(0, Math.min(11, gear - 1))]!;
+  }
+
   public step(
     dtSec: number,
     input: InputManager,
@@ -236,6 +285,7 @@ export class TruckPhysics {
       cargoWeightTons: number;
       fuelLiters: number;
       transmissionMode: TransmissionMode;
+      speedLimiterEnabled: boolean;
       truckHealth: number;
       onFuelBurned: (liters: number) => void;
       onDistanceKm: (km: number) => void;
@@ -248,7 +298,9 @@ export class TruckPhysics {
 
     // Blinker oscillator + auto-cancel on steer straightening
     this.blinkerClockSec += dtSec;
-    this.blinkerLit = Math.floor(this.blinkerClockSec * 2.3) % 2 === 0 && (this.leftBlinker || this.rightBlinker || this.hazardLights);
+    this.blinkerLit =
+      Math.floor(this.blinkerClockSec * 2.3) % 2 === 0 &&
+      (this.leftBlinker || this.rightBlinker || this.hazardLights);
 
     if (this.leftBlinker) {
       if (input.steer > 0.35) this.leftTurnPeakReached = true;
@@ -265,7 +317,7 @@ export class TruckPhysics {
       }
     }
 
-    // Query road surface under tractor & slope
+    // Query road surface under tractor & continuous slope
     map.querySurface(this.x, this.z, this.surfaceMain);
     this.speedLimitKmh = this.surfaceMain.speedLimitKmh;
     this.onRoad = this.surfaceMain.onRoad;
@@ -277,16 +329,16 @@ export class TruckPhysics {
     const frontY = this.surfaceProbe.groundY;
     map.querySurface(this.x - fwdX * 2.5, this.z - fwdZ * 2.5, this.surfaceProbe);
     const backY = this.surfaceProbe.groundY;
-    const targetPitch = -Math.atan2(frontY - backY, 5.5);
+    const targetPitch = THREE.MathUtils.clamp(-Math.atan2(frontY - backY, 5.5), -0.22, 0.22);
     this.pitch += (targetPitch - this.pitch) * Math.min(1, dtSec * 8);
     this.y += (this.surfaceMain.groundY - this.y) * Math.min(1, dtSec * 14);
 
     // Steering geometry: speed-attenuated max steer angle
     const absSpeedKmh = Math.abs(this.speedMs) * 3.6;
-    const maxSteer = THREE.MathUtils.lerp(0.58, 0.21, THREE.MathUtils.clamp(absSpeedKmh / 95, 0, 1));
+    const maxSteer = THREE.MathUtils.lerp(0.58, 0.2, THREE.MathUtils.clamp(absSpeedKmh / 95, 0, 1));
     this.steerAngleRad = input.steer * maxSteer;
 
-    // Auto transmission & reverse logic
+    // Auto transmission direction & reverse selector
     let throttleCmd = input.throttle;
     let brakeCmd = input.brake;
     this.isReversingThrottle = false;
@@ -295,39 +347,42 @@ export class TruckPhysics {
       this.cruiseControlKmh = null;
     }
 
-    // Release parking brake smoothly if player presses throttle intentionally? Keep ETS2 realism: notify if parking brake is on, OR keep manual Space.
     if (opts.transmissionMode === 'auto') {
       if (this.gear === 0) this.gear = 1;
       if (this.speedMs > -0.4 && this.speedMs < 0.6 && input.brake > 0.2 && input.throttle < 0.05) {
         this.autoReverseHoldSec += dtSec;
         if (this.autoReverseHoldSec > 0.22) {
-          this.gear = -1;
+          if (this.gear >= 0) {
+            this.gear = -1;
+            this.shiftCooldownSec = 0.4;
+          }
         }
       } else {
         this.autoReverseHoldSec = 0;
       }
 
-      if (this.gear === -1) {
+      if (this.gear < 0) {
         if (input.throttle > 0.12 && this.speedMs > -1.2) {
           this.gear = 1;
-          this.shiftTimerSec = 0.22;
+          this.shiftTimerSec = 0.18;
+          this.shiftCooldownSec = 0.65;
         } else {
-          // In reverse, S accelerates backward, W brakes
           throttleCmd = input.brake;
           brakeCmd = input.throttle;
           this.isReversingThrottle = throttleCmd > 0.05;
         }
       }
-    } else if (this.gear === -1) {
+    } else if (this.gear < 0) {
       this.isReversingThrottle = throttleCmd > 0.05;
     }
 
-    // Cruise control governor
+    // Cruise control governor (respects speed limiter)
+    const maxAllowedKmh = opts.speedLimiterEnabled ? 90 : 110;
     if (this.cruiseControlKmh !== null && this.gear >= 1 && throttleCmd < 0.05 && brakeCmd < 0.05) {
-      const targetMs = this.cruiseControlKmh / 3.6;
+      const targetMs = Math.min(this.cruiseControlKmh, maxAllowedKmh) / 3.6;
       const err = targetMs - this.speedMs;
       if (err > 0) {
-        throttleCmd = THREE.MathUtils.clamp(err * 0.45, 0, 0.85);
+        throttleCmd = THREE.MathUtils.clamp(err * 0.5, 0, 0.9);
       } else if (err < -0.9) {
         brakeCmd = THREE.MathUtils.clamp(-err * 0.25, 0, 0.45);
       }
@@ -336,98 +391,163 @@ export class TruckPhysics {
     if (this.shiftTimerSec > 0) {
       this.shiftTimerSec = Math.max(0, this.shiftTimerSec - dtSec);
     }
+    if (this.shiftCooldownSec > 0) {
+      this.shiftCooldownSec = Math.max(0, this.shiftCooldownSec - dtSec);
+    }
 
-    // Mass calculation (8.4t tractor + optional 6.8t empty trailer + cargo)
-    const tractorMassKg = 8400;
-    const trailerMassKg = this.trailerAttached ? 6800 + opts.cargoWeightTons * 1000 : 0;
-    const totalMassKg = tractorMassKg + trailerMassKg;
+    // Mass calculation (8,000 kg tractor + optional 7,000 kg empty trailer + 0..25,000 kg cargo)
+    const trailerMassKg = this.trailerAttached ? EMPTY_TRAILER_MASS_KG + opts.cargoWeightTons * 1000 : 0;
+    const totalMassKg = TRACTOR_MASS_KG + trailerMassKg;
 
-    // Powertrain torque & RPM
-    const engineSpec = ENGINE_TIERS[opts.engineTier] ?? ENGINE_TIERS[0]!;
-    const hasFuel = opts.fuelLiters > 0.01;
-    const gearRatio =
-      this.gear === 0
-        ? 0
-        : this.gear === -1
-        ? -REVERSE_RATIO
-        : GEAR_RATIOS[Math.max(0, Math.min(11, this.gear - 1))]!;
+    // Speed-RPM coupling (SI m/s -> wheelRPM -> engineRPM)
+    const gearRatio = this.getGearRatio(this.gear);
+    const absRatio = Math.abs(gearRatio);
+    const wheelRpm = (Math.abs(this.speedMs) / (2 * Math.PI * WHEEL_RADIUS)) * 60;
+    const mechanicalRpm = this.gear === 0 ? IDLE_RPM : wheelRpm * absRatio * FINAL_DRIVE;
 
-    const wheelAngularVel = this.speedMs / WHEEL_RADIUS;
-    const wheelRpm = Math.abs(wheelAngularVel) * (60 / (Math.PI * 2));
-    const coupledRpm = this.gear === 0 ? 650 : wheelRpm * Math.abs(gearRatio) * FINAL_DRIVE;
-    const targetRpm =
-      this.gear === 0 || this.shiftTimerSec > 0
-        ? 650 + throttleCmd * 1350
-        : THREE.MathUtils.clamp(Math.max(650, coupledRpm) + throttleCmd * 120, 650, 2350);
+    let targetRpm: number;
+    if (this.gear === 0) {
+      targetRpm = IDLE_RPM + throttleCmd * 1450;
+    } else if (this.shiftTimerSec > 0) {
+      // Clutch momentarily open during shift: RPM settles smoothly toward target gear speed (no spike!)
+      targetRpm = THREE.MathUtils.clamp(Math.max(IDLE_RPM, mechanicalRpm), IDLE_RPM, CUTOFF_RPM);
+    } else {
+      // Smooth launch clutch slip below ~1050 RPM so standing starts build peak torque smoothly
+      const clutchLock = THREE.MathUtils.clamp((mechanicalRpm - 550) / 500, 0, 1);
+      const launchSlipRpm = IDLE_RPM + throttleCmd * 580;
+      const coupledRpm = THREE.MathUtils.lerp(launchSlipRpm, mechanicalRpm, clutchLock);
+      targetRpm = THREE.MathUtils.clamp(coupledRpm, IDLE_RPM, CUTOFF_RPM);
+    }
 
-    this.rpm += (targetRpm - this.rpm) * Math.min(1, dtSec * 9.5);
+    this.rpm += (targetRpm - this.rpm) * Math.min(1, dtSec * 10);
 
-    // Auto-shift points
-    if (opts.transmissionMode === 'auto' && this.gear >= 1 && this.shiftTimerSec <= 0) {
-      if (this.rpm > 1720 && this.gear < 12 && throttleCmd > 0.15) {
-        this.gear += 1;
-        this.shiftTimerSec = 0.26;
-      } else if (this.rpm < 1020 && this.gear > 1) {
-        this.gear -= 1;
-        this.shiftTimerSec = 0.22;
+    // Electronic speed limiter (90 km/h default, 110 km/h when off)
+    const maxForwardSpeedMs = maxAllowedKmh / 3.6;
+    let effectiveThrottle = throttleCmd;
+    if (this.gear >= 1) {
+      const limiterMarginMs = 1.2 / 3.6;
+      const limiterScale = THREE.MathUtils.clamp(
+        (maxForwardSpeedMs - this.speedMs) / limiterMarginMs,
+        0,
+        1
+      );
+      effectiveThrottle *= limiterScale;
+    }
+
+    // Smart AT shifting with cooldown, throttle-mapped upshift, uphill hysteresis & 2-gear kickdown
+    if (
+      opts.transmissionMode === 'auto' &&
+      this.shiftTimerSec <= 0 &&
+      this.shiftCooldownSec <= 0 &&
+      !this.parkingBrake
+    ) {
+      if (this.gear >= 1) {
+        const uphillBias = this.pitch < -0.02 ? 120 : 0;
+        const upshiftRpm = THREE.MathUtils.lerp(1350, 1740, effectiveThrottle) + uphillBias;
+        const nearSpeedLimiter = this.speedMs >= maxForwardSpeedMs - 3.5 / 3.6;
+
+        if (this.gear < 12 && throttleCmd > 0.12 && brakeCmd < 0.05) {
+          const nextRatio = GEAR_RATIOS[this.gear]!;
+          const predictedNextRpm = wheelRpm * nextRatio * FINAL_DRIVE;
+          const canCruiseOverdrive =
+            nearSpeedLimiter && predictedNextRpm >= 1100 && this.pitch >= -0.015;
+          const normalUpshift =
+            mechanicalRpm >= upshiftRpm && predictedNextRpm >= 1090 && this.filteredAccelMs2 > 0.03;
+
+          if (normalUpshift || canCruiseOverdrive) {
+            this.gear += 1;
+            this.shiftTimerSec = 0.18;
+            this.shiftCooldownSec = 0.65;
+          }
+        }
+
+        if (this.shiftCooldownSec <= 0 && this.gear > 1) {
+          const lowRpmDownshift = mechanicalRpm < 1050;
+          const kickdownTrigger =
+            effectiveThrottle > 0.7 && this.filteredAccelMs2 < 0.22 && mechanicalRpm < 1380;
+
+          if (lowRpmDownshift || kickdownTrigger) {
+            const dropTwo =
+              this.gear > 3 && effectiveThrottle > 0.7 && mechanicalRpm < 1060;
+            this.gear = Math.max(1, this.gear - (dropTwo ? 2 : 1));
+            this.shiftTimerSec = 0.18;
+            this.shiftCooldownSec = 0.65;
+          }
+        }
+      } else if (this.gear < 0) {
+        if (this.gear === -1 && mechanicalRpm > 1750 && throttleCmd > 0.2) {
+          this.gear = -2;
+          this.shiftTimerSec = 0.18;
+          this.shiftCooldownSec = 0.65;
+        } else if (this.gear === -2 && mechanicalRpm < 950) {
+          this.gear = -1;
+          this.shiftTimerSec = 0.18;
+          this.shiftCooldownSec = 0.65;
+        }
       }
     }
 
-    // Torque curve multiplier (strong low-mid diesel torque 1000..1600 RPM)
-    const rpmNorm = THREE.MathUtils.clamp((this.rpm - 650) / 1550, 0, 1);
-    const torqueCurve = 0.72 + Math.sin(rpmNorm * Math.PI * 0.85) * 0.36;
-    const healthScale = THREE.MathUtils.clamp(0.65 + (opts.truckHealth / 100) * 0.35, 0.65, 1);
+    // Torque curve & drivetrain force (100% SI units)
+    const engineSpec = ENGINE_TIERS[opts.engineTier] ?? ENGINE_TIERS[0]!;
+    const hasFuel = opts.fuelLiters > 0.01;
+    const torqueFactor = evaluateTorqueFactor(this.rpm);
+    const healthScale = THREE.MathUtils.clamp(0.75 + (opts.truckHealth / 100) * 0.25, 0.75, 1);
 
     let driveForceN = 0;
     if (hasFuel && !this.parkingBrake && this.gear !== 0 && this.shiftTimerSec <= 0) {
-      const engineTorque = engineSpec.maxTorqueNm * torqueCurve * throttleCmd * healthScale;
-      const wheelTorque = engineTorque * gearRatio * FINAL_DRIVE * 0.88;
-      driveForceN = wheelTorque / WHEEL_RADIUS;
+      const activeRatio = this.getGearRatio(this.gear);
+      const engineTorqueNm = engineSpec.maxTorqueNm * torqueFactor * effectiveThrottle * healthScale;
+      const wheelTorqueNm = engineTorqueNm * activeRatio * FINAL_DRIVE * DRIVETRAIN_EFFICIENCY;
+      driveForceN = wheelTorqueNm / WHEEL_RADIUS;
     }
 
-    // Fuel consumption (realistic ~28-44 L/100km under load)
+    // Fuel consumption
     if (hasFuel) {
-      const burnRateLitersPerSec = (0.0005 + throttleCmd * 0.0085 * (engineSpec.hp / 450)) * (this.trailerAttached ? 1.25 : 0.85);
+      const burnRateLitersPerSec =
+        (0.0005 + effectiveThrottle * 0.0085 * (engineSpec.hp / 480)) *
+        (this.trailerAttached ? 1.25 : 0.85);
       opts.onFuelBurned(burnRateLitersPerSec * dtSec);
     }
 
-    // Resistive forces: aerodynamic drag, rolling resistance, off-road mud drag, slope gravity
-    const aeroDragN = 0.5 * 1.225 * 7.2 * 0.68 * this.speedMs * Math.abs(this.speedMs);
-    const rollingCoeff = this.onRoad ? 0.0075 : 0.032;
+    // Resistive forces in SI (m/s, kg, N)
+    const aeroDragN = AERO_DRAG_COEFF * this.speedMs * Math.abs(this.speedMs);
+    const rollingCoeff = this.onRoad ? CRR_PAVED : CRR_OFFROAD;
     const rollingDragN = Math.sign(this.speedMs) * totalMassKg * 9.81 * rollingCoeff;
     const slopeGravityN = totalMassKg * 9.81 * Math.sin(this.pitch); // pitch < 0 when climbing uphill
 
-    // Braking forces (service brake + parking brake + hydraulic retarder)
-    const maxServiceBrakeN = 125000;
-    const maxParkingBrakeN = 155000;
-    const retarderForceN = this.retarderLevel > 0 && Math.abs(this.speedMs) > 2
-      ? Math.sign(this.speedMs) * this.retarderLevel * 13500
-      : 0;
+    // Braking forces (service brake + parking brake + hydraulic retarder when off throttle)
+    const maxServiceBrakeN = 135000;
+    const maxParkingBrakeN = 165000;
+    const retarderForceN =
+      this.retarderLevel > 0 && Math.abs(this.speedMs) > 2 && effectiveThrottle < 0.05
+        ? Math.sign(this.speedMs) * this.retarderLevel * 14500
+        : 0;
 
     let netForceN = driveForceN - aeroDragN - rollingDragN + slopeGravityN - retarderForceN;
-    const totalBrakeN =
-      (this.parkingBrake ? maxParkingBrakeN : 0) + brakeCmd * maxServiceBrakeN;
+    const totalBrakeN = (this.parkingBrake ? maxParkingBrakeN : 0) + brakeCmd * maxServiceBrakeN;
 
     if (Math.abs(this.speedMs) > 0.08) {
       netForceN -= Math.sign(this.speedMs) * totalBrakeN;
-    } else if (Math.abs(driveForceN) < totalBrakeN + Math.abs(slopeGravityN)) {
-      // Static friction hold on slopes when stopped
+    } else if (totalBrakeN > 0 && Math.abs(driveForceN + slopeGravityN) <= totalBrakeN) {
+      // Hold truck stationary when brakes are holding against slope/throttle
       this.speedMs = 0;
       netForceN = 0;
     }
 
     const accelMs2 = netForceN / totalMassKg;
+    this.filteredAccelMs2 += (accelMs2 - this.filteredAccelMs2) * Math.min(1, dtSec * 4);
     const nextSpeed = this.speedMs + accelMs2 * dtSec;
 
     // Prevent brake overshoot reversal
     if (
-      (this.speedMs > 0 && nextSpeed < 0 && driveForceN >= 0) ||
-      (this.speedMs < 0 && nextSpeed > 0 && driveForceN <= 0)
+      (this.speedMs > 0 && nextSpeed < 0 && driveForceN >= 0 && totalBrakeN > 0) ||
+      (this.speedMs < 0 && nextSpeed > 0 && driveForceN <= 0 && totalBrakeN > 0)
     ) {
       this.speedMs = 0;
     } else {
-      // Physical top speed governor (~105 km/h forward, ~24 km/h reverse)
-      this.speedMs = THREE.MathUtils.clamp(nextSpeed, -24 / 3.6, 108 / 3.6);
+      const maxReverseMs = -32 / 3.6;
+      const maxCoastMs = maxForwardSpeedMs + 2 / 3.6;
+      this.speedMs = THREE.MathUtils.clamp(nextSpeed, maxReverseMs, maxCoastMs);
     }
 
     // Tractor Ackermann yaw integration
@@ -453,13 +573,11 @@ export class TruckPhysics {
       const trailerYawRate = hitchVelPerp / TRAILER_WHEELBASE;
       this.trailerYaw = wrapAngle(this.trailerYaw + trailerYawRate * dtSec);
 
-      // Jackknife limit
       let clampedDiff = wrapAngle(this.yaw - this.trailerYaw);
       if (Math.abs(clampedDiff) > MAX_HITCH_ANGLE_RAD) {
         const sign = Math.sign(clampedDiff);
         this.trailerYaw = wrapAngle(this.yaw - sign * MAX_HITCH_ANGLE_RAD);
         clampedDiff = sign * MAX_HITCH_ANGLE_RAD;
-        // Dampen reversing into jackknife stop
         if (this.speedMs < 0) {
           this.speedMs *= 0.85;
         }
@@ -477,7 +595,7 @@ export class TruckPhysics {
     const trFrontY = this.surfaceProbe.groundY;
     map.querySurface(this.trailerX - trFwdX * 4.5, this.trailerZ - trFwdZ * 4.5, this.surfaceProbe);
     const trBackY = this.surfaceProbe.groundY;
-    const trTargetPitch = -Math.atan2(trFrontY - trBackY, 9.0);
+    const trTargetPitch = THREE.MathUtils.clamp(-Math.atan2(trFrontY - trBackY, 9.0), -0.22, 0.22);
     this.trailerPitch += (trTargetPitch - this.trailerPitch) * Math.min(1, dtSec * 8);
 
     // Collisions with guardrails & static building colliders
@@ -513,16 +631,16 @@ export class TruckPhysics {
   }
 
   private resolveCollisions(map: BuiltMap, dtSec: number): void {
-    // Guardrail soft pushback
+    // Guardrail soft lateral pushback (without killing longitudinal velocity per frame)
     map.querySurface(this.x, this.z, this.surfaceMain);
     if (this.surfaceMain.guardrailHit) {
       const impactKmh = Math.abs(this.speedMs) * 3.6;
-      this.x += this.surfaceMain.guardrailPushX * Math.max(0.12, Math.abs(this.speedMs) * dtSec * 1.15);
-      this.z += this.surfaceMain.guardrailPushZ * Math.max(0.12, Math.abs(this.speedMs) * dtSec * 1.15);
-      this.speedMs *= 0.88;
-      if (impactKmh > 16 && this.collisionCooldownSec <= 0) {
+      this.x += this.surfaceMain.guardrailPushX * Math.max(0.1, Math.abs(this.speedMs) * dtSec * 0.8);
+      this.z += this.surfaceMain.guardrailPushZ * Math.max(0.1, Math.abs(this.speedMs) * dtSec * 0.8);
+      this.speedMs *= 0.985;
+      if (impactKmh > 22 && this.collisionCooldownSec <= 0) {
         this.lastCollision = { impactSpeedKmh: impactKmh, label: '护栏刮擦' };
-        this.collisionCooldownSec = 1.2;
+        this.collisionCooldownSec = 1.4;
       }
     }
 
@@ -572,12 +690,15 @@ export class TruckPhysics {
       wheel.rotation.x = this.wheelSpinAngle;
     }
 
-    const braking = this.parkingBrake || (this.gear !== -1 && input.brake > 0.08) || (this.gear === -1 && input.throttle > 0.08);
+    const braking =
+      this.parkingBrake ||
+      (this.gear >= 0 && input.brake > 0.08) ||
+      (this.gear < 0 && input.throttle > 0.08);
     visuals.updateLights({
       headlightMode: this.headlightMode,
       nightFactor,
       braking,
-      reversing: this.gear === -1,
+      reversing: this.gear < 0,
       leftBlinkerLit: this.blinkerLit && (this.leftBlinker || this.hazardLights),
       rightBlinkerLit: this.blinkerLit && (this.rightBlinker || this.hazardLights),
     });

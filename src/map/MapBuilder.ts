@@ -621,7 +621,7 @@ export class MapBuilder {
 
       let bestDistSq = Infinity;
       let bestSeg: CompiledRoadSegment | null = null;
-      let bestSample: RoadSamplePoint | null = null;
+      let bestSampleIdx = 0;
 
       if (entries) {
         for (let i = 0; i < entries.length; i++) {
@@ -634,28 +634,46 @@ export class MapBuilder {
           if (dSq < bestDistSq) {
             bestDistSq = dSq;
             bestSeg = seg;
-            bestSample = pt;
+            bestSampleIdx = e.sampleIdx;
           }
         }
       }
 
       const terrainY = getHeightAt(x, z);
 
-      if (bestSeg && bestSample) {
+      if (bestSeg) {
+        const samples = bestSeg.samples;
+        const p0 = samples[bestSampleIdx]!;
+        // Interpolate elevation continuously along adjacent spline sample to avoid slope stair-stepping
+        let smoothY = p0.y;
+        const nextPt = samples[Math.min(samples.length - 1, bestSampleIdx + 1)]!;
+        const prevPt = samples[Math.max(0, bestSampleIdx - 1)]!;
+        const spanDx = nextPt.x - prevPt.x;
+        const spanDz = nextPt.z - prevPt.z;
+        const spanLenSq = spanDx * spanDx + spanDz * spanDz;
+        if (spanLenSq > 0.01) {
+          const projT = THREE.MathUtils.clamp(
+            ((x - prevPt.x) * spanDx + (z - prevPt.z) * spanDz) / spanLenSq,
+            0,
+            1
+          );
+          smoothY = prevPt.y + (nextPt.y - prevPt.y) * projT;
+        }
+
         const dist = Math.sqrt(bestDistSq);
         const halfW = bestSeg.def.width * 0.5;
-        const onRoad = dist <= halfW + 1.4;
+        const onRoad = dist <= halfW + 2.2;
 
-        out.groundY = onRoad ? bestSample.y : Math.max(terrainY, bestSample.y - Math.max(0, dist - halfW) * 0.25);
+        out.groundY = onRoad ? smoothY : Math.max(terrainY, smoothY - Math.max(0, dist - halfW) * 0.25);
         out.onRoad = onRoad;
         out.speedLimitKmh = bestSeg.def.speedLimitKmh;
         out.nearestSegmentId = bestSeg.def.id;
         out.roadDist = dist;
 
-        // Guardrail soft boundary push
-        if (bestSeg.def.hasGuardrails && dist > halfW - 0.8 && dist < halfW + 2.8) {
-          const dx = bestSample.x - x;
-          const dz = bestSample.z - z;
+        // Guardrail soft boundary push only outside paved road shoulder
+        if (bestSeg.def.hasGuardrails && dist > halfW + 0.65 && dist < halfW + 3.2) {
+          const dx = p0.x - x;
+          const dz = p0.z - z;
           const len = Math.hypot(dx, dz) || 1;
           out.guardrailHit = true;
           out.guardrailPushX = dx / len;
@@ -676,15 +694,40 @@ export class MapBuilder {
         out.guardrailPushZ = 0;
       }
 
-      // Flatten inside city yard aprons
+      // Recognize full logistics aprons, freight depots, parking bays, and service stations as paved surfaces
       for (const city of manifest.cities) {
-        const cd = Math.hypot(x - city.position[0], z - city.position[2]);
-        if (cd < 165) {
+        const dxCity = Math.abs(x - city.position[0]);
+        const dzCity = Math.abs(z - city.position[2]);
+        if (dxCity <= 145 && dzCity <= 155) {
           out.groundY = city.position[1];
           out.onRoad = true;
           out.speedLimitKmh = 50;
           out.guardrailHit = false;
-          break;
+          return;
+        }
+
+        for (const depot of city.depots) {
+          if (
+            Math.hypot(x - depot.parkingBayPosition[0], z - depot.parkingBayPosition[2]) <= 42 ||
+            Math.hypot(x - depot.officePosition[0], z - depot.officePosition[2]) <= 42 ||
+            Math.hypot(x - depot.position[0], z - depot.position[2]) <= 48
+          ) {
+            out.groundY = depot.position[1];
+            out.onRoad = true;
+            out.speedLimitKmh = 50;
+            out.guardrailHit = false;
+            return;
+          }
+        }
+
+        for (const st of city.stations) {
+          if (Math.hypot(x - st.position[0], z - st.position[2]) <= st.radius + 18) {
+            out.groundY = st.position[1];
+            out.onRoad = true;
+            out.speedLimitKmh = 50;
+            out.guardrailHit = false;
+            return;
+          }
         }
       }
     };

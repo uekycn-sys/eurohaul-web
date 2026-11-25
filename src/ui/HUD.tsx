@@ -83,6 +83,8 @@ export function HUD({
   const setMobileControlsEnabled = useGameStore((s) => s.setMobileControlsEnabled);
   const mobileSteeringStyle = useGameStore((s) => s.mobileSteeringStyle);
   const setMobileSteeringStyle = useGameStore((s) => s.setMobileSteeringStyle);
+  const speedLimiterEnabled = useGameStore((s) => s.speedLimiterEnabled);
+  const setSpeedLimiterEnabled = useGameStore((s) => s.setSpeedLimiterEnabled);
   const detectedDeviceLabel = useGameStore((s) => s.detectedDeviceLabel);
 
   const cameraMode = useGameStore((s) => s.cameraMode);
@@ -1019,6 +1021,21 @@ export function HUD({
                   }`}
                 >
                   {mirrorsEnabled ? '已开启' : '已关闭'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">欧卡电子限速器 (90 / 110 km/h)</span>
+                <button
+                  type="button"
+                  onClick={() => setSpeedLimiterEnabled(!speedLimiterEnabled)}
+                  className={`rounded-lg px-3 py-1 font-semibold ${
+                    speedLimiterEnabled
+                      ? 'bg-amber-500 text-slate-950'
+                      : 'bg-emerald-500 text-slate-950'
+                  }`}
+                >
+                  {speedLimiterEnabled ? '开启 (90 km/h)' : '关闭 (110 km/h)'}
                 </button>
               </div>
 
