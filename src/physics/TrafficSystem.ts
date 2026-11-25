@@ -212,6 +212,16 @@ export class TrafficSystem {
       const fwdX = Math.sin(a.yaw);
       const fwdZ = Math.cos(a.yaw);
 
+      // Stop smoothly for RED / AMBER traffic signals at approaching signalized nodes
+      const remainingToNode = a.dir === 1 ? a.segment.lengthMeters - a.sMeters : a.sMeters;
+      if (remainingToNode < 28 && remainingToNode > 7) {
+        const destNodeId = a.dir === 1 ? a.segment.def.toNodeId : a.segment.def.fromNodeId;
+        const signal = this.builtMap.getTrafficLightState(destNodeId, fwdX, fwdZ);
+        if (signal !== 'green') {
+          desiredSpeed = remainingToNode < 14 ? 0 : Math.min(desiredSpeed, ((remainingToNode - 14) / 14) * 6);
+        }
+      }
+
       // Check distance to player tractor & trailer ahead in same lane
       for (const [px, pz] of [
         [playerX, playerZ],

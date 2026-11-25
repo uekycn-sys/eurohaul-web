@@ -287,6 +287,7 @@ export class TruckPhysics {
       transmissionMode: TransmissionMode;
       speedLimiterEnabled: boolean;
       truckHealth: number;
+      rainIntensity?: number;
       onFuelBurned: (liters: number) => void;
       onDistanceKm: (km: number) => void;
     }
@@ -515,8 +516,9 @@ export class TruckPhysics {
     const rollingDragN = Math.sign(this.speedMs) * totalMassKg * 9.81 * rollingCoeff;
     const slopeGravityN = totalMassKg * 9.81 * Math.sin(this.pitch); // pitch < 0 when climbing uphill
 
-    // Braking forces (service brake + parking brake + hydraulic retarder when off throttle)
-    const maxServiceBrakeN = 135000;
+    // Braking forces (wet asphalt slightly reduces service brake grip)
+    const wetGrip = THREE.MathUtils.lerp(1.0, 0.84, opts.rainIntensity ?? 0);
+    const maxServiceBrakeN = 135000 * wetGrip;
     const maxParkingBrakeN = 165000;
     const retarderForceN =
       this.retarderLevel > 0 && Math.abs(this.speedMs) > 2 && effectiveThrottle < 0.05

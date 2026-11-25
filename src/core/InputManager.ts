@@ -15,6 +15,7 @@ export interface InputActions {
   onCycleAdvisorTab?: () => void;
   onInteract?: () => void;
   onRest?: () => void;
+  onCycleWipers?: () => void;
   onEscape?: () => void;
 }
 
@@ -203,6 +204,9 @@ export class InputManager {
         break;
       case 'KeyR':
         this.actions.onRest?.();
+        break;
+      case 'KeyK':
+        this.actions.onCycleWipers?.();
         break;
       case 'Tab':
         this.actions.onCycleAdvisorTab?.();

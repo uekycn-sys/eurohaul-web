@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { QualityPreset } from '../store/useGameStore';
+import { QualityPreset, WeatherSetting } from '../store/useGameStore';
 
 interface TimeKeyframe {
   hour: number;
@@ -192,6 +192,8 @@ export class EnvironmentSystem {
   public timeOfDayHours = 8.5;
   public timeScaleHoursPerSec = 0.015;
   public nightFactor = 0;
+  public rainIntensity = 0; // 0 = dry, 1 = heavy European rain
+  public weatherSetting: WeatherSetting = 'auto';
 
   private readonly scene: THREE.Scene;
   private readonly sunLight: THREE.DirectionalLight;
@@ -201,6 +203,16 @@ export class EnvironmentSystem {
   private readonly skyMesh: THREE.Mesh;
   private readonly skyGeo: THREE.SphereGeometry;
   private readonly skyMat: THREE.ShaderMaterial;
+
+  // Single-draw-call dynamic LineSegments rain streaks around player focus
+  private readonly rainGeo: THREE.BufferGeometry;
+  private readonly rainMat: THREE.LineBasicMaterial;
+  private readonly rainLines: THREE.LineSegments;
+  private readonly rainPositions: Float32Array;
+  private readonly maxRainDrops = 320;
+  private rainDropBudget = 320;
+  private readonly overcastZenith = new THREE.Color('#3b4658');
+  private readonly overcastHorizon = new THREE.Color('#647285');
 
   private readonly zenithColor = new THREE.Color();
   private readonly horizonColor = new THREE.Color();
@@ -277,6 +289,33 @@ export class EnvironmentSystem {
     this.skyMesh.renderOrder = -10;
     this.scene.add(this.skyMesh);
 
+    // Lightweight procedural rain streaks around player vehicle
+    this.rainPositions = new Float32Array(this.maxRainDrops * 6);
+    for (let i = 0; i < this.maxRainDrops; i++) {
+      const rx = (Math.random() - 0.5) * 44;
+      const ry = Math.random() * 24;
+      const rz = (Math.random() - 0.5) * 44;
+      const b = i * 6;
+      this.rainPositions[b] = rx;
+      this.rainPositions[b + 1] = ry;
+      this.rainPositions[b + 2] = rz;
+      this.rainPositions[b + 3] = rx - 0.14;
+      this.rainPositions[b + 4] = ry - 1.15;
+      this.rainPositions[b + 5] = rz - 0.18;
+    }
+    this.rainGeo = new THREE.BufferGeometry();
+    this.rainGeo.setAttribute('position', new THREE.BufferAttribute(this.rainPositions, 3));
+    this.rainMat = new THREE.LineBasicMaterial({
+      color: '#cbd5e1',
+      transparent: true,
+      opacity: 0.38,
+      depthWrite: false,
+    });
+    this.rainLines = new THREE.LineSegments(this.rainGeo, this.rainMat);
+    this.rainLines.frustumCulled = false;
+    this.rainLines.visible = false;
+    this.scene.add(this.rainLines);
+
     this.applyAtmosphere(0, 0);
   }
 
@@ -310,14 +349,17 @@ export class EnvironmentSystem {
       this.iblIntensity = 0;
       this.skyMat.uniforms.uEnableClouds!.value = 0.0;
       this.scene.environment = null;
+      this.rainDropBudget = 0;
     } else if (preset === 'mobile_balanced') {
       this.iblEnabled = true;
       this.iblIntensity = 0.48;
       this.skyMat.uniforms.uEnableClouds!.value = 1.0;
+      this.rainDropBudget = 140;
     } else {
       this.iblEnabled = true;
       this.iblIntensity = 0.78;
       this.skyMat.uniforms.uEnableClouds!.value = 1.0;
+      this.rainDropBudget = this.maxRainDrops;
     }
 
     this.scene.environmentIntensity = this.iblIntensity;
@@ -328,12 +370,53 @@ export class EnvironmentSystem {
     this.configureForPreset(shadowsEnabled ? 'high' : 'mobile_fast', shadowsEnabled, shadowMapSize, fogScale);
   }
 
-  public update(dtSec: number, focusX: number, focusZ: number): void {
+  public update(dtSec: number, focusX: number, focusZ: number, focusY = 0): void {
     this.elapsedSec += dtSec;
     this.timeOfDayHours = (this.timeOfDayHours + dtSec * this.timeScaleHoursPerSec) % 24;
     this.skyMat.uniforms.uTime!.value = this.elapsedSec;
+
+    // Smooth weather cycle (auto shifts naturally across clear -> rain every ~3 minutes)
+    const targetRain =
+      this.weatherSetting === 'rain'
+        ? 0.92
+        : this.weatherSetting === 'clear'
+        ? 0
+        : THREE.MathUtils.clamp(Math.sin(this.elapsedSec * 0.032 - 0.85) * 1.4, 0, 0.92);
+    this.rainIntensity += (targetRain - this.rainIntensity) * Math.min(1, dtSec * 0.55);
+
+    this.updateRainParticles(dtSec, focusX, focusY, focusZ);
     this.applyAtmosphere(focusX, focusZ);
     this.refreshIblIfNeeded(false);
+  }
+
+  private updateRainParticles(dtSec: number, fx: number, fy: number, fz: number): void {
+    const activeCount = Math.floor(this.rainDropBudget * this.rainIntensity);
+    if (activeCount < 8 || this.rainIntensity < 0.06) {
+      this.rainLines.visible = false;
+      return;
+    }
+    this.rainLines.visible = true;
+    this.rainLines.position.set(fx, fy, fz);
+    this.rainMat.opacity = 0.16 + this.rainIntensity * 0.28;
+    this.rainGeo.setDrawRange(0, activeCount * 2);
+
+    const fallSpeed = 24 + this.rainIntensity * 12;
+    const pos = this.rainPositions;
+    for (let i = 0; i < activeCount; i++) {
+      const b = i * 6;
+      let y = pos[b + 1]! - fallSpeed * dtSec;
+      let x = pos[b]! - 2.6 * dtSec;
+      if (y < -1) {
+        y = 21 + (i % 5);
+        x = ((i * 73) % 44) - 22;
+      }
+      if (x < -22) x += 44;
+      pos[b] = x;
+      pos[b + 1] = y;
+      pos[b + 3] = x - 0.16;
+      pos[b + 4] = y - 1.25;
+    }
+    (this.rainGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
   }
 
   private getCurrentIblBucket(): IblPeriodBucket {
@@ -425,14 +508,24 @@ export class EnvironmentSystem {
 
     this.zenithColor.copy(kfA.zenith).lerp(kfB.zenith, t);
     this.horizonColor.copy(kfA.horizon).lerp(kfB.horizon, t);
+    if (this.rainIntensity > 0.01) {
+      const rainTint = this.rainIntensity * 0.62;
+      this.zenithColor.lerp(this.overcastZenith, rainTint);
+      this.horizonColor.lerp(this.overcastHorizon, rainTint);
+    }
     (this.scene.background as THREE.Color).copy(this.horizonColor);
 
     // Sync exponential fog color directly with sky horizon
     this.fog.color.copy(this.horizonColor);
-    this.fog.density = THREE.MathUtils.lerp(kfA.fogDensity, kfB.fogDensity, t) * this.fogScale;
+    this.fog.density =
+      THREE.MathUtils.lerp(kfA.fogDensity, kfB.fogDensity, t) *
+      this.fogScale *
+      (1 + this.rainIntensity * 0.45);
 
     this.sunLight.color.copy(kfA.sunColor).lerp(kfB.sunColor, t);
-    this.sunLight.intensity = THREE.MathUtils.lerp(kfA.sunIntensity, kfB.sunIntensity, t);
+    this.sunLight.intensity =
+      THREE.MathUtils.lerp(kfA.sunIntensity, kfB.sunIntensity, t) *
+      (1 - this.rainIntensity * 0.45);
     (this.skyMat.uniforms.uSunColor!.value as THREE.Color).copy(this.sunLight.color);
 
     this.hemiLight.color.copy(kfA.hemiSky).lerp(kfB.hemiSky, t);
@@ -510,6 +603,8 @@ export class EnvironmentSystem {
   public dispose(): void {
     this.skyGeo.dispose();
     this.skyMat.dispose();
+    this.rainGeo.dispose();
+    this.rainMat.dispose();
     this.envTarget?.dispose();
     this.envTarget = null;
   }

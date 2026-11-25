@@ -19,6 +19,9 @@ export class AudioSynthesizer {
   private hornOsc2: OscillatorNode | null = null;
   private hornGain: GainNode | null = null;
 
+  private rainGain: GainNode | null = null;
+  private rainSource: AudioBufferSourceNode | null = null;
+
   private noiseBuffer: AudioBuffer | null = null;
   private enabled = true;
   private volume = 0.6;
@@ -106,6 +109,21 @@ export class AudioSynthesizer {
     this.hornGain.connect(this.masterGain);
     this.hornOsc1.start();
     this.hornOsc2.start();
+
+    // Soft ambient rain loop
+    const rainFilter = ctx.createBiquadFilter();
+    rainFilter.type = 'bandpass';
+    rainFilter.frequency.value = 1150;
+    rainFilter.Q.value = 0.65;
+    this.rainGain = ctx.createGain();
+    this.rainGain.gain.value = 0;
+    this.rainSource = ctx.createBufferSource();
+    this.rainSource.buffer = this.noiseBuffer;
+    this.rainSource.loop = true;
+    this.rainSource.connect(rainFilter);
+    rainFilter.connect(this.rainGain);
+    this.rainGain.connect(this.masterGain);
+    this.rainSource.start();
   }
 
   public setSettings(enabled: boolean, volume: number): void {
@@ -125,6 +143,7 @@ export class AudioSynthesizer {
     parkingBrake: boolean;
     gear?: number;
     retarderActive?: boolean;
+    rainIntensity?: number;
     dtSec?: number;
   }): void {
     if (!this.ctx || !this.engineOsc1 || !this.engineOsc2 || !this.engineFilter || !this.engineGain || !this.turboOsc || !this.turboGain || !this.hornGain) {
@@ -136,7 +155,12 @@ export class AudioSynthesizer {
       this.engineGain.gain.setTargetAtTime(0, now, 0.08);
       this.turboGain.gain.setTargetAtTime(0, now, 0.08);
       this.hornGain.gain.setTargetAtTime(0, now, 0.04);
+      this.rainGain?.gain.setTargetAtTime(0, now, 0.12);
       return;
+    }
+
+    if (this.rainGain) {
+      this.rainGain.gain.setTargetAtTime((opts.rainIntensity ?? 0) * 0.065, now, 0.2);
     }
 
     // Diesel engine pitch & harmonic warmth (plus subtle hydraulic retarder pitch)

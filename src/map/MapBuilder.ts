@@ -10,6 +10,7 @@ import {
 } from './types';
 import { ProceduralTextures } from '../graphics/ProceduralTextures';
 import { EnvironmentSystem } from '../graphics/EnvironmentSystem';
+import { SignalState } from '../store/useGameStore';
 
 export interface RoadSamplePoint {
   x: number;
@@ -65,9 +66,11 @@ export interface BuiltMap {
   colliders: BoxCollider[];
   getHeightAt: (x: number, z: number) => number;
   querySurface: (x: number, z: number, out: SurfaceQueryResult) => void;
+  getTrafficLightState: (nodeId: string, approachDirX: number, approachDirZ: number) => SignalState;
   highlightDestinationDepot: (depotId: string | null) => void;
   setFoliageDensity: (ratio: number, isLowSpec?: boolean) => void;
   setPbrDetailEnabled: (enabled: boolean) => void;
+  setRainWetness: (wet01: number) => void;
   update: (dtSec: number, elapsedSec: number) => void;
   dispose: () => void;
 }
@@ -431,6 +434,8 @@ export class MapBuilder {
     });
     disposables.push(skirtMat);
 
+    const roadMaterials: THREE.MeshStandardMaterial[] = [];
+
     for (const seg of segments) {
       const roadPbr = this.textures.getRoadTextures(seg.def.lanes, seg.def.roadClass);
       const segMat = new THREE.MeshStandardMaterial({
@@ -444,6 +449,7 @@ export class MapBuilder {
         polygonOffsetFactor: -1,
         polygonOffsetUnits: -1,
       });
+      roadMaterials.push(segMat);
       pbrMaterialBindings.push({
         mat: segMat,
         roughnessMap: roadPbr.roughnessMap,
@@ -588,6 +594,94 @@ export class MapBuilder {
         island.position.set(node.position[0], node.position[1] + 0.2, node.position[2]);
         roadGroup.add(island);
         disposables.push(islandGeo, islandMat);
+      }
+    }
+
+    // 3b. Real European Cantilever Traffic Lights at signalized junctions
+    interface TrafficSignalRig {
+      nodeId: string;
+      phaseOffset: number;
+      nsRed: THREE.MeshStandardMaterial;
+      nsAmber: THREE.MeshStandardMaterial;
+      nsGreen: THREE.MeshStandardMaterial;
+      ewRed: THREE.MeshStandardMaterial;
+      ewAmber: THREE.MeshStandardMaterial;
+      ewGreen: THREE.MeshStandardMaterial;
+    }
+    const signalRigs = new Map<string, TrafficSignalRig>();
+    const signalNodes = manifest.nodes.filter((n) => n.trafficLight);
+    if (signalNodes.length > 0) {
+      const poleGeo = new THREE.CylinderGeometry(0.12, 0.16, 5.8, 8);
+      const armGeo = new THREE.BoxGeometry(5.2, 0.16, 0.16);
+      const headGeo = new THREE.BoxGeometry(0.44, 1.35, 0.36);
+      const lensGeo = new THREE.CircleGeometry(0.14, 12);
+      const steelMat = new THREE.MeshStandardMaterial({ color: '#334155', metalness: 0.65, roughness: 0.4 });
+      const housingMat = new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.6 });
+      disposables.push(poleGeo, armGeo, headGeo, lensGeo, steelMat, housingMat);
+
+      for (let i = 0; i < signalNodes.length; i++) {
+        const node = signalNodes[i]!;
+        const [nx, ny, nz] = node.position;
+        const makeLensMat = (color: string) => {
+          const m = new THREE.MeshStandardMaterial({
+            color: '#1e293b',
+            emissive: color,
+            emissiveIntensity: 0,
+            roughness: 0.25,
+          });
+          disposables.push(m);
+          return m;
+        };
+        const rig: TrafficSignalRig = {
+          nodeId: node.id,
+          phaseOffset: i * 6.5,
+          nsRed: makeLensMat('#ef4444'),
+          nsAmber: makeLensMat('#f59e0b'),
+          nsGreen: makeLensMat('#22c55e'),
+          ewRed: makeLensMat('#ef4444'),
+          ewAmber: makeLensMat('#f59e0b'),
+          ewGreen: makeLensMat('#22c55e'),
+        };
+        signalRigs.set(node.id, rig);
+
+        const mountCorner = (
+          cx: number,
+          cz: number,
+          rotY: number,
+          redM: THREE.MeshStandardMaterial,
+          ambM: THREE.MeshStandardMaterial,
+          grnM: THREE.MeshStandardMaterial
+        ) => {
+          const g = new THREE.Group();
+          g.position.set(cx, ny, cz);
+          g.rotation.y = rotY;
+          const pole = new THREE.Mesh(poleGeo, steelMat);
+          pole.position.y = 2.9;
+          const arm = new THREE.Mesh(armGeo, steelMat);
+          arm.position.set(2.4, 5.65, 0);
+          const head = new THREE.Mesh(headGeo, housingMat);
+          head.position.set(4.1, 5.2, 0);
+          g.add(pole, arm, head);
+
+          for (const sideZ of [0.19, -0.19]) {
+            const ry = sideZ > 0 ? 0 : Math.PI;
+            const lRed = new THREE.Mesh(lensGeo, redM);
+            lRed.position.set(4.1, 5.62, sideZ);
+            lRed.rotation.y = ry;
+            const lAmb = new THREE.Mesh(lensGeo, ambM);
+            lAmb.position.set(4.1, 5.2, sideZ);
+            lAmb.rotation.y = ry;
+            const lGrn = new THREE.Mesh(lensGeo, grnM);
+            lGrn.position.set(4.1, 4.78, sideZ);
+            lGrn.rotation.y = ry;
+            g.add(lRed, lAmb, lGrn);
+          }
+          roadGroup.add(g);
+        };
+
+        // NS-facing cantilever pole & EW-facing cantilever pole
+        mountCorner(nx - 10.5, nz - 10.5, 0, rig.nsRed, rig.nsAmber, rig.nsGreen);
+        mountCorner(nx + 10.5, nz + 10.5, Math.PI / 2, rig.ewRed, rig.ewAmber, rig.ewGreen);
       }
     }
 
@@ -1154,7 +1248,53 @@ export class MapBuilder {
       }
     };
 
+    let currentElapsedSec = 0;
+
+    const getTrafficLightState = (
+      nodeId: string,
+      approachDirX: number,
+      approachDirZ: number
+    ): SignalState => {
+      const rig = signalRigs.get(nodeId);
+      if (!rig) return 'green';
+      const cycle = (currentElapsedSec + rig.phaseOffset) % 26;
+      const isNsAxis = Math.abs(approachDirZ) >= Math.abs(approachDirX);
+      if (isNsAxis) {
+        if (cycle < 11) return 'green';
+        if (cycle < 13) return 'amber';
+        return 'red';
+      }
+      if (cycle >= 13 && cycle < 24) return 'green';
+      if (cycle >= 24) return 'amber';
+      return 'red';
+    };
+
+    const setRainWetness = (wet01: number): void => {
+      const w = THREE.MathUtils.clamp(wet01, 0, 1);
+      const rough = THREE.MathUtils.lerp(0.85, 0.34, w);
+      for (let i = 0; i < roadMaterials.length; i++) {
+        roadMaterials[i]!.roughness = rough;
+      }
+    };
+
     const update = (dtSec: number, elapsedSec: number): void => {
+      currentElapsedSec = elapsedSec;
+      for (const rig of signalRigs.values()) {
+        const cycle = (elapsedSec + rig.phaseOffset) % 26;
+        const nsGreen = cycle < 11;
+        const nsAmber = cycle >= 11 && cycle < 13;
+        const nsRed = cycle >= 13;
+        const ewGreen = cycle >= 13 && cycle < 24;
+        const ewAmber = cycle >= 24;
+        const ewRed = cycle < 13;
+        rig.nsGreen.emissiveIntensity = nsGreen ? 2.4 : 0.05;
+        rig.nsAmber.emissiveIntensity = nsAmber ? 2.4 : 0.05;
+        rig.nsRed.emissiveIntensity = nsRed ? 2.4 : 0.05;
+        rig.ewGreen.emissiveIntensity = ewGreen ? 2.4 : 0.05;
+        rig.ewAmber.emissiveIntensity = ewAmber ? 2.4 : 0.05;
+        rig.ewRed.emissiveIntensity = ewRed ? 2.4 : 0.05;
+      }
+
       for (let i = 0; i < rotatingRotors.length; i++) {
         rotatingRotors[i]!.rotation.z += dtSec * 1.15;
       }
@@ -1189,9 +1329,11 @@ export class MapBuilder {
       colliders,
       getHeightAt,
       querySurface,
+      getTrafficLightState,
       highlightDestinationDepot,
       setFoliageDensity: updateSceneryDensity,
       setPbrDetailEnabled,
+      setRainWetness,
       update,
       dispose,
     };

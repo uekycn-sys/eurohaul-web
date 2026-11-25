@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import {
   QUALITY_SPECS,
   QualityPreset,
+  SignalState,
+  WipersMode,
   getMaxFuelLiters,
   useGameStore,
 } from '../store/useGameStore';
@@ -71,6 +73,10 @@ export class GameEngine {
   private activeRoute: ActiveRoute | null = null;
   private trackedJobId: string | null = null;
   private manualParkHoldSec = 0;
+  private wipersMode: WipersMode = 0;
+  private redLightCooldownByNode = new Map<string, number>();
+  private upcomingSignal: SignalState | null = null;
+  private upcomingSignalDistMeters: number | null = null;
 
   private rafId: number | null = null;
   private isPausedHidden = false;
@@ -179,12 +185,18 @@ export class GameEngine {
       onToggleTrailer: () => this.handleToggleTrailer(),
       onShiftUp: () => this.physics.shiftUp(useGameStore.getState().transmissionMode),
       onShiftDown: () => this.physics.shiftDown(useGameStore.getState().transmissionMode),
-      onCameraMode: (mode) => useGameStore.getState().setCameraMode(mode),
+      onCameraMode: (mode) => {
+        if (mode === 1) this.cameraRig.resetCabLook();
+        useGameStore.getState().setCameraMode(mode);
+      },
       onCycleCamera: () => {
         const s = useGameStore.getState();
-        s.setCameraMode(((s.cameraMode % 4) + 1) as 1 | 2 | 3 | 4);
+        const next = ((s.cameraMode % 4) + 1) as 1 | 2 | 3 | 4;
+        if (next === 1) this.cameraRig.resetCabLook();
+        s.setCameraMode(next);
       },
       onRest: () => this.handleStationRest(),
+      onCycleWipers: () => this.cycleWipers(),
       onToggleMap: () => {
         const s = useGameStore.getState();
         if (s.gamePhase !== 'playing') return;
@@ -370,6 +382,12 @@ export class GameEngine {
     s.pushNotification('info', '服务区休息完成 (+8 小时)', '精力已恢复，注意随时关注昼夜灯光变化');
   }
 
+  public cycleWipers(): void {
+    this.wipersMode = ((this.wipersMode + 1) % 3) as WipersMode;
+    const label = this.wipersMode === 0 ? '关闭' : this.wipersMode === 1 ? '标准间歇' : '高速强扫';
+    useGameStore.getState().pushNotification('info', `雨刮器: ${label}`, '按 K 键循环切换雨刷档位');
+  }
+
   public loadMap(mapId: string): void {
     const manifest = MapRegistry.getMapById(mapId);
     const preset = useGameStore.getState().qualityPreset;
@@ -483,6 +501,7 @@ export class GameEngine {
 
     const store = useGameStore.getState();
     this.physics.syncVisuals(this.truckVisuals, this.input, this.env.nightFactor);
+    this.truckVisuals.updateWipers(this.elapsedSec, this.wipersMode);
     this.cameraRig.update(
       frameDtSec,
       store.cameraMode,
@@ -504,6 +523,7 @@ export class GameEngine {
         this.physics.retarderLevel > 0 &&
         Math.abs(this.physics.speedMs) > 2 &&
         this.input.throttle < 0.05,
+      rainIntensity: this.env.rainIntensity,
       dtSec: frameDtSec,
     });
 
@@ -650,6 +670,7 @@ export class GameEngine {
         transmissionMode: store.transmissionMode,
         speedLimiterEnabled: store.speedLimiterEnabled,
         truckHealth: store.truckHealth,
+        rainIntensity: this.env.rainIntensity,
         onFuelBurned: (liters) => store.consumeFuel(liters),
         onDistanceKm: (km) => store.addCareerDistance(km),
       });
@@ -678,12 +699,16 @@ export class GameEngine {
       }
 
       const kmh = Math.abs(this.physics.speedMs) * 3.6;
-      const fine = this.economy.checkSpeedCameras(this.physics.x, this.physics.z, kmh, performance.now());
+      const nowPerf = performance.now();
+      const fine = this.economy.checkSpeedCameras(this.physics.x, this.physics.z, kmh, nowPerf);
       if (fine !== null) {
         store.applyFine(fine, `区间测速抓拍超速 (${Math.round(kmh)} km/h)`);
         store.triggerSpeedCameraFlash();
         this.audio.playCameraFlash();
       }
+
+      // Check upcoming intersection traffic signals & enforce red-light violation fines
+      this.evaluateTrafficSignals(kmh, nowPerf);
 
       if (store.activeJob) {
         store.tickJobTimer(dtSec);
@@ -708,8 +733,48 @@ export class GameEngine {
       );
     }
 
+    this.env.weatherSetting = store.weatherSetting;
     this.builtMap.update(dtSec, this.elapsedSec);
-    this.env.update(dtSec, this.physics.x, this.physics.z);
+    this.env.update(dtSec, this.physics.x, this.physics.z, this.physics.y);
+    this.builtMap.setRainWetness(this.env.rainIntensity);
+  }
+
+  private evaluateTrafficSignals(speedKmh: number, nowMs: number): void {
+    const fwdX = Math.sin(this.physics.yaw);
+    const fwdZ = Math.cos(this.physics.yaw);
+    let bestSignal: SignalState | null = null;
+    let bestDist = Infinity;
+
+    for (const node of this.builtMap.manifest.nodes) {
+      if (!node.trafficLight) continue;
+      const toNodeX = node.position[0] - this.physics.x;
+      const toNodeZ = node.position[2] - this.physics.z;
+      const dist = Math.hypot(toNodeX, toNodeZ);
+      if (dist > 56) continue;
+
+      const forwardProj = (toNodeX * fwdX + toNodeZ * fwdZ) / Math.max(0.1, dist);
+      if (dist > 10 && forwardProj < 0.45) continue;
+
+      const sig = this.builtMap.getTrafficLightState(node.id, fwdX, fwdZ);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestSignal = sig;
+      }
+
+      if (dist < 10.5 && speedKmh > 18 && sig === 'red') {
+        const lastFineAt = this.redLightCooldownByNode.get(node.id) ?? 0;
+        if (nowMs - lastFineAt > 14000) {
+          this.redLightCooldownByNode.set(node.id, nowMs);
+          const store = useGameStore.getState();
+          store.applyFine(450, `${node.label ?? '信号路口'} 闯红灯违章`);
+          store.triggerSpeedCameraFlash();
+          this.audio.playCameraFlash();
+        }
+      }
+    }
+
+    this.upcomingSignal = bestSignal;
+    this.upcomingSignalDistMeters = bestSignal ? Math.round(bestDist) : null;
   }
 
   private syncTelemetry(): void {
@@ -801,6 +866,10 @@ export class GameEngine {
       odometerKm: this.physics.odometerKm,
       fps: this.currentFps,
       timeOfDayHours: this.env.timeOfDayHours,
+      rainIntensity: this.env.rainIntensity,
+      wipersMode: this.wipersMode,
+      upcomingSignal: this.upcomingSignal,
+      upcomingSignalDistMeters: this.upcomingSignalDistMeters,
       currentCityName: currentCity?.name ?? '欧陆干线公路',
       navDistanceMeters: Math.round(guidance.distanceMeters),
       navEtaSeconds: Math.round(guidance.etaSeconds),

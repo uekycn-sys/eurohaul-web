@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PbrTextureSet, ProceduralTextures } from '../graphics/ProceduralTextures';
-import { HeadlightMode } from '../store/useGameStore';
+import { HeadlightMode, WipersMode } from '../store/useGameStore';
 
 export interface TruckVisualRefs {
   tractorRoot: THREE.Group;
@@ -16,6 +16,7 @@ export interface TruckVisualRefs {
   setTrailerCargoVisual: (colorHex: string, label: string) => void;
   setBlobShadowVisible: (visible: boolean) => void;
   setPbrDetailEnabled: (enabled: boolean) => void;
+  updateWipers: (elapsedSec: number, mode: WipersMode) => void;
   updateLights: (opts: {
     headlightMode: HeadlightMode;
     nightFactor: number;
@@ -453,7 +454,7 @@ export class TruckMeshBuilder {
       cabSuspensionGroup.add(sDoor);
     }
 
-    // Reflective tinted windshield + resting dual wiper blades
+    // Reflective tinted windshield + animated dual wiper blades pivoted at base
     const windshieldGeo = new THREE.PlaneGeometry(2.24, 1.18);
     const windshield = new THREE.Mesh(windshieldGeo, glassMat);
     windshield.position.set(0, 2.6, 2.89);
@@ -461,11 +462,16 @@ export class TruckMeshBuilder {
     cabSuspensionGroup.add(windshield);
 
     const wiperGeo = new THREE.BoxGeometry(0.76, 0.03, 0.04);
-    for (const wx of [-0.46, 0.46]) {
-      const wiper = new THREE.Mesh(wiperGeo, trimMat);
-      wiper.position.set(wx, 2.06, 2.94);
-      wiper.rotation.z = 0.08;
-      cabSuspensionGroup.add(wiper);
+    const wiperPivots: THREE.Group[] = [];
+    for (const wx of [-0.1, 0.72]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(wx, 2.04, 2.94);
+      const blade = new THREE.Mesh(wiperGeo, trimMat);
+      blade.position.set(-0.36, 0.04, 0);
+      pivot.add(blade);
+      pivot.rotation.z = -0.06;
+      cabSuspensionGroup.add(pivot);
+      wiperPivots.push(pivot);
     }
 
     // Sleek exterior mirrors positioned clear of forward sightlines
@@ -501,17 +507,19 @@ export class TruckMeshBuilder {
     cluster.rotation.x = 0.22;
     cabSuspensionGroup.add(cluster);
 
-    // Live Center SatNav GPS unit & mount bracket
+    // Live SatNav GPS unit mounted cleanly on left A-pillar dash corner (clear of HUD Route Advisor!)
     const gpsTex = this.textures.getDynamicCabGpsTexture();
+    const gpsGroup = new THREE.Group();
+    gpsGroup.position.set(0.95, 2.41, 2.42);
+    gpsGroup.rotation.y = Math.PI - 0.34;
     const gpsBezelGeo = new THREE.BoxGeometry(0.36, 0.23, 0.04);
     const gpsBezel = new THREE.Mesh(gpsBezelGeo, trimMat);
-    gpsBezel.position.set(0.06, 2.27, 2.36);
     const gpsGeo = new THREE.PlaneGeometry(0.32, 0.19);
     const gpsMat = new THREE.MeshBasicMaterial({ map: gpsTex });
     const gpsMesh = new THREE.Mesh(gpsGeo, gpsMat);
-    gpsMesh.position.set(0.06, 2.27, 2.335);
-    gpsMesh.rotation.y = Math.PI;
-    cabSuspensionGroup.add(gpsBezel, gpsMesh);
+    gpsMesh.position.z = 0.025;
+    gpsGroup.add(gpsBezel, gpsMesh);
+    cabSuspensionGroup.add(gpsGroup);
 
     // Driver & Passenger seats (adds richness in chase & orbit views)
     const seatGeo = new THREE.BoxGeometry(0.56, 0.92, 0.48);
@@ -854,6 +862,16 @@ export class TruckMeshBuilder {
       applyContainerPbr();
     };
 
+    const updateWipers = (elapsedSec: number, mode: WipersMode): void => {
+      const targetAngle =
+        mode === 0
+          ? -0.06
+          : -0.06 - (0.5 - 0.5 * Math.cos(elapsedSec * (mode === 1 ? 3.8 : 6.4))) * 1.45;
+      for (let i = 0; i < wiperPivots.length; i++) {
+        wiperPivots[i]!.rotation.z += (targetAngle - wiperPivots[i]!.rotation.z) * 0.35;
+      }
+    };
+
     const updateLights = (opts: {
       headlightMode: HeadlightMode;
       nightFactor: number;
@@ -897,6 +915,7 @@ export class TruckMeshBuilder {
       setTrailerCargoVisual,
       setBlobShadowVisible,
       setPbrDetailEnabled,
+      updateWipers,
       updateLights,
       dispose,
     };

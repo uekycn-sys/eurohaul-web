@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   Link2,
   Link2Off,
+  CloudRain,
 } from 'lucide-react';
 import {
   AdvisorTab,
@@ -25,6 +26,7 @@ import {
   MobileSteeringStyle,
   QUALITY_SPECS,
   QualityPreset,
+  WeatherSetting,
   getDriverRankTitle,
   getMaxFuelLiters,
   useGameStore,
@@ -86,6 +88,8 @@ export function HUD({
   const setMobileSteeringStyle = useGameStore((s) => s.setMobileSteeringStyle);
   const speedLimiterEnabled = useGameStore((s) => s.speedLimiterEnabled);
   const setSpeedLimiterEnabled = useGameStore((s) => s.setSpeedLimiterEnabled);
+  const weatherSetting = useGameStore((s) => s.weatherSetting);
+  const setWeatherSetting = useGameStore((s) => s.setWeatherSetting);
   const detectedDeviceLabel = useGameStore((s) => s.detectedDeviceLabel);
 
   const cameraMode = useGameStore((s) => s.cameraMode);
@@ -739,6 +743,11 @@ export function HUD({
               >
                 R{telemetry.retarderLevel}
               </span>
+              {telemetry.wipersMode > 0 && (
+                <span className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-300">
+                  刷{telemetry.wipersMode}
+                </span>
+              )}
             </div>
           </div>
 
@@ -827,6 +836,27 @@ export function HUD({
                 >
                   {telemetry.speedLimitKmh}
                 </div>
+                {telemetry.upcomingSignal && (
+                  <div className="absolute top-2 left-2 flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950/90 px-2 py-1 text-[10px] font-bold shadow-md">
+                    <span
+                      className={`h-2.5 w-2.5 rounded-full ${
+                        telemetry.upcomingSignal === 'green'
+                          ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]'
+                          : telemetry.upcomingSignal === 'amber'
+                          ? 'bg-amber-400 shadow-[0_0_8px_#fbbf24]'
+                          : 'bg-rose-500 shadow-[0_0_8px_#f43f5e] animate-pulse'
+                      }`}
+                    />
+                    <span className="text-slate-200">
+                      {telemetry.upcomingSignal === 'green'
+                        ? '绿灯'
+                        : telemetry.upcomingSignal === 'amber'
+                        ? '黄灯'
+                        : '红灯'}{' '}
+                      {telemetry.upcomingSignalDistMeters ?? 0}m
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="mt-2 flex items-center justify-between text-[11px]">
                 <span className="flex items-center gap-1 truncate font-medium text-sky-300">
@@ -955,6 +985,7 @@ export function HUD({
               <span><b className="text-amber-300">T / H</b> 摘挂 / 气喇叭</span>
               <span><b className="text-amber-300">1 - 4 / V</b> 切换视角</span>
               <span><b className="text-amber-300">Shift/Ctrl</b> 升降档</span>
+              <span><b className="text-amber-300">K / 拖拽</b> 雨刷 / 环视</span>
               <span><b className="text-amber-300">Enter / R</b> 交互 / 休息</span>
             </div>
           )}
@@ -1154,6 +1185,35 @@ export function HUD({
               </div>
 
               <div>
+                <div className="mb-2 flex items-center gap-1.5 font-semibold text-slate-300">
+                  <CloudRain className="h-4 w-4 text-sky-400" />
+                  天气系统 (动态降雨 / 湿滑路面)
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      ['auto', '自动动态'],
+                      ['clear', '晴朗干燥'],
+                      ['rain', '欧陆阵雨'],
+                    ] as [WeatherSetting, string][]
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setWeatherSetting(mode)}
+                      className={`rounded-lg border py-1.5 font-semibold ${
+                        weatherSetting === mode
+                          ? 'border-sky-400 bg-sky-500/20 text-sky-200'
+                          : 'border-slate-700 bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
                 <div className="mb-2 font-semibold text-slate-300">快速切换时刻 (测试昼夜光影)</div>
                 <div className="grid grid-cols-4 gap-2">
                   {[
@@ -1204,6 +1264,12 @@ export function HUD({
                 </span>
                 <span className="font-mono">+€{lastDeliveryResult.parkingBonusEur.toLocaleString()}</span>
               </div>
+              <div className="flex justify-between text-sky-300">
+                <span>
+                  {lastDeliveryResult.onTime ? '准点送达奖金 (+12%)' : '超时送达'}
+                </span>
+                <span className="font-mono">+€{lastDeliveryResult.onTimeBonusEur.toLocaleString()}</span>
+              </div>
               {lastDeliveryResult.damagePenaltyEur > 0 && (
                 <div className="flex justify-between text-rose-400">
                   <span>货损扣款 (完整度 {lastDeliveryResult.cargoHealth.toFixed(0)}%)</span>
@@ -1219,6 +1285,25 @@ export function HUD({
               <div className="flex justify-between text-xs text-amber-300">
                 <span>驾驶经验奖励</span>
                 <span className="font-mono">+{lastDeliveryResult.xpEarned} XP</span>
+              </div>
+              <div className="flex justify-between border-t border-slate-800/80 pt-2 text-xs text-slate-300">
+                <span>
+                  百公里油耗: <b className="font-mono text-white">{lastDeliveryResult.avgFuelLPer100Km} L/100km</b>
+                </span>
+                <span>
+                  安全评级:{' '}
+                  <b
+                    className={`font-mono ${
+                      lastDeliveryResult.safetyGrade === 'S'
+                        ? 'text-emerald-400'
+                        : lastDeliveryResult.safetyGrade === 'A'
+                        ? 'text-sky-400'
+                        : 'text-amber-400'
+                    }`}
+                  >
+                    {lastDeliveryResult.safetyGrade} 级
+                  </b>
+                </span>
               </div>
             </div>
 

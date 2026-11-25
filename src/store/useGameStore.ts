@@ -9,6 +9,9 @@ export type TransmissionMode = 'auto' | 'sequential';
 export type HeadlightMode = 0 | 1 | 2; // 0: Off, 1: Low/DRL, 2: High Beam
 export type CameraMode = 1 | 2 | 3 | 4;
 export type AdvisorTab = 'nav' | 'cargo' | 'truck' | 'controls';
+export type WeatherSetting = 'auto' | 'clear' | 'rain';
+export type WipersMode = 0 | 1 | 2;
+export type SignalState = 'green' | 'amber' | 'red';
 
 export interface QualitySpec {
   id: QualityPreset;
@@ -222,17 +225,24 @@ export interface ActiveJobState {
   remainingSeconds: number;
   cargoHealth: number;
   pickedUp: boolean;
+  tripFuelUsedLiters: number;
+  tripDistanceKm: number;
+  tripViolations: number;
 }
 
 export interface DeliveryResult {
   job: FreightJob;
   basePayEur: number;
   parkingBonusEur: number;
+  onTimeBonusEur: number;
   damagePenaltyEur: number;
   totalEarnedEur: number;
   xpEarned: number;
   manualParking: boolean;
+  onTime: boolean;
   cargoHealth: number;
+  avgFuelLPer100Km: number;
+  safetyGrade: 'S' | 'A' | 'B';
 }
 
 export interface NearbyInteraction {
@@ -284,6 +294,10 @@ export interface TelemetrySnapshot {
   odometerKm: number;
   fps: number;
   timeOfDayHours: number;
+  rainIntensity: number;
+  wipersMode: WipersMode;
+  upcomingSignal: SignalState | null;
+  upcomingSignalDistMeters: number | null;
   currentCityName: string;
   navDistanceMeters: number;
   navEtaSeconds: number;
@@ -316,6 +330,7 @@ interface PersistedCareerState {
   mobileControlsEnabled: boolean;
   mobileSteeringStyle: MobileSteeringStyle;
   speedLimiterEnabled: boolean;
+  weatherSetting: WeatherSetting;
 }
 
 interface GameStoreState extends PersistedCareerState {
@@ -350,6 +365,7 @@ interface GameStoreState extends PersistedCareerState {
   setMobileControlsEnabled: (enabled: boolean) => void;
   setMobileSteeringStyle: (style: MobileSteeringStyle) => void;
   setSpeedLimiterEnabled: (enabled: boolean) => void;
+  setWeatherSetting: (weather: WeatherSetting) => void;
 
   // Gameplay & economy actions
   setAvailableJobs: (jobs: FreightJob[]) => void;
@@ -401,6 +417,10 @@ const DEFAULT_TELEMETRY: TelemetrySnapshot = {
   odometerKm: 0,
   fps: 60,
   timeOfDayHours: 8.5,
+  rainIntensity: 0,
+  wipersMode: 0,
+  upcomingSignal: null,
+  upcomingSignalDistMeters: null,
   currentCityName: '慕尼黑物流枢纽',
   navDistanceMeters: 0,
   navEtaSeconds: 0,
@@ -445,6 +465,7 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   mobileControlsEnabled: INITIAL_HARDWARE.isTouchDevice,
   mobileSteeringStyle: 'wheel',
   speedLimiterEnabled: true,
+  weatherSetting: 'auto',
 };
 
 let notificationSeq = 1;
@@ -515,6 +536,7 @@ export const useGameStore = create<GameStoreState>()(
       setMobileControlsEnabled: (mobileControlsEnabled) => set({ mobileControlsEnabled }),
       setMobileSteeringStyle: (mobileSteeringStyle) => set({ mobileSteeringStyle }),
       setSpeedLimiterEnabled: (speedLimiterEnabled) => set({ speedLimiterEnabled }),
+      setWeatherSetting: (weatherSetting) => set({ weatherSetting }),
 
       setAvailableJobs: (availableJobs) => set({ availableJobs }),
 
@@ -526,6 +548,9 @@ export const useGameStore = create<GameStoreState>()(
             remainingSeconds: job.timeLimitMin * 60,
             cargoHealth: 100,
             pickedUp: true,
+            tripFuelUsedLiters: 0,
+            tripDistanceKm: 0,
+            tripViolations: 0,
           },
           activeModal: 'none',
         });
@@ -564,6 +589,12 @@ export const useGameStore = create<GameStoreState>()(
       consumeFuel: (liters) =>
         set((s) => ({
           fuelLiters: Math.max(0, s.fuelLiters - liters),
+          activeJob: s.activeJob
+            ? {
+                ...s.activeJob,
+                tripFuelUsedLiters: s.activeJob.tripFuelUsedLiters + liters,
+              }
+            : null,
         })),
 
       refuelFull: () => {
@@ -620,6 +651,9 @@ export const useGameStore = create<GameStoreState>()(
       applyFine: (amountEur, reason) => {
         set((s) => ({
           moneyEur: Math.max(0, s.moneyEur - amountEur),
+          activeJob: s.activeJob
+            ? { ...s.activeJob, tripViolations: s.activeJob.tripViolations + 1 }
+            : null,
         }));
         get().pushNotification('fine', `交通违章罚款 -€${amountEur}`, reason);
       },
@@ -672,27 +706,56 @@ export const useGameStore = create<GameStoreState>()(
       completeDelivery: (manualParking) => {
         const s = get();
         if (!s.activeJob) return null;
-        const { job, cargoHealth } = s.activeJob;
+        const {
+          job,
+          cargoHealth,
+          remainingSeconds,
+          tripFuelUsedLiters,
+          tripDistanceKm,
+          tripViolations,
+        } = s.activeJob;
         const basePayEur = job.basePayEur;
         const parkingBonusEur = manualParking ? Math.round(basePayEur * 0.3) : 0;
+        const onTime = remainingSeconds > 0;
+        const onTimeBonusEur = onTime ? Math.round(basePayEur * 0.12) : 0;
         const damageRatio = Math.max(0, (100 - cargoHealth) / 100);
         const damagePenaltyEur = Math.round(basePayEur * damageRatio * 0.65);
-        const totalEarnedEur = Math.max(250, basePayEur + parkingBonusEur - damagePenaltyEur);
-        const xpEarned = job.xpReward + (manualParking ? Math.round(job.xpReward * 0.35) : 0);
+        const totalEarnedEur = Math.max(
+          250,
+          basePayEur + parkingBonusEur + onTimeBonusEur - damagePenaltyEur
+        );
+        const xpEarned =
+          job.xpReward +
+          (manualParking ? Math.round(job.xpReward * 0.35) : 0) +
+          (onTime ? Math.round(job.xpReward * 0.15) : 0);
         const nextXp = s.xp + xpEarned;
         const nextLevel = computeLevelFromXp(nextXp);
         const leveledUp = nextLevel > s.level;
         const levelUpBonusEur = leveledUp ? 2500 : 0;
+        const avgFuelLPer100Km =
+          tripDistanceKm > 0.15
+            ? Number(((tripFuelUsedLiters / tripDistanceKm) * 100).toFixed(1))
+            : 31.5;
+        const safetyGrade: 'S' | 'A' | 'B' =
+          cargoHealth >= 98 && tripViolations === 0 && onTime
+            ? 'S'
+            : cargoHealth >= 88 && tripViolations <= 1
+            ? 'A'
+            : 'B';
 
         const result: DeliveryResult = {
           job,
           basePayEur,
           parkingBonusEur,
+          onTimeBonusEur,
           damagePenaltyEur,
           totalEarnedEur: totalEarnedEur + levelUpBonusEur,
           xpEarned,
           manualParking,
+          onTime,
           cargoHealth,
+          avgFuelLPer100Km,
+          safetyGrade,
         };
 
         set({
@@ -753,6 +816,12 @@ export const useGameStore = create<GameStoreState>()(
       addCareerDistance: (deltaKm) =>
         set((s) => ({
           totalDistanceKm: s.totalDistanceKm + deltaKm,
+          activeJob: s.activeJob
+            ? {
+                ...s.activeJob,
+                tripDistanceKm: s.activeJob.tripDistanceKm + deltaKm,
+              }
+            : null,
         })),
 
       resetCareer: () =>
@@ -795,6 +864,7 @@ export const useGameStore = create<GameStoreState>()(
         mobileControlsEnabled: state.mobileControlsEnabled,
         mobileSteeringStyle: state.mobileSteeringStyle,
         speedLimiterEnabled: state.speedLimiterEnabled,
+        weatherSetting: state.weatherSetting,
       }),
     }
   )

@@ -12,6 +12,7 @@ import { TruckVisualRefs } from './TruckMeshBuilder';
  */
 export class CameraRig {
   private readonly camera: THREE.PerspectiveCamera;
+  private readonly domElement: HTMLElement;
   private readonly currentPos = new THREE.Vector3();
   private readonly currentLook = new THREE.Vector3();
   private readonly desiredPos = new THREE.Vector3();
@@ -20,6 +21,8 @@ export class CameraRig {
 
   private orbitYaw = 0.65;
   private orbitPitch = 0.28;
+  private cabLookYaw = 0;
+  private cabLookPitch = 0;
   private isDragging = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
@@ -27,10 +30,21 @@ export class CameraRig {
 
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
     this.camera = camera;
+    this.domElement = domElement;
     domElement.addEventListener('pointerdown', this.onPointerDown);
+    domElement.addEventListener('dblclick', this.onDoubleClick);
     window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
   }
+
+  public resetCabLook(): void {
+    this.cabLookYaw = 0;
+    this.cabLookPitch = 0;
+  }
+
+  private readonly onDoubleClick = (): void => {
+    this.resetCabLook();
+  };
 
   private readonly onPointerDown = (e: PointerEvent): void => {
     this.isDragging = true;
@@ -46,6 +60,9 @@ export class CameraRig {
     this.lastPointerY = e.clientY;
     this.orbitYaw -= dx * 0.006;
     this.orbitPitch = THREE.MathUtils.clamp(this.orbitPitch + dy * 0.004, 0.08, 1.05);
+    // First-person cab head look (clamp comfortably to left/right side windows)
+    this.cabLookYaw = THREE.MathUtils.clamp(this.cabLookYaw - dx * 0.005, -1.25, 1.25);
+    this.cabLookPitch = THREE.MathUtils.clamp(this.cabLookPitch - dy * 0.0035, -0.35, 0.32);
   };
 
   private readonly onPointerUp = (): void => {
@@ -92,15 +109,21 @@ export class CameraRig {
     }
 
     if (mode === 1) {
-      // First-person LHD driver eye inside cab suspension group:
-      // frames upper rim of steering wheel, dynamic gauges, GPS satnav, wipers, and highway horizon
+      // First-person LHD driver eye inside cab suspension group with mouse-drag head look:
+      // frames upper rim of steering wheel, dynamic gauges, A-pillar SatNav, wipers, and road
       visuals.tractorRoot.updateMatrixWorld(true);
       this.tempVec.set(0.58, 2.58, 1.72);
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredPos.copy(this.tempVec);
 
       const lookOffsetSide = physics.steerAngleRad * 6.0;
-      this.tempVec.set(0.58 + lookOffsetSide, 2.34, 22);
+      const headYawSin = Math.sin(this.cabLookYaw);
+      const headYawCos = Math.cos(this.cabLookYaw);
+      this.tempVec.set(
+        0.58 + lookOffsetSide * headYawCos + headYawSin * 20,
+        2.34 + this.cabLookPitch * 14,
+        1.72 + headYawCos * 20.3
+      );
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredLook.copy(this.tempVec);
 
@@ -189,6 +212,8 @@ export class CameraRig {
   }
 
   public dispose(): void {
+    this.domElement.removeEventListener('pointerdown', this.onPointerDown);
+    this.domElement.removeEventListener('dblclick', this.onDoubleClick);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
   }
