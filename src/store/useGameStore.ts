@@ -1,0 +1,590 @@
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+export type QualityPreset = 'low' | 'medium' | 'high';
+export type GamePhase = 'menu' | 'playing';
+export type ActiveModal = 'none' | 'jobs' | 'garage' | 'map' | 'settings' | 'delivery_summary';
+export type TransmissionMode = 'auto' | 'sequential';
+export type HeadlightMode = 0 | 1 | 2; // 0: Off, 1: Low/DRL, 2: High Beam
+export type CameraMode = 1 | 2 | 3 | 4;
+export type AdvisorTab = 'nav' | 'cargo' | 'truck' | 'controls';
+
+export interface EngineUpgradeTier {
+  tier: number;
+  name: string;
+  hp: number;
+  maxTorqueNm: number;
+  priceEur: number;
+}
+
+export interface TankUpgradeTier {
+  tier: number;
+  name: string;
+  capacityLiters: number;
+  priceEur: number;
+}
+
+export const ENGINE_TIERS: EngineUpgradeTier[] = [
+  { tier: 0, name: 'D11 380 Euro 6', hp: 380, maxTorqueNm: 1850, priceEur: 0 },
+  { tier: 1, name: 'D13 540 Turbo-Compound', hp: 540, maxTorqueNm: 2650, priceEur: 18500 },
+  { tier: 2, name: 'V8 750 Performance', hp: 750, maxTorqueNm: 3550, priceEur: 42000 },
+];
+
+export const TANK_TIERS: TankUpgradeTier[] = [
+  { tier: 0, name: '标准 450L 铝制油箱', capacityLiters: 450, priceEur: 0 },
+  { tier: 1, name: '长途 750L 双腔油箱', capacityLiters: 750, priceEur: 6200 },
+  { tier: 2, name: '旗舰 1100L 洲际油箱', capacityLiters: 1100, priceEur: 14500 },
+];
+
+export const TRUCK_PAINT_PRESETS = [
+  { name: '北欧烈焰橙', hex: '#d97706' },
+  { name: '波罗的海深蓝', hex: '#1d4ed8' },
+  { name: '阿尔卑斯冰川白', hex: '#e2e8f0' },
+  { name: '慕尼黑曜石黑', hex: '#1e293b' },
+  { name: '斯堪尼亚宝石红', hex: '#b91c1c' },
+  { name: '黑森林翡翠绿', hex: '#047857' },
+] as const;
+
+export interface FreightJob {
+  id: string;
+  cargoName: string;
+  cargoCategory: string;
+  weightTons: number;
+  fragile: boolean;
+  urgent: boolean;
+  originCityId: string;
+  originCityName: string;
+  originDepotId: string;
+  originDepotName: string;
+  destinationCityId: string;
+  destinationCityName: string;
+  destinationDepotId: string;
+  destinationDepotName: string;
+  distanceKm: number;
+  basePayEur: number;
+  xpReward: number;
+  timeLimitMin: number;
+  trailerColor: string;
+}
+
+export interface ActiveJobState {
+  job: FreightJob;
+  acceptedAtMs: number;
+  remainingSeconds: number;
+  cargoHealth: number; // 0..100
+  pickedUp: boolean;
+}
+
+export interface DeliveryResult {
+  job: FreightJob;
+  basePayEur: number;
+  parkingBonusEur: number;
+  damagePenaltyEur: number;
+  totalEarnedEur: number;
+  xpEarned: number;
+  manualParking: boolean;
+  cargoHealth: number;
+}
+
+export interface NearbyInteraction {
+  kind: 'depot_job' | 'fuel' | 'repair' | 'service_hub' | 'delivery_bay';
+  label: string;
+  sublabel: string;
+  depotId?: string;
+  cityId?: string;
+}
+
+export interface ParkingGuideState {
+  active: boolean;
+  aligned: boolean;
+  distanceMeters: number;
+  angleErrorDeg: number;
+  speedKmh: number;
+  readyToDeliver: boolean;
+}
+
+export interface HudNotification {
+  id: number;
+  type: 'info' | 'warning' | 'fine' | 'success';
+  title: string;
+  detail: string;
+  createdAt: number;
+}
+
+export interface TelemetrySnapshot {
+  speedKmh: number;
+  rpm: number;
+  gear: number; // -1=R, 0=N, 1..12=Forward
+  gearLabel: string;
+  throttle: number;
+  brake: number;
+  steerAngleNorm: number;
+  cruiseControlKmh: number | null;
+  retarderLevel: number; // 0..3
+  parkingBrake: boolean;
+  headlightMode: HeadlightMode;
+  leftBlinker: boolean;
+  rightBlinker: boolean;
+  hazardLights: boolean;
+  blinkerLit: boolean;
+  trailerAttached: boolean;
+  hitchAngleDeg: number;
+  jackknifeWarning: boolean;
+  speedLimitKmh: number;
+  isSpeeding: boolean;
+  odometerKm: number;
+  fps: number;
+  timeOfDayHours: number; // 0..24
+  currentCityName: string;
+  navDistanceMeters: number;
+  navEtaSeconds: number;
+  navInstruction: string;
+  truckX: number;
+  truckZ: number;
+  truckHeadingRad: number;
+  trailerX: number;
+  trailerZ: number;
+  trailerHeadingRad: number;
+}
+
+interface PersistedCareerState {
+  selectedMapId: string;
+  moneyEur: number;
+  xp: number;
+  level: number;
+  completedJobs: number;
+  totalDistanceKm: number;
+  engineTier: number;
+  tankTier: number;
+  paintHex: string;
+  truckHealth: number; // 0..100
+  fuelLiters: number;
+  qualityPreset: QualityPreset;
+  showFps: boolean;
+  mirrorsEnabled: boolean;
+  audioEnabled: boolean;
+  masterVolume: number;
+}
+
+interface GameStoreState extends PersistedCareerState {
+  gamePhase: GamePhase;
+  activeModal: ActiveModal;
+  cameraMode: CameraMode;
+  advisorTab: AdvisorTab;
+  transmissionMode: TransmissionMode;
+  availableJobs: FreightJob[];
+  activeJob: ActiveJobState | null;
+  lastDeliveryResult: DeliveryResult | null;
+  nearbyInteraction: NearbyInteraction | null;
+  parkingGuide: ParkingGuideState;
+  notifications: HudNotification[];
+  speedCameraFlashAt: number;
+  telemetry: TelemetrySnapshot;
+
+  // Actions
+  setGamePhase: (phase: GamePhase) => void;
+  setSelectedMapId: (mapId: string) => void;
+  setActiveModal: (modal: ActiveModal) => void;
+  setCameraMode: (mode: CameraMode) => void;
+  setAdvisorTab: (tab: AdvisorTab) => void;
+  toggleTransmissionMode: () => void;
+  setQualityPreset: (preset: QualityPreset) => void;
+  setShowFps: (show: boolean) => void;
+  setMirrorsEnabled: (enabled: boolean) => void;
+  setAudioEnabled: (enabled: boolean) => void;
+  setMasterVolume: (vol: number) => void;
+
+  // Gameplay & economy actions
+  setAvailableJobs: (jobs: FreightJob[]) => void;
+  acceptJob: (job: FreightJob) => void;
+  cancelActiveJob: () => void;
+  damageCargo: (deltaPct: number) => void;
+  damageTruck: (deltaPct: number) => void;
+  consumeFuel: (liters: number) => void;
+  refuelFull: () => number;
+  repairTruckFull: () => number;
+  applyFine: (amountEur: number, reason: string) => void;
+  upgradeEngine: (tier: number) => boolean;
+  upgradeTank: (tier: number) => boolean;
+  setPaintHex: (hex: string) => void;
+  completeDelivery: (manualParking: boolean) => DeliveryResult | null;
+
+  // Runtime updates from GameEngine
+  updateTelemetry: (partial: Partial<TelemetrySnapshot>) => void;
+  setNearbyInteraction: (interaction: NearbyInteraction | null) => void;
+  setParkingGuide: (guide: ParkingGuideState) => void;
+  pushNotification: (type: HudNotification['type'], title: string, detail: string) => void;
+  triggerSpeedCameraFlash: () => void;
+  tickJobTimer: (dtSec: number) => void;
+  addCareerDistance: (deltaKm: number) => void;
+  resetCareer: () => void;
+}
+
+const DEFAULT_TELEMETRY: TelemetrySnapshot = {
+  speedKmh: 0,
+  rpm: 650,
+  gear: 0,
+  gearLabel: 'N',
+  throttle: 0,
+  brake: 0,
+  steerAngleNorm: 0,
+  cruiseControlKmh: null,
+  retarderLevel: 0,
+  parkingBrake: true,
+  headlightMode: 1,
+  leftBlinker: false,
+  rightBlinker: false,
+  hazardLights: false,
+  blinkerLit: false,
+  trailerAttached: true,
+  hitchAngleDeg: 0,
+  jackknifeWarning: false,
+  speedLimitKmh: 80,
+  isSpeeding: false,
+  odometerKm: 0,
+  fps: 60,
+  timeOfDayHours: 8.5,
+  currentCityName: '慕尼黑物流枢纽',
+  navDistanceMeters: 0,
+  navEtaSeconds: 0,
+  navInstruction: '等待接取货运任务',
+  truckX: 0,
+  truckZ: 0,
+  truckHeadingRad: 0,
+  trailerX: 0,
+  trailerZ: 0,
+  trailerHeadingRad: 0,
+};
+
+const DEFAULT_PARKING_GUIDE: ParkingGuideState = {
+  active: false,
+  aligned: false,
+  distanceMeters: 999,
+  angleErrorDeg: 0,
+  speedKmh: 0,
+  readyToDeliver: false,
+};
+
+const INITIAL_PERSISTED: PersistedCareerState = {
+  selectedMapId: 'central-europe',
+  moneyEur: 12500,
+  xp: 0,
+  level: 1,
+  completedJobs: 0,
+  totalDistanceKm: 0,
+  engineTier: 0,
+  tankTier: 0,
+  paintHex: '#d97706',
+  truckHealth: 100,
+  fuelLiters: 450,
+  qualityPreset: 'medium',
+  showFps: true,
+  mirrorsEnabled: true,
+  audioEnabled: true,
+  masterVolume: 0.6,
+};
+
+let notificationSeq = 1;
+
+export function getMaxFuelLiters(tankTier: number): number {
+  return (TANK_TIERS[tankTier] ?? TANK_TIERS[0]!).capacityLiters;
+}
+
+export function computeLevelFromXp(xp: number): number {
+  return Math.max(1, Math.floor(Math.sqrt(xp / 250)) + 1);
+}
+
+export const useGameStore = create<GameStoreState>()(
+  persist(
+    (set, get) => ({
+      ...INITIAL_PERSISTED,
+      gamePhase: 'menu',
+      activeModal: 'none',
+      cameraMode: 1,
+      advisorTab: 'nav',
+      transmissionMode: 'auto',
+      availableJobs: [],
+      activeJob: null,
+      lastDeliveryResult: null,
+      nearbyInteraction: null,
+      parkingGuide: DEFAULT_PARKING_GUIDE,
+      notifications: [],
+      speedCameraFlashAt: 0,
+      telemetry: DEFAULT_TELEMETRY,
+
+      setGamePhase: (gamePhase) => set({ gamePhase }),
+      setSelectedMapId: (selectedMapId) => set({ selectedMapId }),
+      setActiveModal: (activeModal) => set({ activeModal }),
+      setCameraMode: (cameraMode) => set({ cameraMode }),
+      setAdvisorTab: (advisorTab) => set({ advisorTab }),
+      toggleTransmissionMode: () =>
+        set((s) => ({
+          transmissionMode: s.transmissionMode === 'auto' ? 'sequential' : 'auto',
+        })),
+      setQualityPreset: (qualityPreset) => set({ qualityPreset }),
+      setShowFps: (showFps) => set({ showFps }),
+      setMirrorsEnabled: (mirrorsEnabled) => set({ mirrorsEnabled }),
+      setAudioEnabled: (audioEnabled) => set({ audioEnabled }),
+      setMasterVolume: (masterVolume) => set({ masterVolume: Math.max(0, Math.min(1, masterVolume)) }),
+
+      setAvailableJobs: (availableJobs) => set({ availableJobs }),
+
+      acceptJob: (job) => {
+        set({
+          activeJob: {
+            job,
+            acceptedAtMs: Date.now(),
+            remainingSeconds: job.timeLimitMin * 60,
+            cargoHealth: 100,
+            pickedUp: true,
+          },
+          activeModal: 'none',
+        });
+        get().pushNotification(
+          'info',
+          `已承接货运: ${job.cargoName}`,
+          `${job.originCityName} → ${job.destinationCityName} (${job.weightTons}t · €${job.basePayEur.toLocaleString()})`
+        );
+      },
+
+      cancelActiveJob: () => {
+        const current = get().activeJob;
+        if (!current) return;
+        const penalty = Math.min(get().moneyEur, 800);
+        set((s) => ({
+          activeJob: null,
+          moneyEur: Math.max(0, s.moneyEur - penalty),
+        }));
+        get().pushNotification('warning', '已放弃当前订单', `扣除违约金 €${penalty}`);
+      },
+
+      damageCargo: (deltaPct) =>
+        set((s) => {
+          if (!s.activeJob) return s;
+          const nextHealth = Math.max(0, s.activeJob.cargoHealth - deltaPct);
+          return {
+            activeJob: { ...s.activeJob, cargoHealth: nextHealth },
+          };
+        }),
+
+      damageTruck: (deltaPct) =>
+        set((s) => ({
+          truckHealth: Math.max(10, s.truckHealth - deltaPct),
+        })),
+
+      consumeFuel: (liters) =>
+        set((s) => ({
+          fuelLiters: Math.max(0, s.fuelLiters - liters),
+        })),
+
+      refuelFull: () => {
+        const s = get();
+        const maxFuel = getMaxFuelLiters(s.tankTier);
+        const needed = Math.max(0, maxFuel - s.fuelLiters);
+        if (needed < 1) {
+          s.pushNotification('info', '油箱已满', '无需加油');
+          return 0;
+        }
+        const cost = Math.round(needed * 1.65);
+        if (s.moneyEur < cost) {
+          const affordableLiters = Math.floor(s.moneyEur / 1.65);
+          if (affordableLiters <= 0) {
+            s.pushNotification('warning', '余额不足', '无法支付柴油费用');
+            return 0;
+          }
+          const actualCost = Math.round(affordableLiters * 1.65);
+          set({
+            fuelLiters: Math.min(maxFuel, s.fuelLiters + affordableLiters),
+            moneyEur: s.moneyEur - actualCost,
+          });
+          s.pushNotification('success', '部分加油完成', `加注 ${affordableLiters}L · 花费 €${actualCost}`);
+          return actualCost;
+        }
+        set({
+          fuelLiters: maxFuel,
+          moneyEur: s.moneyEur - cost,
+        });
+        s.pushNotification('success', '油箱已加满', `加注 ${Math.round(needed)}L 柴油 · 花费 €${cost}`);
+        return cost;
+      },
+
+      repairTruckFull: () => {
+        const s = get();
+        const missing = Math.max(0, 100 - s.truckHealth);
+        if (missing < 0.5) {
+          s.pushNotification('info', '车况良好', '当前牵引车无需维修');
+          return 0;
+        }
+        const cost = Math.round(missing * 45);
+        if (s.moneyEur < cost) {
+          s.pushNotification('warning', '资金不足', `全面整修需要 €${cost.toLocaleString()}`);
+          return 0;
+        }
+        set({
+          truckHealth: 100,
+          moneyEur: s.moneyEur - cost,
+        });
+        s.pushNotification('success', '车辆维修完成', `车况恢复 100% · 花费 €${cost.toLocaleString()}`);
+        return cost;
+      },
+
+      applyFine: (amountEur, reason) => {
+        set((s) => ({
+          moneyEur: Math.max(0, s.moneyEur - amountEur),
+        }));
+        get().pushNotification('fine', `交通违章罚款 -€${amountEur}`, reason);
+      },
+
+      upgradeEngine: (tier) => {
+        const spec = ENGINE_TIERS[tier];
+        const s = get();
+        if (!spec || tier <= s.engineTier) return false;
+        if (s.moneyEur < spec.priceEur) {
+          s.pushNotification('warning', '余额不足', `升级 ${spec.name} 需要 €${spec.priceEur.toLocaleString()}`);
+          return false;
+        }
+        set({
+          engineTier: tier,
+          moneyEur: s.moneyEur - spec.priceEur,
+        });
+        s.pushNotification('success', '引擎改装完成', `已装配 ${spec.name} (${spec.hp} HP)`);
+        return true;
+      },
+
+      upgradeTank: (tier) => {
+        const spec = TANK_TIERS[tier];
+        const s = get();
+        if (!spec || tier <= s.tankTier) return false;
+        if (s.moneyEur < spec.priceEur) {
+          s.pushNotification('warning', '余额不足', `升级 ${spec.name} 需要 €${spec.priceEur.toLocaleString()}`);
+          return false;
+        }
+        set({
+          tankTier: tier,
+          fuelLiters: spec.capacityLiters,
+          moneyEur: s.moneyEur - spec.priceEur,
+        });
+        s.pushNotification('success', '油箱改装完成', `容量提升至 ${spec.capacityLiters}L`);
+        return true;
+      },
+
+      setPaintHex: (paintHex) => {
+        const s = get();
+        const cost = 1200;
+        if (s.paintHex === paintHex) return;
+        if (s.moneyEur < cost) {
+          s.pushNotification('warning', '余额不足', `定制金属车漆需要 €${cost}`);
+          return;
+        }
+        set({ paintHex, moneyEur: s.moneyEur - cost });
+        s.pushNotification('success', '车漆喷涂完成', `花费 €${cost}`);
+      },
+
+      completeDelivery: (manualParking) => {
+        const s = get();
+        if (!s.activeJob) return null;
+        const { job, cargoHealth } = s.activeJob;
+        const basePayEur = job.basePayEur;
+        const parkingBonusEur = manualParking ? Math.round(basePayEur * 0.3) : 0;
+        const damageRatio = Math.max(0, (100 - cargoHealth) / 100);
+        const damagePenaltyEur = Math.round(basePayEur * damageRatio * 0.65);
+        const totalEarnedEur = Math.max(250, basePayEur + parkingBonusEur - damagePenaltyEur);
+        const xpEarned = job.xpReward + (manualParking ? Math.round(job.xpReward * 0.35) : 0);
+        const nextXp = s.xp + xpEarned;
+
+        const result: DeliveryResult = {
+          job,
+          basePayEur,
+          parkingBonusEur,
+          damagePenaltyEur,
+          totalEarnedEur,
+          xpEarned,
+          manualParking,
+          cargoHealth,
+        };
+
+        set({
+          moneyEur: s.moneyEur + totalEarnedEur,
+          xp: nextXp,
+          level: computeLevelFromXp(nextXp),
+          completedJobs: s.completedJobs + 1,
+          activeJob: null,
+          lastDeliveryResult: result,
+          activeModal: 'delivery_summary',
+          parkingGuide: DEFAULT_PARKING_GUIDE,
+        });
+        return result;
+      },
+
+      updateTelemetry: (partial) =>
+        set((s) => ({
+          telemetry: { ...s.telemetry, ...partial },
+        })),
+
+      setNearbyInteraction: (nearbyInteraction) => set({ nearbyInteraction }),
+      setParkingGuide: (parkingGuide) => set({ parkingGuide }),
+
+      pushNotification: (type, title, detail) =>
+        set((s) => {
+          const item: HudNotification = {
+            id: notificationSeq++,
+            type,
+            title,
+            detail,
+            createdAt: Date.now(),
+          };
+          return {
+            notifications: [item, ...s.notifications].slice(0, 4),
+          };
+        }),
+
+      triggerSpeedCameraFlash: () => set({ speedCameraFlashAt: Date.now() }),
+
+      tickJobTimer: (dtSec) =>
+        set((s) => {
+          if (!s.activeJob) return s;
+          return {
+            activeJob: {
+              ...s.activeJob,
+              remainingSeconds: Math.max(0, s.activeJob.remainingSeconds - dtSec),
+            },
+          };
+        }),
+
+      addCareerDistance: (deltaKm) =>
+        set((s) => ({
+          totalDistanceKm: s.totalDistanceKm + deltaKm,
+        })),
+
+      resetCareer: () =>
+        set({
+          ...INITIAL_PERSISTED,
+          activeJob: null,
+          lastDeliveryResult: null,
+          notifications: [],
+          telemetry: DEFAULT_TELEMETRY,
+        }),
+    }),
+    {
+      name: 'eurohaul_save_v1',
+      partialize: (state) => ({
+        selectedMapId: state.selectedMapId,
+        moneyEur: state.moneyEur,
+        xp: state.xp,
+        level: state.level,
+        completedJobs: state.completedJobs,
+        totalDistanceKm: state.totalDistanceKm,
+        engineTier: state.engineTier,
+        tankTier: state.tankTier,
+        paintHex: state.paintHex,
+        truckHealth: state.truckHealth,
+        fuelLiters: state.fuelLiters,
+        qualityPreset: state.qualityPreset,
+        showFps: state.showFps,
+        mirrorsEnabled: state.mirrorsEnabled,
+        audioEnabled: state.audioEnabled,
+        masterVolume: state.masterVolume,
+      }),
+    }
+  )
+);
