@@ -227,7 +227,7 @@ export class EnvironmentSystem {
 
   private streetLampMaterial: THREE.MeshStandardMaterial | null = null;
   private fogScale = 1.0;
-  private shadowFrustumHalf = 85;
+  private shadowFrustumHalf = 65;
   private shadowMapSize = 1024;
 
   // IBL state
@@ -314,6 +314,7 @@ export class EnvironmentSystem {
     this.rainLines = new THREE.LineSegments(this.rainGeo, this.rainMat);
     this.rainLines.frustumCulled = false;
     this.rainLines.visible = false;
+    this.rainLines.layers.set(1); // Skip rain streaks inside virtual mirror passes
     this.scene.add(this.rainLines);
 
     this.applyAtmosphere(0, 0);

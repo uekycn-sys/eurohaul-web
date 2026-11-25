@@ -52,6 +52,12 @@ export class GameEngine {
   private readonly mirrorBlitMat: THREE.MeshBasicMaterial;
   private mirrorUpdateInterval = 2;
   private frameIndex = 0;
+  private lastLeftMirrorMs = 0;
+  private lastRightMirrorMs = 0;
+  private currentDrawCalls = 0;
+  private baseTargetPixelRatio = 1;
+  private currentPixelRatio = 1;
+  private fpsHistory: number[] = [];
 
   private readonly textures: ProceduralTextures;
   private readonly env: EnvironmentSystem;
@@ -86,7 +92,7 @@ export class GameEngine {
   private elapsedSec = 0;
 
   private telemetryAccumSec = 0;
-  private readonly telemetryIntervalSec = 1 / 18;
+  private readonly telemetryIntervalSec = 1 / 14;
   private fpsFrames = 0;
   private fpsAccumSec = 0;
   private currentFps = 60;
@@ -108,6 +114,7 @@ export class GameEngine {
       stencil: false,
     });
     this.renderer.autoClear = false;
+    this.renderer.info.autoReset = false;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
@@ -122,14 +129,20 @@ export class GameEngine {
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
     this.camera = new THREE.PerspectiveCamera(58, width / height, 0.25, 1600);
-    this.leftMirrorCam = new THREE.PerspectiveCamera(46, 196 / 108, 0.4, 240);
-    this.rightMirrorCam = new THREE.PerspectiveCamera(46, 196 / 108, 0.4, 240);
+    this.camera.layers.enableAll();
 
-    this.mirrorRtLeft = new THREE.WebGLRenderTarget(196, 108, {
+    this.leftMirrorCam = new THREE.PerspectiveCamera(46, 256 / 160, 0.4, 160);
+    this.leftMirrorCam.layers.set(0);
+    this.rightMirrorCam = new THREE.PerspectiveCamera(46, 256 / 160, 0.4, 160);
+    this.rightMirrorCam.layers.set(0);
+
+    const initMirrorW = store.qualityPreset === 'ultra' ? 320 : 256;
+    const initMirrorH = store.qualityPreset === 'ultra' ? 200 : 160;
+    this.mirrorRtLeft = new THREE.WebGLRenderTarget(initMirrorW, initMirrorH, {
       depthBuffer: true,
       stencilBuffer: false,
     });
-    this.mirrorRtRight = new THREE.WebGLRenderTarget(196, 108, {
+    this.mirrorRtRight = new THREE.WebGLRenderTarget(initMirrorW, initMirrorH, {
       depthBuffer: true,
       stencilBuffer: false,
     });
@@ -416,10 +429,18 @@ export class GameEngine {
     const enableDetailMaps = preset !== 'mobile_fast';
 
     this.textures.configureQuality(preset);
-    this.renderer.setPixelRatio(Math.min(dpr, spec.maxDpr));
+    this.baseTargetPixelRatio = Math.min(dpr, spec.maxDpr);
+    this.currentPixelRatio = this.baseTargetPixelRatio;
+    this.fpsHistory = [];
+    this.renderer.setPixelRatio(this.currentPixelRatio);
     this.renderer.shadowMap.enabled = spec.shadowsEnabled;
     this.truckVisuals.setBlobShadowVisible(!spec.shadowsEnabled);
     this.truckVisuals.setPbrDetailEnabled(enableDetailMaps);
+
+    const mirrorW = preset === 'ultra' ? 320 : 256;
+    const mirrorH = preset === 'ultra' ? 200 : 160;
+    this.mirrorRtLeft.setSize(mirrorW, mirrorH);
+    this.mirrorRtRight.setSize(mirrorW, mirrorH);
 
     this.env.configureForPreset(preset, spec.shadowsEnabled, spec.shadowMapSize, spec.fogScale);
     this.camera.far = spec.cameraFar;
@@ -491,6 +512,7 @@ export class GameEngine {
       this.currentFps = Math.round(this.fpsFrames / this.fpsAccumSec);
       this.fpsFrames = 0;
       this.fpsAccumSec = 0;
+      this.updateDynamicResolution();
     }
 
     this.accumulatorSec += frameDtSec;
@@ -534,44 +556,97 @@ export class GameEngine {
     }
 
     this.frameIndex += 1;
-    this.renderFrame(store.gamePhase === 'playing' && store.activeModal === 'none' && store.mirrorsEnabled);
+    this.renderFrame(
+      store.gamePhase === 'playing' && store.activeModal === 'none' && store.mirrorsEnabled,
+      nowMs
+    );
   };
 
-  private renderFrame(renderMirrors: boolean): void {
+  private updateDynamicResolution(): void {
+    const store = useGameStore.getState();
+    if (!store.drsEnabled) {
+      if (Math.abs(this.currentPixelRatio - this.baseTargetPixelRatio) >= 0.02) {
+        this.currentPixelRatio = this.baseTargetPixelRatio;
+        this.renderer.setPixelRatio(this.currentPixelRatio);
+        this.handleResize();
+      }
+      this.fpsHistory = [];
+      return;
+    }
+
+    if (store.gamePhase !== 'playing' || store.activeModal !== 'none') return;
+
+    this.fpsHistory.push(this.currentFps);
+    if (this.fpsHistory.length > 4) this.fpsHistory.shift();
+    if (this.fpsHistory.length < 4) return;
+
+    const avgFps =
+      this.fpsHistory.reduce((acc, v) => acc + v, 0) / this.fpsHistory.length;
+    let nextRatio = this.currentPixelRatio;
+    if (avgFps < 45 && this.currentPixelRatio > 0.85) {
+      nextRatio = Math.max(0.85, Number((this.currentPixelRatio - 0.1).toFixed(2)));
+    } else if (avgFps > 56 && this.currentPixelRatio < this.baseTargetPixelRatio) {
+      nextRatio = Math.min(
+        this.baseTargetPixelRatio,
+        Number((this.currentPixelRatio + 0.08).toFixed(2))
+      );
+    }
+
+    if (Math.abs(nextRatio - this.currentPixelRatio) >= 0.02) {
+      this.currentPixelRatio = nextRatio;
+      this.renderer.setPixelRatio(this.currentPixelRatio);
+      this.handleResize();
+    }
+  }
+
+  private renderFrame(renderMirrors: boolean, nowMs: number): void {
     const w = this.viewportWidth;
     const h = this.viewportHeight;
+    this.renderer.info.reset();
 
-    // Update cached offscreen mirror RenderTargets at configured cadence (1/2/4 frames)
+    // Odd/even alternating side mirror pass, capped at max 20Hz per mirror, skipping shadows & Layer 1 props
     const canShowMirrors = renderMirrors && w >= 640;
-    if (canShowMirrors && this.frameIndex % this.mirrorUpdateInterval === 0) {
-      this.truckVisuals.tractorRoot.updateMatrixWorld(true);
+    const mirrorMinIntervalMs = Math.max(50, this.mirrorUpdateInterval * 16.6);
+    if (canShowMirrors) {
+      const renderLeft = this.frameIndex % 2 === 0 && nowMs - this.lastLeftMirrorMs >= mirrorMinIntervalMs;
+      const renderRight = !renderLeft && this.frameIndex % 2 === 1 && nowMs - this.lastRightMirrorMs >= mirrorMinIntervalMs;
 
-      // Left mirror (+X)
-      this.tempVecA.set(1.52, 2.55, 2.5);
-      this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-      this.tempVecB.set(2.3, 1.9, -18);
-      this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
-      this.leftMirrorCam.position.copy(this.tempVecA);
-      this.leftMirrorCam.lookAt(this.tempVecB);
+      if (renderLeft || renderRight) {
+        this.truckVisuals.tractorRoot.updateMatrixWorld(true);
+        const prevShadowAuto = this.renderer.shadowMap.autoUpdate;
+        this.renderer.shadowMap.autoUpdate = false;
 
-      this.renderer.setRenderTarget(this.mirrorRtLeft);
-      this.renderer.setScissorTest(false);
-      this.renderer.clear();
-      this.renderer.render(this.scene, this.leftMirrorCam);
+        if (renderLeft) {
+          this.lastLeftMirrorMs = nowMs;
+          this.tempVecA.set(1.52, 2.55, 2.5);
+          this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
+          this.tempVecB.set(2.3, 1.9, -18);
+          this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
+          this.leftMirrorCam.position.copy(this.tempVecA);
+          this.leftMirrorCam.lookAt(this.tempVecB);
 
-      // Right mirror (-X)
-      this.tempVecA.set(-1.52, 2.55, 2.5);
-      this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-      this.tempVecB.set(-2.3, 1.9, -18);
-      this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
-      this.rightMirrorCam.position.copy(this.tempVecA);
-      this.rightMirrorCam.lookAt(this.tempVecB);
+          this.renderer.setRenderTarget(this.mirrorRtLeft);
+          this.renderer.setScissorTest(false);
+          this.renderer.clear();
+          this.renderer.render(this.scene, this.leftMirrorCam);
+        } else {
+          this.lastRightMirrorMs = nowMs;
+          this.tempVecA.set(-1.52, 2.55, 2.5);
+          this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
+          this.tempVecB.set(-2.3, 1.9, -18);
+          this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
+          this.rightMirrorCam.position.copy(this.tempVecA);
+          this.rightMirrorCam.lookAt(this.tempVecB);
 
-      this.renderer.setRenderTarget(this.mirrorRtRight);
-      this.renderer.clear();
-      this.renderer.render(this.scene, this.rightMirrorCam);
+          this.renderer.setRenderTarget(this.mirrorRtRight);
+          this.renderer.setScissorTest(false);
+          this.renderer.clear();
+          this.renderer.render(this.scene, this.rightMirrorCam);
+        }
 
-      this.renderer.setRenderTarget(null);
+        this.renderer.setRenderTarget(null);
+        this.renderer.shadowMap.autoUpdate = prevShadowAuto;
+      }
     }
 
     // Main camera pass
@@ -581,29 +656,31 @@ export class GameEngine {
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
 
-    if (!canShowMirrors) return;
+    if (canShowMirrors) {
+      // Blit cached 16:10 mirror textures into top-corner viewports (2 quad draws total)
+      const mirrorW = 196;
+      const mirrorH = 122;
+      const marginX = 18;
+      const topY = 66;
+      const scissorY = Math.max(0, h - topY - mirrorH);
 
-    // Blit cached mirror textures into top-corner viewports (ultra-low cost every frame, zero flicker)
-    const mirrorW = 196;
-    const mirrorH = 108;
-    const marginX = 18;
-    const topY = 66;
-    const scissorY = Math.max(0, h - topY - mirrorH);
+      this.renderer.setScissorTest(true);
 
-    this.renderer.setScissorTest(true);
+      this.mirrorBlitMat.map = this.mirrorRtLeft.texture;
+      this.renderer.setViewport(marginX, scissorY, mirrorW, mirrorH);
+      this.renderer.setScissor(marginX, scissorY, mirrorW, mirrorH);
+      this.renderer.render(this.mirrorBlitScene, this.mirrorBlitCam);
 
-    this.mirrorBlitMat.map = this.mirrorRtLeft.texture;
-    this.renderer.setViewport(marginX, scissorY, mirrorW, mirrorH);
-    this.renderer.setScissor(marginX, scissorY, mirrorW, mirrorH);
-    this.renderer.render(this.mirrorBlitScene, this.mirrorBlitCam);
+      const rightX = w - marginX - mirrorW;
+      this.mirrorBlitMat.map = this.mirrorRtRight.texture;
+      this.renderer.setViewport(rightX, scissorY, mirrorW, mirrorH);
+      this.renderer.setScissor(rightX, scissorY, mirrorW, mirrorH);
+      this.renderer.render(this.mirrorBlitScene, this.mirrorBlitCam);
 
-    const rightX = w - marginX - mirrorW;
-    this.mirrorBlitMat.map = this.mirrorRtRight.texture;
-    this.renderer.setViewport(rightX, scissorY, mirrorW, mirrorH);
-    this.renderer.setScissor(rightX, scissorY, mirrorW, mirrorH);
-    this.renderer.render(this.mirrorBlitScene, this.mirrorBlitCam);
+      this.renderer.setScissorTest(false);
+    }
 
-    this.renderer.setScissorTest(false);
+    this.currentDrawCalls = this.renderer.info.render.calls;
   }
 
   private fixedStep(dtSec: number): void {
@@ -865,6 +942,8 @@ export class GameEngine {
       isSpeeding: kmh > this.physics.speedLimitKmh + 5,
       odometerKm: this.physics.odometerKm,
       fps: this.currentFps,
+      drawCalls: this.currentDrawCalls,
+      drsPixelRatio: this.currentPixelRatio,
       timeOfDayHours: this.env.timeOfDayHours,
       rainIntensity: this.env.rainIntensity,
       wipersMode: this.wipersMode,

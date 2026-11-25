@@ -23,7 +23,7 @@ interface MainMenuProps {
   onSelectMap: (mapId: string) => void;
 }
 
-const PRESET_ORDER: QualityPreset[] = ['mobile_fast', 'mobile_balanced', 'high', 'ultra'];
+const PRESET_ORDER: QualityPreset[] = ['mobile_fast', 'mobile_balanced', 'pc_igpu', 'high', 'ultra'];
 
 export function MainMenu({ onSelectMap }: MainMenuProps) {
   const maps = MapRegistry.getAllMaps();
@@ -199,7 +199,7 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
               </span>
             </div>
 
-            <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
               {PRESET_ORDER.map((presetId) => {
                 const preset = QUALITY_SPECS[presetId];
                 return (

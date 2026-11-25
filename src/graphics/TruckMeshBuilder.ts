@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PbrTextureSet, ProceduralTextures } from '../graphics/ProceduralTextures';
+import { GeometryBatcher } from './GeometryBatcher';
 import { HeadlightMode, WipersMode } from '../store/useGameStore';
 
 export interface TruckVisualRefs {
@@ -17,6 +18,7 @@ export interface TruckVisualRefs {
   setBlobShadowVisible: (visible: boolean) => void;
   setPbrDetailEnabled: (enabled: boolean) => void;
   updateWipers: (elapsedSec: number, mode: WipersMode) => void;
+  syncWheelInstances: () => void;
   updateLights: (opts: {
     headlightMode: HeadlightMode;
     nightFactor: number;
@@ -42,6 +44,9 @@ export class TruckMeshBuilder {
 
   public build(initialPaintHex: string): TruckVisualRefs {
     const disposables: { dispose: () => void }[] = [];
+    const tractorBatcher = new GeometryBatcher();
+    const cabBatcher = new GeometryBatcher();
+    const trailerBatcher = new GeometryBatcher();
 
     const tractorRoot = new THREE.Group();
     tractorRoot.name = 'TractorUnit';
@@ -57,48 +62,31 @@ export class TruckMeshBuilder {
       envMapIntensity: 1.15,
     });
     const darkChassisMat = new THREE.MeshStandardMaterial({
-      color: '#222b38',
-      roughness: 0.65,
-      metalness: 0.48,
+      color: '#ffffff',
+      roughness: 0.64,
+      metalness: 0.36,
+      vertexColors: true,
     });
-    const chromeMat = new THREE.MeshStandardMaterial({
-      color: '#e2e8f0',
-      roughness: 0.14,
-      metalness: 0.92,
-      envMapIntensity: 1.3,
+    const metalMat = new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.2,
+      metalness: 0.88,
+      envMapIntensity: 1.2,
+      vertexColors: true,
     });
-    const aluminumMat = new THREE.MeshStandardMaterial({
-      color: '#cbd5e1',
-      roughness: 0.28,
-      metalness: 0.85,
-      envMapIntensity: 1.1,
-    });
-    const trimMat = new THREE.MeshStandardMaterial({
+    const wiperMat = new THREE.MeshStandardMaterial({
       color: '#1e2736',
       roughness: 0.62,
       metalness: 0.22,
     });
-    // Interior soft-touch charcoal/slate materials (never pitch black!)
-    const cabCharcoalMat = new THREE.MeshStandardMaterial({
-      color: '#3b4656',
+    // Interior soft-touch charcoal/slate material (Layer 1: skipped by mirrors, vertex-colored)
+    const cabInteriorMat = new THREE.MeshStandardMaterial({
+      color: '#ffffff',
       roughness: 0.72,
-      metalness: 0.1,
-      emissive: '#1e293b',
-      emissiveIntensity: 0.32,
-    });
-    const cabLeatherMat = new THREE.MeshStandardMaterial({
-      color: '#4c586b',
-      roughness: 0.64,
       metalness: 0.08,
-      emissive: '#263348',
-      emissiveIntensity: 0.36,
-    });
-    const cabHeadlinerMat = new THREE.MeshStandardMaterial({
-      color: '#64748b',
-      roughness: 0.82,
-      metalness: 0.04,
-      emissive: '#334155',
-      emissiveIntensity: 0.38,
+      emissive: '#222e42',
+      emissiveIntensity: 0.34,
+      vertexColors: true,
     });
     const glassMat = new THREE.MeshStandardMaterial({
       color: '#26466d',
@@ -155,12 +143,9 @@ export class TruckMeshBuilder {
     disposables.push(
       paintMat,
       darkChassisMat,
-      chromeMat,
-      aluminumMat,
-      trimMat,
-      cabCharcoalMat,
-      cabLeatherMat,
-      cabHeadlinerMat,
+      metalMat,
+      wiperMat,
+      cabInteriorMat,
       glassMat,
       tireMat,
       rimMat,
@@ -173,112 +158,111 @@ export class TruckMeshBuilder {
       rightSignalMat
     );
 
-    // 1. Chassis Frame, Fifth Wheel, Aluminum Fuel Tanks, Air Tanks & Catwalk
+    // 1. Chassis Frame, Fifth Wheel, Aluminum Fuel Tanks, Air Tanks & Catwalk (batched per material)
     const railGeo = new THREE.BoxGeometry(0.16, 0.28, 6.25);
     for (const rx of [-0.46, 0.46]) {
-      const rail = new THREE.Mesh(railGeo, darkChassisMat);
-      rail.position.set(rx, 0.68, -0.15);
-      rail.castShadow = true;
-      tractorRoot.add(rail);
+      tractorBatcher.add(darkChassisMat, railGeo, {
+        x: rx,
+        y: 0.68,
+        z: -0.15,
+        colorHex: '#222b38',
+        castShadow: true,
+      });
     }
 
     const deckGeo = new THREE.BoxGeometry(1.18, 0.12, 2.8);
-    const deck = new THREE.Mesh(deckGeo, aluminumMat);
-    deck.position.set(0, 0.85, -1.75);
-    tractorRoot.add(deck);
+    tractorBatcher.add(metalMat, deckGeo, { x: 0, y: 0.85, z: -1.75, colorHex: '#cbd5e1' });
 
     const fifthWheelGeo = new THREE.CylinderGeometry(0.5, 0.54, 0.14, 16);
-    const fifthWheel = new THREE.Mesh(fifthWheelGeo, darkChassisMat);
-    fifthWheel.position.set(0, 0.96, -1.65);
-    tractorRoot.add(fifthWheel);
+    tractorBatcher.add(darkChassisMat, fifthWheelGeo, {
+      x: 0,
+      y: 0.96,
+      z: -1.65,
+      colorHex: '#222b38',
+    });
 
-    // Brushed aluminum cylindrical/D-shaped fuel tanks + black mounting straps
     const fuelTankGeo = new THREE.CylinderGeometry(0.32, 0.32, 1.88, 12);
     fuelTankGeo.rotateX(Math.PI / 2);
     const strapGeo = new THREE.TorusGeometry(0.33, 0.025, 6, 14);
     for (const tx of [-0.88, 0.88]) {
-      const tank = new THREE.Mesh(fuelTankGeo, aluminumMat);
-      tank.position.set(tx, 0.64, -0.35);
-      tank.castShadow = true;
-      tractorRoot.add(tank);
+      tractorBatcher.add(metalMat, fuelTankGeo, {
+        x: tx,
+        y: 0.64,
+        z: -0.35,
+        colorHex: '#cbd5e1',
+        castShadow: true,
+      });
       for (const sz of [-0.9, 0.2]) {
-        const strap = new THREE.Mesh(strapGeo, trimMat);
-        strap.position.set(tx, 0.64, sz);
-        tractorRoot.add(strap);
+        tractorBatcher.add(darkChassisMat, strapGeo, {
+          x: tx,
+          y: 0.64,
+          z: sz,
+          colorHex: '#1e2736',
+        });
       }
     }
 
-    // Compressed air tanks tucked inside rear frame
     const airTankGeo = new THREE.CylinderGeometry(0.11, 0.11, 0.72, 10);
     airTankGeo.rotateZ(Math.PI / 2);
     for (const az of [0.15, 0.42]) {
-      const at = new THREE.Mesh(airTankGeo, darkChassisMat);
-      at.position.set(0, 0.56, az);
-      tractorRoot.add(at);
+      tractorBatcher.add(darkChassisMat, airTankGeo, {
+        x: 0,
+        y: 0.56,
+        z: az,
+        colorHex: '#222b38',
+      });
     }
 
-    // Sculpted front bumper with recessed fog lights & air intake dam
     const bumperGeo = new THREE.BoxGeometry(2.48, 0.44, 0.48);
-    const bumper = new THREE.Mesh(bumperGeo, trimMat);
-    bumper.position.set(0, 0.56, 2.88);
-    bumper.castShadow = true;
-    tractorRoot.add(bumper);
+    tractorBatcher.add(darkChassisMat, bumperGeo, {
+      x: 0,
+      y: 0.56,
+      z: 2.88,
+      colorHex: '#1e2736',
+      castShadow: true,
+    });
 
     const bumperLipGeo = new THREE.BoxGeometry(2.38, 0.1, 0.52);
-    const bumperLip = new THREE.Mesh(bumperLipGeo, paintMat);
-    bumperLip.position.set(0, 0.36, 2.9);
-    tractorRoot.add(bumperLip);
+    tractorBatcher.add(paintMat, bumperLipGeo, { x: 0, y: 0.36, z: 2.9 });
 
-    // Fog lamps in lower bumper
     const fogGeo = new THREE.BoxGeometry(0.24, 0.11, 0.08);
     for (const fx of [-0.88, 0.88]) {
-      const fog = new THREE.Mesh(fogGeo, fogLampMat);
-      fog.position.set(fx, 0.48, 3.12);
-      tractorRoot.add(fog);
+      tractorBatcher.add(fogLampMat, fogGeo, { x: fx, y: 0.48, z: 3.12 });
     }
 
-    // Rear wheel arches / mudguards & rear taillight bar
     const mudguardGeo = new THREE.BoxGeometry(0.65, 0.2, 2.75);
     for (const mx of [-0.94, 0.94]) {
-      const mg = new THREE.Mesh(mudguardGeo, trimMat);
-      mg.position.set(mx, 1.07, -1.72);
-      tractorRoot.add(mg);
+      tractorBatcher.add(darkChassisMat, mudguardGeo, {
+        x: mx,
+        y: 1.07,
+        z: -1.72,
+        colorHex: '#1e2736',
+      });
     }
 
     const rearBarGeo = new THREE.BoxGeometry(2.38, 0.24, 0.18);
-    const rearBar = new THREE.Mesh(rearBarGeo, trimMat);
-    rearBar.position.set(0, 0.66, -3.18);
-    tractorRoot.add(rearBar);
+    tractorBatcher.add(darkChassisMat, rearBarGeo, {
+      x: 0,
+      y: 0.66,
+      z: -3.18,
+      colorHex: '#1e2736',
+    });
 
     const lampSmallGeo = new THREE.BoxGeometry(0.22, 0.14, 0.08);
-    const tBrakeL = new THREE.Mesh(lampSmallGeo, brakeMat);
-    tBrakeL.position.set(0.88, 0.66, -3.26);
-    const tBrakeR = new THREE.Mesh(lampSmallGeo, brakeMat);
-    tBrakeR.position.set(-0.88, 0.66, -3.26);
-    const tSigL = new THREE.Mesh(lampSmallGeo, leftSignalMat);
-    tSigL.position.set(1.08, 0.66, -3.26);
-    const tSigR = new THREE.Mesh(lampSmallGeo, rightSignalMat);
-    tSigR.position.set(-1.08, 0.66, -3.26);
-    const tRevL = new THREE.Mesh(lampSmallGeo, reverseMat);
-    tRevL.position.set(0.64, 0.66, -3.26);
-    tractorRoot.add(tBrakeL, tBrakeR, tSigL, tSigR, tRevL);
+    tractorBatcher.add(brakeMat, lampSmallGeo, { x: 0.88, y: 0.66, z: -3.26 });
+    tractorBatcher.add(brakeMat, lampSmallGeo, { x: -0.88, y: 0.66, z: -3.26 });
+    tractorBatcher.add(leftSignalMat, lampSmallGeo, { x: 1.08, y: 0.66, z: -3.26 });
+    tractorBatcher.add(rightSignalMat, lampSmallGeo, { x: -1.08, y: 0.66, z: -3.26 });
+    tractorBatcher.add(reverseMat, lampSmallGeo, { x: 0.64, y: 0.66, z: -3.26 });
 
-    // Headlight pods + LED DRL strips + additive halo sprites + SpotLight
     const headLampGeo = new THREE.BoxGeometry(0.38, 0.18, 0.1);
     const drlGeo = new THREE.BoxGeometry(0.42, 0.05, 0.11);
-    const hlL = new THREE.Mesh(headLampGeo, headlightEmissiveMat);
-    hlL.position.set(0.9, 0.72, 3.09);
-    const hlR = new THREE.Mesh(headLampGeo, headlightEmissiveMat);
-    hlR.position.set(-0.9, 0.72, 3.09);
-    const drlL = new THREE.Mesh(drlGeo, drlMat);
-    drlL.position.set(0.9, 0.83, 3.09);
-    const drlR = new THREE.Mesh(drlGeo, drlMat);
-    drlR.position.set(-0.9, 0.83, 3.09);
-    const fSigL = new THREE.Mesh(lampSmallGeo, leftSignalMat);
-    fSigL.position.set(1.15, 0.72, 3.07);
-    const fSigR = new THREE.Mesh(lampSmallGeo, rightSignalMat);
-    fSigR.position.set(-1.15, 0.72, 3.07);
-    tractorRoot.add(hlL, hlR, drlL, drlR, fSigL, fSigR);
+    tractorBatcher.add(headlightEmissiveMat, headLampGeo, { x: 0.9, y: 0.72, z: 3.09 });
+    tractorBatcher.add(headlightEmissiveMat, headLampGeo, { x: -0.9, y: 0.72, z: 3.09 });
+    tractorBatcher.add(drlMat, drlGeo, { x: 0.9, y: 0.83, z: 3.09 });
+    tractorBatcher.add(drlMat, drlGeo, { x: -0.9, y: 0.83, z: 3.09 });
+    tractorBatcher.add(leftSignalMat, lampSmallGeo, { x: 1.15, y: 0.72, z: 3.07 });
+    tractorBatcher.add(rightSignalMat, lampSmallGeo, { x: -1.15, y: 0.72, z: 3.07 });
 
     // Lightweight additive headlight glow flares (replaces heavy Bloom!)
     const glowTex = this.textures.getHeadlightGlowTexture();
@@ -292,8 +276,10 @@ export class TruckMeshBuilder {
     const glowGeo = new THREE.PlaneGeometry(0.95, 0.95);
     const glowL = new THREE.Mesh(glowGeo, glowMat);
     glowL.position.set(0.9, 0.72, 3.16);
+    glowL.layers.set(1);
     const glowR = new THREE.Mesh(glowGeo, glowMat);
     glowR.position.set(-0.9, 0.72, 3.16);
+    glowR.layers.set(1);
     tractorRoot.add(glowL, glowR);
 
     const beamGeo = new THREE.ConeGeometry(2.4, 18, 14, 1, true);
@@ -311,9 +297,11 @@ export class TruckMeshBuilder {
     const beamL = new THREE.Mesh(beamGeo, beamMat);
     beamL.position.set(0.9, 0.74, 3.16);
     beamL.rotation.x = 0.06;
+    beamL.layers.set(1);
     const beamR = new THREE.Mesh(beamGeo, beamMat);
     beamR.position.set(-0.9, 0.74, 3.16);
     beamR.rotation.x = 0.06;
+    beamR.layers.set(1);
     tractorRoot.add(beamL, beamR);
 
     const spotLight = new THREE.SpotLight('#fffbeb', 0, 80, Math.PI / 4.2, 0.48, 1.35);
@@ -323,107 +311,124 @@ export class TruckMeshBuilder {
     tractorRoot.add(spotLight, spotTarget);
     spotLight.target = spotTarget;
 
-    // 2. Cab Suspension Group (Exterior Body + Stacks + Aero + Lit Interior)
+    // 2. Cab Suspension Group (Exterior Body + Stacks + Aero + Lit Interior batched per material)
     const cabLowerGeo = new THREE.BoxGeometry(2.44, 1.05, 2.38);
-    const cabLower = new THREE.Mesh(cabLowerGeo, paintMat);
-    cabLower.position.set(0, 1.38, 1.78);
-    cabLower.castShadow = true;
-    cabSuspensionGroup.add(cabLower);
+    cabBatcher.add(paintMat, cabLowerGeo, { x: 0, y: 1.38, z: 1.78, castShadow: true });
 
-    // Layered radiator grille + chrome slats + central V-emblem bar
     const grilleUpperGeo = new THREE.BoxGeometry(1.78, 0.56, 0.12);
-    const grilleUpper = new THREE.Mesh(grilleUpperGeo, trimMat);
-    grilleUpper.position.set(0, 1.62, 2.98);
+    cabBatcher.add(darkChassisMat, grilleUpperGeo, {
+      x: 0,
+      y: 1.62,
+      z: 2.98,
+      colorHex: '#1e2736',
+    });
     const grilleLowerGeo = new THREE.BoxGeometry(1.56, 0.34, 0.12);
-    const grilleLower = new THREE.Mesh(grilleLowerGeo, trimMat);
-    grilleLower.position.set(0, 1.12, 2.98);
-    cabSuspensionGroup.add(grilleUpper, grilleLower);
+    cabBatcher.add(darkChassisMat, grilleLowerGeo, {
+      x: 0,
+      y: 1.12,
+      z: 2.98,
+      colorHex: '#1e2736',
+    });
 
     const slatGeo = new THREE.BoxGeometry(1.62, 0.055, 0.15);
     for (let i = 0; i < 4; i++) {
-      const slat = new THREE.Mesh(slatGeo, chromeMat);
-      slat.position.set(0, 1.14 + i * 0.21, 3.0);
-      cabSuspensionGroup.add(slat);
+      cabBatcher.add(metalMat, slatGeo, {
+        x: 0,
+        y: 1.14 + i * 0.21,
+        z: 3.0,
+        colorHex: '#e2e8f0',
+      });
     }
     const emblemGeo = new THREE.BoxGeometry(0.44, 0.12, 0.16);
-    const emblem = new THREE.Mesh(emblemGeo, chromeMat);
-    emblem.position.set(0, 1.62, 3.01);
-    cabSuspensionGroup.add(emblem);
+    cabBatcher.add(metalMat, emblemGeo, {
+      x: 0,
+      y: 1.62,
+      z: 3.01,
+      colorHex: '#e2e8f0',
+    });
 
-    // Door handles & two-tier boarding steps
     const handleGeo = new THREE.BoxGeometry(0.06, 0.08, 0.24);
     const stepGeo = new THREE.BoxGeometry(0.24, 0.06, 0.56);
     for (const side of [-1, 1]) {
-      const handle = new THREE.Mesh(handleGeo, trimMat);
-      handle.position.set(side * 1.24, 1.72, 1.86);
-      cabSuspensionGroup.add(handle);
+      cabBatcher.add(darkChassisMat, handleGeo, {
+        x: side * 1.24,
+        y: 1.72,
+        z: 1.86,
+        colorHex: '#1e2736',
+      });
       for (const sy of [0.58, 0.86]) {
-        const step = new THREE.Mesh(stepGeo, aluminumMat);
-        step.position.set(side * 1.14, sy, 2.22);
-        cabSuspensionGroup.add(step);
+        tractorBatcher.add(metalMat, stepGeo, {
+          x: side * 1.14,
+          y: sy,
+          z: 2.22,
+          colorHex: '#cbd5e1',
+        });
       }
     }
 
-    // Cab back wall (painted outside, soft charcoal inside) + vertical chrome exhaust stacks
     const cabBackGeo = new THREE.BoxGeometry(2.44, 1.45, 0.82);
-    const cabBack = new THREE.Mesh(cabBackGeo, paintMat);
-    cabBack.position.set(0, 2.58, 1.0);
-    cabBack.castShadow = true;
-    cabSuspensionGroup.add(cabBack);
+    cabBatcher.add(paintMat, cabBackGeo, { x: 0, y: 2.58, z: 1.0, castShadow: true });
 
     const cabBackInnerGeo = new THREE.PlaneGeometry(2.18, 1.32);
-    const cabBackInner = new THREE.Mesh(cabBackInnerGeo, cabCharcoalMat);
-    cabBackInner.position.set(0, 2.58, 1.42);
-    cabSuspensionGroup.add(cabBackInner);
+    cabBatcher.add(cabInteriorMat, cabBackInnerGeo, {
+      x: 0,
+      y: 2.58,
+      z: 1.42,
+      colorHex: '#3b4656',
+      layer: 1,
+    });
 
-    // Vertical twin chrome exhaust stacks behind cab
     const stackGeo = new THREE.CylinderGeometry(0.085, 0.095, 2.35, 10);
     const stackTipGeo = new THREE.CylinderGeometry(0.105, 0.085, 0.28, 10);
     for (const sx of [-1.06, 1.06]) {
-      const stack = new THREE.Mesh(stackGeo, chromeMat);
-      stack.position.set(sx, 2.35, 0.52);
-      stack.castShadow = true;
-      const tip = new THREE.Mesh(stackTipGeo, chromeMat);
-      tip.position.set(sx, 3.58, 0.48);
-      tip.rotation.x = -0.25;
-      cabSuspensionGroup.add(stack, tip);
+      cabBatcher.add(metalMat, stackGeo, {
+        x: sx,
+        y: 2.35,
+        z: 0.52,
+        colorHex: '#e2e8f0',
+        castShadow: true,
+      });
+      cabBatcher.add(metalMat, stackTipGeo, {
+        x: sx,
+        y: 3.58,
+        z: 0.48,
+        rotX: -0.25,
+        colorHex: '#e2e8f0',
+      });
     }
 
-    // Cab roof + interior headliner + aerodynamic fairing + lightbox
     const cabRoofGeo = new THREE.BoxGeometry(2.42, 0.22, 2.34);
-    const cabRoof = new THREE.Mesh(cabRoofGeo, paintMat);
-    cabRoof.position.set(0, 3.34, 1.76);
-    cabRoof.castShadow = true;
-    cabSuspensionGroup.add(cabRoof);
+    cabBatcher.add(paintMat, cabRoofGeo, { x: 0, y: 3.34, z: 1.76, castShadow: true });
 
     const headlinerGeo = new THREE.PlaneGeometry(2.18, 1.9);
-    const headliner = new THREE.Mesh(headlinerGeo, cabHeadlinerMat);
-    headliner.rotation.x = Math.PI / 2;
-    headliner.position.set(0, 3.22, 1.82);
-    cabSuspensionGroup.add(headliner);
+    cabBatcher.add(cabInteriorMat, headlinerGeo, {
+      x: 0,
+      y: 3.22,
+      z: 1.82,
+      rotX: Math.PI / 2,
+      colorHex: '#64748b',
+      layer: 1,
+    });
 
     const spoilerGeo = new THREE.BoxGeometry(2.36, 0.44, 0.96);
-    const spoiler = new THREE.Mesh(spoilerGeo, paintMat);
-    spoiler.position.set(0, 3.56, 1.08);
-    spoiler.rotation.x = 0.22;
-    cabSuspensionGroup.add(spoiler);
+    cabBatcher.add(paintMat, spoilerGeo, { x: 0, y: 3.56, z: 1.08, rotX: 0.22 });
 
-    // Roof lightbox badge & sleek exterior sun visor
     const lightboxGeo = new THREE.BoxGeometry(1.42, 0.24, 0.14);
     const lightboxMat = new THREE.MeshStandardMaterial({
       color: '#f8fafc',
       emissive: '#fef3c7',
       emissiveIntensity: 0.72,
     });
-    const lightbox = new THREE.Mesh(lightboxGeo, lightboxMat);
-    lightbox.position.set(0, 3.46, 2.74);
-    cabSuspensionGroup.add(lightbox);
+    cabBatcher.add(lightboxMat, lightboxGeo, { x: 0, y: 3.46, z: 2.74 });
 
     const visorGeo = new THREE.BoxGeometry(2.42, 0.16, 0.34);
-    const visor = new THREE.Mesh(visorGeo, trimMat);
-    visor.position.set(0, 3.17, 2.95);
-    visor.rotation.x = 0.22;
-    cabSuspensionGroup.add(visor);
+    cabBatcher.add(darkChassisMat, visorGeo, {
+      x: 0,
+      y: 3.17,
+      z: 2.95,
+      rotX: 0.22,
+      colorHex: '#1e2736',
+    });
 
     const markerGeo = new THREE.BoxGeometry(0.16, 0.075, 0.08);
     const markerMat = new THREE.MeshStandardMaterial({
@@ -432,33 +437,30 @@ export class TruckMeshBuilder {
       emissiveIntensity: 1.0,
     });
     for (const mx of [-0.82, -0.41, 0, 0.41, 0.82]) {
-      const mk = new THREE.Mesh(markerGeo, markerMat);
-      mk.position.set(mx, 3.24, 3.08);
-      cabSuspensionGroup.add(mk);
+      cabBatcher.add(markerMat, markerGeo, { x: mx, y: 3.24, z: 3.08 });
     }
 
-    // Slim A-pillars (0.08m wide so forward view is unobstructed!)
     const pillarGeo = new THREE.BoxGeometry(0.08, 1.24, 0.11);
     for (const px of [-1.17, 1.17]) {
-      const aPillar = new THREE.Mesh(pillarGeo, trimMat);
-      aPillar.position.set(px, 2.6, 2.86);
-      aPillar.rotation.x = -0.08;
-      cabSuspensionGroup.add(aPillar);
+      cabBatcher.add(darkChassisMat, pillarGeo, {
+        x: px,
+        y: 2.6,
+        z: 2.86,
+        rotX: -0.08,
+        colorHex: '#1e2736',
+      });
     }
 
-    // Side door lower trims & interior door panels
     const sideLowerDoorGeo = new THREE.BoxGeometry(0.12, 0.48, 1.45);
     for (const sx of [-1.17, 1.17]) {
-      const sDoor = new THREE.Mesh(sideLowerDoorGeo, paintMat);
-      sDoor.position.set(sx, 2.08, 2.12);
-      cabSuspensionGroup.add(sDoor);
+      cabBatcher.add(paintMat, sideLowerDoorGeo, { x: sx, y: 2.08, z: 2.12 });
     }
 
-    // Reflective tinted windshield + animated dual wiper blades pivoted at base
     const windshieldGeo = new THREE.PlaneGeometry(2.24, 1.18);
     const windshield = new THREE.Mesh(windshieldGeo, glassMat);
     windshield.position.set(0, 2.6, 2.89);
     windshield.rotation.x = -0.08;
+    windshield.layers.set(1);
     cabSuspensionGroup.add(windshield);
 
     const wiperGeo = new THREE.BoxGeometry(0.76, 0.03, 0.04);
@@ -466,110 +468,135 @@ export class TruckMeshBuilder {
     for (const wx of [-0.1, 0.72]) {
       const pivot = new THREE.Group();
       pivot.position.set(wx, 2.04, 2.94);
-      const blade = new THREE.Mesh(wiperGeo, trimMat);
+      const blade = new THREE.Mesh(wiperGeo, wiperMat);
       blade.position.set(-0.36, 0.04, 0);
+      blade.layers.set(1);
       pivot.add(blade);
       pivot.rotation.z = -0.06;
       cabSuspensionGroup.add(pivot);
       wiperPivots.push(pivot);
     }
 
-    // Sleek exterior mirrors positioned clear of forward sightlines
     const mirrorArmGeo = new THREE.BoxGeometry(0.26, 0.055, 0.055);
     const mirrorHousingGeo = new THREE.BoxGeometry(0.16, 0.48, 0.2);
     for (const side of [-1, 1]) {
-      const arm = new THREE.Mesh(mirrorArmGeo, trimMat);
-      arm.position.set(side * 1.34, 2.62, 2.74);
-      const housing = new THREE.Mesh(mirrorHousingGeo, trimMat);
-      housing.position.set(side * 1.46, 2.52, 2.74);
-      cabSuspensionGroup.add(arm, housing);
+      cabBatcher.add(darkChassisMat, mirrorArmGeo, {
+        x: side * 1.34,
+        y: 2.62,
+        z: 2.74,
+        colorHex: '#1e2736',
+      });
+      cabBatcher.add(darkChassisMat, mirrorHousingGeo, {
+        x: side * 1.46,
+        y: 2.52,
+        z: 2.74,
+        colorHex: '#1e2736',
+      });
     }
 
-    // 3. Detailed Lit Cab Interior (Charcoal Dash, Dynamic Gauges, GPS, Multi-Function Steering Wheel, Seats)
     const dashTex = this.textures.getDynamicDashboardTexture();
     const dashBodyGeo = new THREE.BoxGeometry(2.16, 0.44, 0.54);
-    const dashBody = new THREE.Mesh(dashBodyGeo, cabCharcoalMat);
-    dashBody.position.set(0, 1.98, 2.58);
-    cabSuspensionGroup.add(dashBody);
+    cabBatcher.add(cabInteriorMat, dashBodyGeo, {
+      x: 0,
+      y: 1.98,
+      z: 2.58,
+      colorHex: '#3b4656',
+      layer: 1,
+    });
 
-    // Hood / cowl rim visible through lower windshield
     const cowlGeo = new THREE.BoxGeometry(2.18, 0.08, 0.38);
-    const cowl = new THREE.Mesh(cowlGeo, cabLeatherMat);
-    cowl.position.set(0, 2.18, 2.72);
-    cabSuspensionGroup.add(cowl);
+    cabBatcher.add(cabInteriorMat, cowlGeo, {
+      x: 0,
+      y: 2.18,
+      z: 2.72,
+      colorHex: '#4c586b',
+      layer: 1,
+    });
 
-    // Dynamic glowing instrument cluster (raised slightly so it sits clearly above bottom HUD)
+    // Dynamic glowing instrument cluster (Layer 1: skipped by mirrors)
     const clusterGeo = new THREE.PlaneGeometry(0.72, 0.25);
     const clusterMat = new THREE.MeshBasicMaterial({ map: dashTex });
     const cluster = new THREE.Mesh(clusterGeo, clusterMat);
     cluster.position.set(0.58, 2.27, 2.33);
     cluster.rotation.y = Math.PI;
     cluster.rotation.x = 0.22;
+    cluster.layers.set(1);
     cabSuspensionGroup.add(cluster);
 
-    // Live SatNav GPS unit mounted cleanly on left A-pillar dash corner (clear of HUD Route Advisor!)
+    // Live SatNav GPS unit mounted cleanly on left A-pillar dash corner (Layer 1: skipped by mirrors)
     const gpsTex = this.textures.getDynamicCabGpsTexture();
     const gpsGroup = new THREE.Group();
     gpsGroup.position.set(0.95, 2.41, 2.42);
     gpsGroup.rotation.y = Math.PI - 0.34;
     const gpsBezelGeo = new THREE.BoxGeometry(0.36, 0.23, 0.04);
-    const gpsBezel = new THREE.Mesh(gpsBezelGeo, trimMat);
+    const gpsBezel = new THREE.Mesh(gpsBezelGeo, wiperMat);
+    gpsBezel.layers.set(1);
     const gpsGeo = new THREE.PlaneGeometry(0.32, 0.19);
     const gpsMat = new THREE.MeshBasicMaterial({ map: gpsTex });
     const gpsMesh = new THREE.Mesh(gpsGeo, gpsMat);
     gpsMesh.position.z = 0.025;
+    gpsMesh.layers.set(1);
     gpsGroup.add(gpsBezel, gpsMesh);
     cabSuspensionGroup.add(gpsGroup);
 
-    // Driver & Passenger seats (adds richness in chase & orbit views)
+    // Driver & Passenger seats (batched, Layer 1)
     const seatGeo = new THREE.BoxGeometry(0.56, 0.92, 0.48);
     for (const sx of [-0.58, 0.58]) {
-      const seat = new THREE.Mesh(seatGeo, cabLeatherMat);
-      seat.position.set(sx, 2.12, 1.72);
-      cabSuspensionGroup.add(seat);
+      cabBatcher.add(cabInteriorMat, seatGeo, {
+        x: sx,
+        y: 2.12,
+        z: 1.72,
+        colorHex: '#4c586b',
+        layer: 1,
+      });
     }
 
-    // 4-Spoke European Multi-Function Steering Wheel (LHD on +X = 0.58)
+    // 4-Spoke European Multi-Function Steering Wheel (LHD on +X = 0.58, Layer 1)
     const steeringColumnGeo = new THREE.CylinderGeometry(0.055, 0.065, 0.28, 10);
     steeringColumnGeo.rotateX(Math.PI / 2 - 0.36);
-    const steeringColumn = new THREE.Mesh(steeringColumnGeo, cabCharcoalMat);
-    steeringColumn.position.set(0.58, 2.17, 2.27);
-    cabSuspensionGroup.add(steeringColumn);
+    cabBatcher.add(cabInteriorMat, steeringColumnGeo, {
+      x: 0.58,
+      y: 2.17,
+      z: 2.27,
+      colorHex: '#3b4656',
+      layer: 1,
+    });
 
+    const wheelGroup = new THREE.Group();
     const steeringWheel = new THREE.Group();
     steeringWheel.position.set(0.58, 2.26, 2.17);
     steeringWheel.rotation.x = -0.36;
     const rimTorusGeo = new THREE.TorusGeometry(0.21, 0.026, 8, 24);
-    const steeringRim = new THREE.Mesh(rimTorusGeo, cabLeatherMat);
     const spokeGeo = new THREE.BoxGeometry(0.39, 0.042, 0.022);
-    const spokeH = new THREE.Mesh(spokeGeo, cabCharcoalMat);
     const spokeLowerGeo = new THREE.BoxGeometry(0.055, 0.19, 0.022);
-    const spokeV = new THREE.Mesh(spokeLowerGeo, chromeMat);
-    spokeV.position.y = -0.1;
     const hubGeo = new THREE.CylinderGeometry(0.065, 0.065, 0.045, 14);
     hubGeo.rotateX(Math.PI / 2);
-    const hub = new THREE.Mesh(hubGeo, cabCharcoalMat);
     const wheelBadgeGeo = new THREE.CylinderGeometry(0.026, 0.026, 0.05, 12);
     wheelBadgeGeo.rotateX(Math.PI / 2);
-    const wheelBadge = new THREE.Mesh(wheelBadgeGeo, chromeMat);
-    steeringWheel.add(steeringRim, spokeH, spokeV, hub, wheelBadge);
+    const wheelMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.52, metalness: 0.25 });
+    const swBatcher = new GeometryBatcher();
+    swBatcher.add(wheelMat, rimTorusGeo, { colorHex: '#4c586b', layer: 1 });
+    swBatcher.add(wheelMat, spokeGeo, { colorHex: '#3b4656', layer: 1 });
+    swBatcher.add(wheelMat, spokeLowerGeo, { y: -0.1, colorHex: '#cbd5e1', layer: 1 });
+    swBatcher.add(wheelMat, hubGeo, { colorHex: '#3b4656', layer: 1 });
+    swBatcher.add(wheelMat, wheelBadgeGeo, { colorHex: '#e2e8f0', layer: 1 });
+    swBatcher.flush(steeringWheel, disposables);
+    disposables.push(wheelMat);
     cabSuspensionGroup.add(steeringWheel);
 
-    // 4. Tractor Wheels (Front steered axle + 2 Rear drive/tag axles)
+    // 4. All 12 Tractor + Trailer Wheels rendered via ONLY 2 InstancedMeshes (2 DC instead of 24!)
     const wheelRadius = 0.52;
     const tireGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, 0.34, 18);
     tireGeo.rotateZ(Math.PI / 2);
     const hubRimGeo = new THREE.CylinderGeometry(0.28, 0.28, 0.36, 12);
     hubRimGeo.rotateZ(Math.PI / 2);
 
-    const createWheel = (): THREE.Group => {
-      const g = new THREE.Group();
-      const tire = new THREE.Mesh(tireGeo, tireMat);
-      tire.castShadow = true;
-      const rim = new THREE.Mesh(hubRimGeo, rimMat);
-      g.add(tire, rim);
-      return g;
-    };
+    const wheelAnchors: THREE.Object3D[] = [];
+    const wheelTireInst = new THREE.InstancedMesh(tireGeo, tireMat, 12);
+    const wheelRimInst = new THREE.InstancedMesh(hubRimGeo, rimMat, 12);
+    wheelTireInst.frustumCulled = false;
+    wheelRimInst.frustumCulled = false;
+    wheelGroup.add(wheelTireInst, wheelRimInst);
 
     const frontWheelSteerPivots: THREE.Group[] = [];
     const tractorWheelSpinMeshes: THREE.Object3D[] = [];
@@ -577,44 +604,51 @@ export class TruckMeshBuilder {
     for (const side of [-1, 1]) {
       const pivot = new THREE.Group();
       pivot.position.set(side * 1.04, wheelRadius, 1.85);
-      const wheel = createWheel();
+      const wheel = new THREE.Object3D();
       pivot.add(wheel);
       tractorRoot.add(pivot);
       frontWheelSteerPivots.push(pivot);
       tractorWheelSpinMeshes.push(wheel);
+      wheelAnchors.push(wheel);
     }
 
     for (const rz of [-1.15, -2.35]) {
       for (const side of [-1, 1]) {
-        const wheel = createWheel();
+        const wheel = new THREE.Object3D();
         wheel.position.set(side * 1.04, wheelRadius, rz);
         tractorRoot.add(wheel);
         tractorWheelSpinMeshes.push(wheel);
+        wheelAnchors.push(wheel);
       }
     }
 
-    // 5. Semi-Trailer (13.6m length, Reefer unit, Underrun guards, PBR Container)
+    // 5. Semi-Trailer (13.6m length, Reefer unit, Underrun guards, 1-DC Atlas Container)
     const trailerRoot = new THREE.Group();
     trailerRoot.name = 'SemiTrailer';
+    tractorRoot.add(wheelGroup);
 
     const trailerFrameGeo = new THREE.BoxGeometry(2.15, 0.24, 13.2);
-    const trailerFrame = new THREE.Mesh(trailerFrameGeo, darkChassisMat);
-    trailerFrame.position.set(0, 1.08, 0);
-    trailerFrame.castShadow = true;
-    trailerRoot.add(trailerFrame);
+    trailerBatcher.add(darkChassisMat, trailerFrameGeo, {
+      x: 0,
+      y: 1.08,
+      z: 0,
+      colorHex: '#222b38',
+      castShadow: true,
+    });
 
-    // Aluminum side underrun protection bars
     const sideGuardGeo = new THREE.BoxGeometry(0.08, 0.14, 5.2);
     for (const gx of [-1.18, 1.18]) {
       for (const gy of [0.58, 0.82]) {
-        const guard = new THREE.Mesh(sideGuardGeo, aluminumMat);
-        guard.position.set(gx, gy, 0.4);
-        trailerRoot.add(guard);
+        trailerBatcher.add(metalMat, sideGuardGeo, {
+          x: gx,
+          y: gy,
+          z: 0.4,
+          colorHex: '#cbd5e1',
+        });
       }
     }
 
-    // Container with dedicated 6-face materials: corrugated sides, clean ribbed roof, and TIR rear double-doors
-    let currentContainerPbr: PbrTextureSet = this.textures.getContainerTextures('#e2e8f0', 'EUROHAUL');
+    let currentContainerPbr: PbrTextureSet = this.textures.getContainerAtlasTextures('#e2e8f0', 'EUROHAUL');
     let pbrDetailEnabled = true;
 
     const containerMat = new THREE.MeshStandardMaterial({
@@ -625,105 +659,106 @@ export class TruckMeshBuilder {
       roughness: 0.48,
       metalness: 0.24,
     });
-    const containerRoofMat = new THREE.MeshStandardMaterial({
-      map: this.textures.getContainerRoofTexture('#e2e8f0'),
-      roughness: 0.52,
-      metalness: 0.18,
-    });
-    const containerFrontEndMat = new THREE.MeshStandardMaterial({
-      color: '#e2e8f0',
-      roughness: 0.5,
-      metalness: 0.24,
-    });
-    const containerRearDoorMat = new THREE.MeshStandardMaterial({
-      map: this.textures.getContainerRearDoorTexture('#e2e8f0'),
-      roughness: 0.45,
-      metalness: 0.28,
-    });
     const containerGeo = new THREE.BoxGeometry(2.5, 2.75, 13.4);
-    const trailerContainerMesh = new THREE.Mesh(containerGeo, [
-      containerMat, // +X
-      containerMat, // -X
-      containerRoofMat, // +Y roof (upright, no logo text!)
-      darkChassisMat, // -Y floor underside
-      containerFrontEndMat, // +Z front bulkhead
-      containerRearDoorMat, // -Z TIR double rear doors
-    ]);
+    // Remap 6 faces into the single 2-band Atlas Texture (1 Draw Call instead of 6!)
+    const uvAttr = containerGeo.attributes.uv as THREE.BufferAttribute;
+    for (let v = 0; v < 8; v++) {
+      // +X, -X side walls -> top half [v: 0.5..1.0]
+      uvAttr.setY(v, uvAttr.getY(v) * 0.5 + 0.5);
+    }
+    for (let v = 8; v < 12; v++) {
+      // +Y roof -> bottom-left [u: 0..0.5, v: 0..0.5]
+      uvAttr.setXY(v, uvAttr.getX(v) * 0.5, uvAttr.getY(v) * 0.5);
+    }
+    for (let v = 12; v < 20; v++) {
+      // -Y floor & +Z front bulkhead -> clean edge swatch
+      uvAttr.setXY(v, 0.54 + uvAttr.getX(v) * 0.04, 0.05 + uvAttr.getY(v) * 0.04);
+    }
+    for (let v = 20; v < 24; v++) {
+      // -Z TIR double rear doors -> bottom-right [u: 0.5..1.0, v: 0..0.5]
+      uvAttr.setXY(v, uvAttr.getX(v) * 0.5 + 0.5, uvAttr.getY(v) * 0.5);
+    }
+    uvAttr.needsUpdate = true;
+
+    const trailerContainerMesh = new THREE.Mesh(containerGeo, containerMat);
     trailerContainerMesh.position.set(0, 2.58, 0);
     trailerContainerMesh.castShadow = true;
     trailerContainerMesh.receiveShadow = true;
     trailerRoot.add(trailerContainerMesh);
 
-    // Front Reefer refrigeration unit mounted above kingpin bulkhead
+    // Front Reefer refrigeration unit mounted above kingpin bulkhead (batched)
     const reeferBodyGeo = new THREE.BoxGeometry(1.75, 1.18, 0.56);
     const reeferMat = new THREE.MeshStandardMaterial({ color: '#f1f5f9', roughness: 0.42 });
-    const reeferUnit = new THREE.Mesh(reeferBodyGeo, reeferMat);
-    reeferUnit.position.set(0, 3.05, 6.95);
-    reeferUnit.castShadow = true;
+    trailerBatcher.add(reeferMat, reeferBodyGeo, { x: 0, y: 3.05, z: 6.95, castShadow: true });
     const reeferGrilleGeo = new THREE.BoxGeometry(1.18, 0.66, 0.6);
-    const reeferGrille = new THREE.Mesh(reeferGrilleGeo, trimMat);
-    reeferGrille.position.set(0, 3.05, 6.96);
-    trailerRoot.add(reeferUnit, reeferGrille);
+    trailerBatcher.add(darkChassisMat, reeferGrilleGeo, {
+      x: 0,
+      y: 3.05,
+      z: 6.96,
+      colorHex: '#1e2736',
+    });
 
-    // Kingpin & landing gear legs
     const kingpinGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.34, 10);
-    const kingpin = new THREE.Mesh(kingpinGeo, chromeMat);
-    kingpin.position.set(0, 0.88, 5.2);
-    trailerRoot.add(kingpin);
+    trailerBatcher.add(metalMat, kingpinGeo, {
+      x: 0,
+      y: 0.88,
+      z: 5.2,
+      colorHex: '#e2e8f0',
+    });
 
     const trailerLandingGear = new THREE.Group();
     trailerLandingGear.position.set(0, 0.85, 3.3);
     const legGeo = new THREE.BoxGeometry(0.14, 0.95, 0.14);
     const footGeo = new THREE.BoxGeometry(0.32, 0.08, 0.32);
     const braceGeo = new THREE.BoxGeometry(1.56, 0.08, 0.08);
-    const brace = new THREE.Mesh(braceGeo, darkChassisMat);
-    brace.position.y = -0.15;
-    trailerLandingGear.add(brace);
+    const lgBatcher = new GeometryBatcher();
+    lgBatcher.add(darkChassisMat, braceGeo, { y: -0.15, colorHex: '#222b38' });
     for (const lx of [-0.78, 0.78]) {
-      const leg = new THREE.Mesh(legGeo, darkChassisMat);
-      const foot = new THREE.Mesh(footGeo, darkChassisMat);
-      foot.position.y = -0.48;
-      leg.position.x = lx;
-      foot.position.x = lx;
-      trailerLandingGear.add(leg, foot);
+      lgBatcher.add(darkChassisMat, legGeo, { x: lx, colorHex: '#222b38' });
+      lgBatcher.add(darkChassisMat, footGeo, { x: lx, y: -0.48, colorHex: '#222b38' });
     }
+    lgBatcher.flush(trailerLandingGear, disposables);
     trailerRoot.add(trailerLandingGear);
 
-    // Trailer rear wheel fenders & underrun bumper + full taillight cluster
+    // Trailer rear wheel fenders & underrun bumper + full taillight cluster (batched)
     const trFenderGeo = new THREE.BoxGeometry(0.58, 0.16, 3.4);
     for (const fx of [-1.05, 1.05]) {
-      const f = new THREE.Mesh(trFenderGeo, trimMat);
-      f.position.set(fx, 1.08, -4.5);
-      trailerRoot.add(f);
+      trailerBatcher.add(darkChassisMat, trFenderGeo, {
+        x: fx,
+        y: 1.08,
+        z: -4.5,
+        colorHex: '#1e2736',
+      });
     }
 
     const trRearGeo = new THREE.BoxGeometry(2.44, 0.24, 0.22);
-    const trRear = new THREE.Mesh(trRearGeo, aluminumMat);
-    trRear.position.set(0, 0.68, -6.68);
-    trailerRoot.add(trRear);
+    trailerBatcher.add(metalMat, trRearGeo, {
+      x: 0,
+      y: 0.68,
+      z: -6.68,
+      colorHex: '#cbd5e1',
+    });
 
-    const trBrakeL = new THREE.Mesh(lampSmallGeo, brakeMat);
-    trBrakeL.position.set(0.86, 0.68, -6.78);
-    const trBrakeR = new THREE.Mesh(lampSmallGeo, brakeMat);
-    trBrakeR.position.set(-0.86, 0.68, -6.78);
-    const trSigL = new THREE.Mesh(lampSmallGeo, leftSignalMat);
-    trSigL.position.set(1.08, 0.68, -6.78);
-    const trSigR = new THREE.Mesh(lampSmallGeo, rightSignalMat);
-    trSigR.position.set(-1.08, 0.68, -6.78);
-    const trRevL = new THREE.Mesh(lampSmallGeo, reverseMat);
-    trRevL.position.set(0.62, 0.68, -6.78);
-    const trRevR = new THREE.Mesh(lampSmallGeo, reverseMat);
-    trRevR.position.set(-0.62, 0.68, -6.78);
-    trailerRoot.add(trBrakeL, trBrakeR, trSigL, trSigR, trRevL, trRevR);
+    trailerBatcher.add(brakeMat, lampSmallGeo, { x: 0.86, y: 0.68, z: -6.78 });
+    trailerBatcher.add(brakeMat, lampSmallGeo, { x: -0.86, y: 0.68, z: -6.78 });
+    trailerBatcher.add(leftSignalMat, lampSmallGeo, { x: 1.08, y: 0.68, z: -6.78 });
+    trailerBatcher.add(rightSignalMat, lampSmallGeo, { x: -1.08, y: 0.68, z: -6.78 });
+    trailerBatcher.add(reverseMat, lampSmallGeo, { x: 0.62, y: 0.68, z: -6.78 });
+    trailerBatcher.add(reverseMat, lampSmallGeo, { x: -0.62, y: 0.68, z: -6.78 });
 
-    // Triple trailer axles
+    tractorBatcher.flush(tractorRoot, disposables);
+    cabBatcher.flush(cabSuspensionGroup, disposables);
+    trailerBatcher.flush(trailerRoot, disposables);
+
+    // Triple trailer axles (anchor transforms -> InstancedMesh wheels)
     const trailerWheelSpinMeshes: THREE.Object3D[] = [];
     for (const tz of [-3.4, -4.5, -5.6]) {
       for (const side of [-1, 1]) {
-        const wheel = createWheel();
+        const wheel = new THREE.Object3D();
         wheel.position.set(side * 1.05, wheelRadius, tz);
         trailerRoot.add(wheel);
         trailerWheelSpinMeshes.push(wheel);
+        wheelAnchors.push(wheel);
       }
     }
 
@@ -815,9 +850,6 @@ export class TruckMeshBuilder {
       trailerFrameGeo,
       sideGuardGeo,
       containerMat,
-      containerRoofMat,
-      containerFrontEndMat,
-      containerRearDoorMat,
       containerGeo,
       reeferBodyGeo,
       reeferMat,
@@ -843,12 +875,7 @@ export class TruckMeshBuilder {
     };
 
     const setTrailerCargoVisual = (colorHex: string, label: string): void => {
-      currentContainerPbr = this.textures.getContainerTextures(colorHex, label);
-      containerRoofMat.map = this.textures.getContainerRoofTexture(colorHex);
-      containerRoofMat.needsUpdate = true;
-      containerFrontEndMat.color.set(colorHex);
-      containerRearDoorMat.map = this.textures.getContainerRearDoorTexture(colorHex);
-      containerRearDoorMat.needsUpdate = true;
+      currentContainerPbr = this.textures.getContainerAtlasTextures(colorHex, label);
       applyContainerPbr();
     };
 
@@ -860,6 +887,22 @@ export class TruckMeshBuilder {
     const setPbrDetailEnabled = (enabled: boolean): void => {
       pbrDetailEnabled = enabled;
       applyContainerPbr();
+    };
+
+    const invTractorMat = new THREE.Matrix4();
+    const relWheelMat = new THREE.Matrix4();
+
+    const syncWheelInstances = (): void => {
+      tractorRoot.updateMatrixWorld(true);
+      trailerRoot.updateMatrixWorld(true);
+      invTractorMat.copy(tractorRoot.matrixWorld).invert();
+      for (let i = 0; i < wheelAnchors.length; i++) {
+        relWheelMat.multiplyMatrices(invTractorMat, wheelAnchors[i]!.matrixWorld);
+        wheelTireInst.setMatrixAt(i, relWheelMat);
+        wheelRimInst.setMatrixAt(i, relWheelMat);
+      }
+      wheelTireInst.instanceMatrix.needsUpdate = true;
+      wheelRimInst.instanceMatrix.needsUpdate = true;
     };
 
     const updateWipers = (elapsedSec: number, mode: WipersMode): void => {
@@ -916,6 +959,7 @@ export class TruckMeshBuilder {
       setBlobShadowVisible,
       setPbrDetailEnabled,
       updateWipers,
+      syncWheelInstances,
       updateLights,
       dispose,
     };

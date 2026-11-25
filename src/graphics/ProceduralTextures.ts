@@ -671,6 +671,146 @@ export class ProceduralTextures {
     return tex;
   }
 
+  public getContainerAtlasTextures(baseHex: string, label = 'EUROHAUL'): PbrTextureSet {
+    const key = `container_atlas_${baseHex}_${label}_${this.detailSize}`;
+    const mapKey = `${key}_albedo`;
+    const roughKey = `${key}_rough`;
+    const bumpKey = `${key}_bump`;
+
+    const existingMap = this.cache.get(mapKey);
+    const existingRough = this.cache.get(roughKey);
+    const existingBump = this.cache.get(bumpKey);
+    if (existingMap && existingRough && existingBump) {
+      return { map: existingMap, roughnessMap: existingRough, bumpMap: existingBump };
+    }
+
+    const w = this.detailSize;
+    const h = this.detailSize; // Square 2-band atlas: top half sides, bottom-left roof, bottom-right rear doors
+    const halfH = h / 2;
+    const halfW = w / 2;
+    const s = w / 512;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d')!;
+
+    const roughCanvas = document.createElement('canvas');
+    roughCanvas.width = w;
+    roughCanvas.height = h;
+    const rCtx = roughCanvas.getContext('2d')!;
+
+    const bumpCanvas = document.createElement('canvas');
+    bumpCanvas.width = w;
+    bumpCanvas.height = h;
+    const bCtx = bumpCanvas.getContext('2d')!;
+
+    rCtx.fillStyle = 'rgb(142, 142, 142)';
+    rCtx.fillRect(0, 0, w, h);
+    bCtx.fillStyle = 'rgb(128, 128, 128)';
+    bCtx.fillRect(0, 0, w, h);
+
+    // 1. Top half (y: 0..halfH): corrugated side walls
+    ctx.fillStyle = baseHex;
+    ctx.fillRect(0, 0, w, halfH);
+    const ribStep = 16 * s;
+    for (let x = 0; x < w; x += ribStep) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
+      ctx.fillRect(x, 0, 5 * s, halfH);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.fillRect(x + 5 * s, 0, 4 * s, halfH);
+
+      bCtx.fillStyle = 'rgb(76, 76, 76)';
+      bCtx.fillRect(x, 0, 5 * s, halfH);
+      bCtx.fillStyle = 'rgb(186, 186, 186)';
+      bCtx.fillRect(x + 5 * s, 0, 6 * s, halfH);
+    }
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.5)';
+    ctx.fillRect(0, 0, w, 16 * s);
+    ctx.fillRect(0, halfH - 16 * s, w, 16 * s);
+
+    ctx.fillStyle = 'rgba(248, 250, 252, 0.94)';
+    ctx.fillRect(42 * s, 82 * s, 428 * s, 76 * s);
+    ctx.fillStyle = '#d97706';
+    ctx.fillRect(42 * s, 82 * s, 14 * s, 76 * s);
+    ctx.fillStyle = '#0f172a';
+    ctx.font = `bold ${Math.round(34 * s)}px Inter, Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, w * 0.5 + 4 * s, 114 * s);
+    ctx.fillStyle = '#475569';
+    ctx.font = `bold ${Math.round(12 * s)}px monospace`;
+    ctx.fillText('EUROHAUL LOGISTICS · TIR', w * 0.5 + 4 * s, 142 * s);
+
+    for (let x = 14 * s; x < w - 28 * s; x += 34 * s) {
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(x, halfH - 24 * s, 22 * s, 6 * s);
+      rCtx.fillStyle = 'rgb(60, 60, 60)';
+      rCtx.fillRect(x, halfH - 24 * s, 22 * s, 6 * s);
+    }
+
+    // 2. Bottom-left (0..halfW, halfH..h): clean ribbed trailer roof
+    ctx.fillStyle = baseHex === '#f8fafc' ? '#f1f5f9' : '#e2e8f0';
+    ctx.fillRect(0, halfH, halfW, halfH);
+    for (let y = halfH; y < h; y += 22 * s) {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.08)';
+      ctx.fillRect(10 * s, y, halfW - 20 * s, 6 * s);
+    }
+    ctx.fillStyle = baseHex;
+    ctx.fillRect(0, halfH, 12 * s, halfH);
+    ctx.fillRect(halfW - 12 * s, halfH, 12 * s, halfH);
+
+    // 3. Bottom-right (halfW..w, halfH..h): TIR double rear doors
+    ctx.fillStyle = baseHex;
+    ctx.fillRect(halfW, halfH, halfW, halfH);
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.72)';
+    ctx.lineWidth = 6 * s;
+    ctx.strokeRect(halfW + 10 * s, halfH + 10 * s, halfW - 20 * s, halfH - 20 * s);
+    ctx.lineWidth = 4 * s;
+    ctx.beginPath();
+    ctx.moveTo(halfW + halfW * 0.5, halfH + 10 * s);
+    ctx.lineTo(halfW + halfW * 0.5, h - 10 * s);
+    ctx.stroke();
+
+    ctx.fillStyle = '#cbd5e1';
+    for (const frac of [0.21, 0.4, 0.6, 0.79]) {
+      const bx = halfW + halfW * frac;
+      ctx.fillRect(bx - 3 * s, halfH + 18 * s, 6 * s, halfH - 36 * s);
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(bx - 6 * s, halfH + halfH * 0.58, 12 * s, 16 * s);
+      ctx.fillStyle = '#cbd5e1';
+    }
+
+    ctx.fillStyle = '#1e3a8a';
+    ctx.fillRect(halfW + 24 * s, halfH + 26 * s, 54 * s, 28 * s);
+    ctx.strokeStyle = '#f8fafc';
+    ctx.lineWidth = 2 * s;
+    ctx.strokeRect(halfW + 24 * s, halfH + 26 * s, 54 * s, 28 * s);
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = `bold ${Math.round(17 * s)}px monospace`;
+    ctx.fillText('TIR', halfW + 51 * s, halfH + 41 * s);
+
+    for (const ox of [24 * s, halfW - 88 * s]) {
+      ctx.fillStyle = '#dc2626';
+      ctx.fillRect(halfW + ox, h - 42 * s, 64 * s, 22 * s);
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(halfW + ox + 10 * s, h - 38 * s, 44 * s, 14 * s);
+    }
+
+    const map = new THREE.CanvasTexture(canvas);
+    map.colorSpace = THREE.SRGBColorSpace;
+    map.anisotropy = this.anisotropy;
+    const roughnessMap = new THREE.CanvasTexture(roughCanvas);
+    roughnessMap.anisotropy = this.anisotropy;
+    const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+    bumpMap.anisotropy = this.anisotropy;
+
+    this.cache.set(mapKey, map);
+    this.cache.set(roughKey, roughnessMap);
+    this.cache.set(bumpKey, bumpMap);
+    return { map, roughnessMap, bumpMap };
+  }
+
   public getDynamicCabGpsTexture(): THREE.CanvasTexture {
     if (this.gpsTexture) return this.gpsTexture;
 

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type QualityPreset = 'mobile_fast' | 'mobile_balanced' | 'high' | 'ultra';
+export type QualityPreset = 'mobile_fast' | 'mobile_balanced' | 'pc_igpu' | 'high' | 'ultra';
 export type MobileSteeringStyle = 'wheel' | 'buttons';
 export type GamePhase = 'menu' | 'playing';
 export type ActiveModal = 'none' | 'jobs' | 'garage' | 'map' | 'settings' | 'delivery_summary';
@@ -57,9 +57,23 @@ export const QUALITY_SPECS: Record<QualityPreset, QualitySpec> = {
     mirrorUpdateInterval: 4,
     defaultMirrors: false,
   },
+  pc_igpu: {
+    id: 'pc_igpu',
+    label: '核显高帧流畅',
+    shortDesc: '1.2x DPR · 1024px阴影 · 75%植被 · 14辆AI',
+    maxDpr: 1.2,
+    shadowsEnabled: true,
+    shadowMapSize: 1024,
+    cameraFar: 1150,
+    fogScale: 1.0,
+    foliageDensity: 0.75,
+    maxTraffic: 14,
+    mirrorUpdateInterval: 3,
+    defaultMirrors: true,
+  },
   high: {
     id: 'high',
-    label: '高画质 (PC推荐)',
+    label: '高画质 (独显推荐)',
     shortDesc: '1.75x DPR · 2048px阴影 · 100%植被 · 20辆AI',
     maxDpr: 1.75,
     shadowsEnabled: true,
@@ -152,12 +166,15 @@ export function detectHardwareProfile(): DetectedHardwareProfile {
   }
 
   const isDiscreteGpu = /RTX|GTX|Radeon RX|Apple M[1-9]/i.test(gpuRenderer);
+  const isIntegratedHint = /Intel|UHD|Iris|HD Graphics|Vega|Radeon\(TM\) Graphics|SwiftShader/i.test(
+    gpuRenderer
+  );
   return {
     isTouchDevice: false,
-    recommendedPreset: 'high',
+    recommendedPreset: isDiscreteGpu ? 'high' : 'pc_igpu',
     deviceLabel: isDiscreteGpu
       ? `高性能独显${shortGpu ? ` (${shortGpu})` : ''}`
-      : `PC 桌面端${shortGpu ? ` (${shortGpu})` : ''}`,
+      : `${isIntegratedHint ? 'PC 核显' : 'PC 桌面端'}${shortGpu ? ` (${shortGpu})` : ''}`,
   };
 }
 
@@ -293,6 +310,8 @@ export interface TelemetrySnapshot {
   isSpeeding: boolean;
   odometerKm: number;
   fps: number;
+  drawCalls: number;
+  drsPixelRatio: number;
   timeOfDayHours: number;
   rainIntensity: number;
   wipersMode: WipersMode;
@@ -323,7 +342,9 @@ interface PersistedCareerState {
   truckHealth: number;
   fuelLiters: number;
   qualityPreset: QualityPreset;
+  drsEnabled: boolean;
   showFps: boolean;
+  showDrawCalls: boolean;
   mirrorsEnabled: boolean;
   audioEnabled: boolean;
   masterVolume: number;
@@ -358,7 +379,9 @@ interface GameStoreState extends PersistedCareerState {
   setAdvisorTab: (tab: AdvisorTab) => void;
   toggleTransmissionMode: () => void;
   setQualityPreset: (preset: QualityPreset, syncDefaults?: boolean) => void;
+  setDrsEnabled: (enabled: boolean) => void;
   setShowFps: (show: boolean) => void;
+  setShowDrawCalls: (show: boolean) => void;
   setMirrorsEnabled: (enabled: boolean) => void;
   setAudioEnabled: (enabled: boolean) => void;
   setMasterVolume: (vol: number) => void;
@@ -416,6 +439,8 @@ const DEFAULT_TELEMETRY: TelemetrySnapshot = {
   isSpeeding: false,
   odometerKm: 0,
   fps: 60,
+  drawCalls: 0,
+  drsPixelRatio: 1,
   timeOfDayHours: 8.5,
   rainIntensity: 0,
   wipersMode: 0,
@@ -458,7 +483,9 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   truckHealth: 100,
   fuelLiters: 450,
   qualityPreset: INITIAL_HARDWARE.recommendedPreset,
+  drsEnabled: true,
   showFps: true,
+  showDrawCalls: true,
   mirrorsEnabled: INITIAL_SPEC.defaultMirrors,
   audioEnabled: true,
   masterVolume: 0.6,
@@ -487,7 +514,13 @@ export function getDriverRankTitle(level: number): string {
 }
 
 function migrateQualityPreset(val: unknown): QualityPreset {
-  if (val === 'mobile_fast' || val === 'mobile_balanced' || val === 'high' || val === 'ultra') {
+  if (
+    val === 'mobile_fast' ||
+    val === 'mobile_balanced' ||
+    val === 'pc_igpu' ||
+    val === 'high' ||
+    val === 'ultra'
+  ) {
     return val;
   }
   if (val === 'low') return 'mobile_fast';
@@ -529,7 +562,9 @@ export const useGameStore = create<GameStoreState>()(
           qualityPreset,
           mirrorsEnabled: syncDefaults ? QUALITY_SPECS[qualityPreset].defaultMirrors : s.mirrorsEnabled,
         })),
+      setDrsEnabled: (drsEnabled) => set({ drsEnabled }),
       setShowFps: (showFps) => set({ showFps }),
+      setShowDrawCalls: (showDrawCalls) => set({ showDrawCalls }),
       setMirrorsEnabled: (mirrorsEnabled) => set({ mirrorsEnabled }),
       setAudioEnabled: (audioEnabled) => set({ audioEnabled }),
       setMasterVolume: (masterVolume) => set({ masterVolume: Math.max(0, Math.min(1, masterVolume)) }),
@@ -835,13 +870,16 @@ export const useGameStore = create<GameStoreState>()(
     }),
     {
       name: 'eurohaul_save_v1',
-      version: 2,
+      version: 3,
       migrate: (persistedState) => {
         const st = (persistedState ?? {}) as Partial<PersistedCareerState>;
         return {
           ...INITIAL_PERSISTED,
           ...st,
-          qualityPreset: migrateQualityPreset(st.qualityPreset),
+          qualityPreset:
+            !INITIAL_HARDWARE.isTouchDevice && st.qualityPreset === 'high'
+              ? INITIAL_HARDWARE.recommendedPreset
+              : migrateQualityPreset(st.qualityPreset),
         };
       },
       partialize: (state) => ({
@@ -857,7 +895,9 @@ export const useGameStore = create<GameStoreState>()(
         truckHealth: state.truckHealth,
         fuelLiters: state.fuelLiters,
         qualityPreset: state.qualityPreset,
+        drsEnabled: state.drsEnabled,
         showFps: state.showFps,
+        showDrawCalls: state.showDrawCalls,
         mirrorsEnabled: state.mirrorsEnabled,
         audioEnabled: state.audioEnabled,
         masterVolume: state.masterVolume,

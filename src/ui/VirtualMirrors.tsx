@@ -29,9 +29,9 @@ export function VirtualMirrors() {
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 hidden sm:block">
-      {/* Left Mirror Bezel (aligned at left:18px, top:66px, 196x108) */}
+      {/* Left Mirror Bezel (aligned at left:18px, top:66px, 196x122 matching 16:10 RT) */}
       <div
-        className={`fixed top-[66px] left-[18px] h-[108px] w-[196px] rounded-lg border-2 shadow-xl ${
+        className={`fixed top-[66px] left-[18px] h-[122px] w-[196px] rounded-lg border-2 shadow-xl ${
           jackknifeWarning ? 'border-rose-500 animate-pulse' : 'border-slate-700/90'
         }`}
       >
@@ -48,9 +48,9 @@ export function VirtualMirrors() {
         </div>
       </div>
 
-      {/* Right Mirror Bezel (aligned at right:18px, top:66px, 196x108) */}
+      {/* Right Mirror Bezel (aligned at right:18px, top:66px, 196x122 matching 16:10 RT) */}
       <div
-        className={`fixed top-[66px] right-[18px] h-[108px] w-[196px] rounded-lg border-2 shadow-xl ${
+        className={`fixed top-[66px] right-[18px] h-[122px] w-[196px] rounded-lg border-2 shadow-xl ${
           jackknifeWarning ? 'border-rose-500 animate-pulse' : 'border-slate-700/90'
         }`}
       >

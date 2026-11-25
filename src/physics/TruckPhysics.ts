@@ -694,6 +694,7 @@ export class TruckPhysics {
     for (const wheel of visuals.trailerWheelSpinMeshes) {
       wheel.rotation.x = this.wheelSpinAngle;
     }
+    visuals.syncWheelInstances();
 
     const braking =
       this.parkingBrake ||

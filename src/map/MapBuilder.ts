@@ -10,6 +10,7 @@ import {
 } from './types';
 import { ProceduralTextures } from '../graphics/ProceduralTextures';
 import { EnvironmentSystem } from '../graphics/EnvironmentSystem';
+import { GeometryBatcher } from '../graphics/GeometryBatcher';
 import { SignalState } from '../store/useGameStore';
 
 export interface RoadSamplePoint {
@@ -131,6 +132,7 @@ export class MapBuilder {
     root.name = `Map_${manifest.id}`;
 
     const disposables: { dispose: () => void }[] = [];
+    const batcher = new GeometryBatcher();
     const nodeMap = new Map<string, RoadNode>();
     for (const n of manifest.nodes) {
       nodeMap.set(n.id, n);
@@ -435,28 +437,34 @@ export class MapBuilder {
     disposables.push(skirtMat);
 
     const roadMaterials: THREE.MeshStandardMaterial[] = [];
+    const roadMatByClass = new Map<string, THREE.MeshStandardMaterial>();
 
     for (const seg of segments) {
-      const roadPbr = this.textures.getRoadTextures(seg.def.lanes, seg.def.roadClass);
-      const segMat = new THREE.MeshStandardMaterial({
-        map: roadPbr.map,
-        roughnessMap: roadPbr.roughnessMap,
-        bumpMap: roadPbr.bumpMap,
-        bumpScale: 0.035,
-        roughness: 0.85,
-        metalness: 0.04,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
-      });
-      roadMaterials.push(segMat);
-      pbrMaterialBindings.push({
-        mat: segMat,
-        roughnessMap: roadPbr.roughnessMap,
-        bumpMap: roadPbr.bumpMap,
-        bumpScale: 0.035,
-      });
-      disposables.push(segMat);
+      const roadClassKey = `${seg.def.lanes}_${seg.def.roadClass}`;
+      let segMat = roadMatByClass.get(roadClassKey);
+      if (!segMat) {
+        const roadPbr = this.textures.getRoadTextures(seg.def.lanes, seg.def.roadClass);
+        segMat = new THREE.MeshStandardMaterial({
+          map: roadPbr.map,
+          roughnessMap: roadPbr.roughnessMap,
+          bumpMap: roadPbr.bumpMap,
+          bumpScale: 0.035,
+          roughness: 0.85,
+          metalness: 0.04,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1,
+        });
+        roadMatByClass.set(roadClassKey, segMat);
+        roadMaterials.push(segMat);
+        pbrMaterialBindings.push({
+          mat: segMat,
+          roughnessMap: roadPbr.roughnessMap,
+          bumpMap: roadPbr.bumpMap,
+          bumpScale: 0.035,
+        });
+        disposables.push(segMat);
+      }
 
       const n = seg.samples.length;
       const halfW = seg.def.width * 0.5;
@@ -553,19 +561,14 @@ export class MapBuilder {
       roadGeo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
       roadGeo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
       roadGeo.setIndex(indices);
-
-      const roadMesh = new THREE.Mesh(roadGeo, segMat);
-      roadMesh.receiveShadow = true;
-      roadGroup.add(roadMesh);
+      batcher.add(segMat, roadGeo, { receiveShadow: true });
       disposables.push(roadGeo);
 
       const skirtGeo = new THREE.BufferGeometry();
       skirtGeo.setAttribute('position', new THREE.BufferAttribute(skirtPos, 3));
       skirtGeo.setIndex(skirtIndices);
       skirtGeo.computeVertexNormals();
-      const skirtMesh = new THREE.Mesh(skirtGeo, skirtMat);
-      skirtMesh.receiveShadow = true;
-      roadGroup.add(skirtMesh);
+      batcher.add(skirtMat, skirtGeo, { receiveShadow: true });
       disposables.push(skirtGeo);
     }
 
@@ -578,38 +581,56 @@ export class MapBuilder {
     });
     disposables.push(junctionMat);
 
+    const islandMat = new THREE.MeshStandardMaterial({ color: '#4c6642', roughness: 0.9 });
+    disposables.push(islandMat);
+
     for (const node of manifest.nodes) {
       const radius = node.kind === 'roundabout' ? 18 : node.kind === 'intersection' ? 12.5 : 10.5;
       const discGeo = new THREE.CylinderGeometry(radius, radius + 1.5, 0.35, 20);
-      const discMesh = new THREE.Mesh(discGeo, junctionMat);
-      discMesh.position.set(node.position[0], node.position[1] - 0.14, node.position[2]);
-      discMesh.receiveShadow = true;
-      roadGroup.add(discMesh);
+      batcher.add(junctionMat, discGeo, {
+        x: node.position[0],
+        y: node.position[1] - 0.14,
+        z: node.position[2],
+        receiveShadow: true,
+      });
       disposables.push(discGeo);
 
       if (node.kind === 'roundabout') {
         const islandGeo = new THREE.CylinderGeometry(5.5, 6.2, 0.7, 18);
-        const islandMat = new THREE.MeshStandardMaterial({ color: '#4c6642', roughness: 0.9 });
-        const island = new THREE.Mesh(islandGeo, islandMat);
-        island.position.set(node.position[0], node.position[1] + 0.2, node.position[2]);
-        roadGroup.add(island);
-        disposables.push(islandGeo, islandMat);
+        batcher.add(islandMat, islandGeo, {
+          x: node.position[0],
+          y: node.position[1] + 0.2,
+          z: node.position[2],
+        });
+        disposables.push(islandGeo);
       }
     }
 
-    // 3b. Real European Cantilever Traffic Lights at signalized junctions
-    interface TrafficSignalRig {
+    // 3b. Batched European Cantilever Traffic Lights at signalized junctions
+    interface TrafficSignalStateGroup {
       nodeId: string;
       phaseOffset: number;
-      nsRed: THREE.MeshStandardMaterial;
-      nsAmber: THREE.MeshStandardMaterial;
-      nsGreen: THREE.MeshStandardMaterial;
-      ewRed: THREE.MeshStandardMaterial;
-      ewAmber: THREE.MeshStandardMaterial;
-      ewGreen: THREE.MeshStandardMaterial;
     }
-    const signalRigs = new Map<string, TrafficSignalRig>();
+    const signalNodesList: TrafficSignalStateGroup[] = [];
     const signalNodes = manifest.nodes.filter((n) => n.trafficLight);
+
+    const makeLensMat = (color: string) => {
+      const m = new THREE.MeshStandardMaterial({
+        color: '#1e293b',
+        emissive: color,
+        emissiveIntensity: 0,
+        roughness: 0.25,
+      });
+      disposables.push(m);
+      return m;
+    };
+    const nsRedMat = makeLensMat('#ef4444');
+    const nsAmberMat = makeLensMat('#f59e0b');
+    const nsGreenMat = makeLensMat('#22c55e');
+    const ewRedMat = makeLensMat('#ef4444');
+    const ewAmberMat = makeLensMat('#f59e0b');
+    const ewGreenMat = makeLensMat('#22c55e');
+
     if (signalNodes.length > 0) {
       const poleGeo = new THREE.CylinderGeometry(0.12, 0.16, 5.8, 8);
       const armGeo = new THREE.BoxGeometry(5.2, 0.16, 0.16);
@@ -619,69 +640,69 @@ export class MapBuilder {
       const housingMat = new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.6 });
       disposables.push(poleGeo, armGeo, headGeo, lensGeo, steelMat, housingMat);
 
+      const perAxisLensCount = signalNodes.length * 2;
+      const nsRedInst = new THREE.InstancedMesh(lensGeo, nsRedMat, perAxisLensCount);
+      const nsAmberInst = new THREE.InstancedMesh(lensGeo, nsAmberMat, perAxisLensCount);
+      const nsGreenInst = new THREE.InstancedMesh(lensGeo, nsGreenMat, perAxisLensCount);
+      const ewRedInst = new THREE.InstancedMesh(lensGeo, ewRedMat, perAxisLensCount);
+      const ewAmberInst = new THREE.InstancedMesh(lensGeo, ewAmberMat, perAxisLensCount);
+      const ewGreenInst = new THREE.InstancedMesh(lensGeo, ewGreenMat, perAxisLensCount);
+
+      const tmpObj = new THREE.Object3D();
+      const tmpChild = new THREE.Object3D();
+      tmpObj.add(tmpChild);
+
       for (let i = 0; i < signalNodes.length; i++) {
         const node = signalNodes[i]!;
+        signalNodesList.push({ nodeId: node.id, phaseOffset: 0 });
         const [nx, ny, nz] = node.position;
-        const makeLensMat = (color: string) => {
-          const m = new THREE.MeshStandardMaterial({
-            color: '#1e293b',
-            emissive: color,
-            emissiveIntensity: 0,
-            roughness: 0.25,
-          });
-          disposables.push(m);
-          return m;
-        };
-        const rig: TrafficSignalRig = {
-          nodeId: node.id,
-          phaseOffset: i * 6.5,
-          nsRed: makeLensMat('#ef4444'),
-          nsAmber: makeLensMat('#f59e0b'),
-          nsGreen: makeLensMat('#22c55e'),
-          ewRed: makeLensMat('#ef4444'),
-          ewAmber: makeLensMat('#f59e0b'),
-          ewGreen: makeLensMat('#22c55e'),
-        };
-        signalRigs.set(node.id, rig);
 
-        const mountCorner = (
-          cx: number,
-          cz: number,
-          rotY: number,
-          redM: THREE.MeshStandardMaterial,
-          ambM: THREE.MeshStandardMaterial,
-          grnM: THREE.MeshStandardMaterial
-        ) => {
-          const g = new THREE.Group();
-          g.position.set(cx, ny, cz);
-          g.rotation.y = rotY;
-          const pole = new THREE.Mesh(poleGeo, steelMat);
-          pole.position.y = 2.9;
-          const arm = new THREE.Mesh(armGeo, steelMat);
-          arm.position.set(2.4, 5.65, 0);
-          const head = new THREE.Mesh(headGeo, housingMat);
-          head.position.set(4.1, 5.2, 0);
-          g.add(pole, arm, head);
+        const addSignalCorner = (cx: number, cz: number, rotY: number, isNs: boolean) => {
+          tmpObj.position.set(cx, ny, cz);
+          tmpObj.rotation.set(0, rotY, 0);
+          tmpObj.updateMatrixWorld(true);
 
-          for (const sideZ of [0.19, -0.19]) {
-            const ry = sideZ > 0 ? 0 : Math.PI;
-            const lRed = new THREE.Mesh(lensGeo, redM);
-            lRed.position.set(4.1, 5.62, sideZ);
-            lRed.rotation.y = ry;
-            const lAmb = new THREE.Mesh(lensGeo, ambM);
-            lAmb.position.set(4.1, 5.2, sideZ);
-            lAmb.rotation.y = ry;
-            const lGrn = new THREE.Mesh(lensGeo, grnM);
-            lGrn.position.set(4.1, 4.78, sideZ);
-            lGrn.rotation.y = ry;
-            g.add(lRed, lAmb, lGrn);
+          tmpChild.position.set(0, 2.9, 0);
+          tmpChild.rotation.set(0, 0, 0);
+          tmpChild.updateMatrixWorld();
+          batcher.add(steelMat, poleGeo, { matrix: tmpChild.matrixWorld });
+
+          tmpChild.position.set(2.4, 5.65, 0);
+          tmpChild.updateMatrixWorld();
+          batcher.add(steelMat, armGeo, { matrix: tmpChild.matrixWorld });
+
+          tmpChild.position.set(4.1, 5.2, 0);
+          tmpChild.updateMatrixWorld();
+          batcher.add(housingMat, headGeo, { matrix: tmpChild.matrixWorld });
+
+          const lensSides = [0.19, -0.19] as const;
+          for (let sIdx = 0; sIdx < lensSides.length; sIdx++) {
+            const sideZ = lensSides[sIdx]!;
+            const instIdx = i * 2 + sIdx;
+            tmpChild.rotation.set(0, sideZ > 0 ? 0 : Math.PI, 0);
+
+            tmpChild.position.set(4.1, 5.62, sideZ);
+            tmpChild.updateMatrixWorld();
+            (isNs ? nsRedInst : ewRedInst).setMatrixAt(instIdx, tmpChild.matrixWorld);
+
+            tmpChild.position.set(4.1, 5.2, sideZ);
+            tmpChild.updateMatrixWorld();
+            (isNs ? nsAmberInst : ewAmberInst).setMatrixAt(instIdx, tmpChild.matrixWorld);
+
+            tmpChild.position.set(4.1, 4.78, sideZ);
+            tmpChild.updateMatrixWorld();
+            (isNs ? nsGreenInst : ewGreenInst).setMatrixAt(instIdx, tmpChild.matrixWorld);
           }
-          roadGroup.add(g);
         };
 
-        // NS-facing cantilever pole & EW-facing cantilever pole
-        mountCorner(nx - 10.5, nz - 10.5, 0, rig.nsRed, rig.nsAmber, rig.nsGreen);
-        mountCorner(nx + 10.5, nz + 10.5, Math.PI / 2, rig.ewRed, rig.ewAmber, rig.ewGreen);
+        addSignalCorner(nx - 10.5, nz - 10.5, 0, true);
+        addSignalCorner(nx + 10.5, nz + 10.5, Math.PI / 2, false);
+      }
+
+      for (const inst of [nsRedInst, nsAmberInst, nsGreenInst, ewRedInst, ewAmberInst, ewGreenInst]) {
+        inst.instanceMatrix.needsUpdate = true;
+        inst.layers.set(1);
+        root.add(inst);
       }
     }
 
@@ -801,6 +822,8 @@ export class MapBuilder {
       delinPostInst.instanceMatrix.needsUpdate = true;
       delinReflectInst.instanceMatrix.needsUpdate = true;
       if (delinReflectInst.instanceColor) delinReflectInst.instanceColor.needsUpdate = true;
+      delinPostInst.layers.set(1);
+      delinReflectInst.layers.set(1);
       root.add(delinPostInst, delinReflectInst);
     }
 
@@ -820,6 +843,7 @@ export class MapBuilder {
         noiseBarrierInst.setMatrixAt(i, dummy.matrix);
       }
       noiseBarrierInst.instanceMatrix.needsUpdate = true;
+      noiseBarrierInst.layers.set(1);
       root.add(noiseBarrierInst);
     }
 
@@ -858,6 +882,8 @@ export class MapBuilder {
       }
       poleInst.instanceMatrix.needsUpdate = true;
       headInst.instanceMatrix.needsUpdate = true;
+      poleInst.layers.set(1);
+      headInst.layers.set(1);
       root.add(poleInst, headInst);
     }
 
@@ -916,16 +942,19 @@ export class MapBuilder {
         const signMesh = new THREE.Mesh(signGeo, signMat);
         signMesh.position.set(p.x, p.y + 7.1, p.z);
         signMesh.rotation.y = rotY;
+        signMesh.layers.set(1);
         root.add(signMesh);
         disposables.push(signMat);
       }
 
       gantryPostInst.instanceMatrix.needsUpdate = true;
       gantryBeamInst.instanceMatrix.needsUpdate = true;
+      gantryPostInst.layers.set(1);
+      gantryBeamInst.layers.set(1);
       root.add(gantryPostInst, gantryBeamInst);
     }
 
-    // 5. Speed Cameras
+    // 5. Speed Cameras (poles & boxes batched, signs on Layer 1)
     const speedCameras: SpeedCameraInstance[] = [];
     const camPoleGeo = new THREE.CylinderGeometry(0.12, 0.15, 5.2, 8);
     const camBoxGeo = new THREE.BoxGeometry(0.8, 0.9, 0.6);
@@ -943,21 +972,20 @@ export class MapBuilder {
       const sideOffset = seg.def.width * 0.5 + 2.4;
       const cx = p.x + rx * sideOffset;
       const cz = p.z + rz * sideOffset;
+      const rotY = Math.atan2(tan.x, tan.z);
 
-      const pole = new THREE.Mesh(camPoleGeo, camMat);
-      pole.position.set(cx, p.y + 2.6, cz);
-      const box = new THREE.Mesh(camBoxGeo, camMat);
-      box.position.set(cx, p.y + 5.1, cz);
-      box.rotation.y = Math.atan2(tan.x, tan.z);
+      batcher.add(camMat, camPoleGeo, { x: cx, y: p.y + 2.6, z: cz, layer: 1 });
+      batcher.add(camMat, camBoxGeo, { x: cx, y: p.y + 5.1, z: cz, rotY, layer: 1 });
 
       const signTex = this.textures.getSpeedSignTexture(sc.speedLimitKmh);
       const signGeo = new THREE.CircleGeometry(0.62, 20);
       const signMat = new THREE.MeshBasicMaterial({ map: signTex, side: THREE.DoubleSide });
       const signMesh = new THREE.Mesh(signGeo, signMat);
       signMesh.position.set(cx, p.y + 3.7, cz);
-      signMesh.rotation.y = Math.atan2(tan.x, tan.z);
+      signMesh.rotation.y = rotY;
+      signMesh.layers.set(1);
 
-      root.add(pole, box, signMesh);
+      root.add(signMesh);
       disposables.push(signGeo, signMat);
 
       speedCameras.push({
@@ -971,7 +999,10 @@ export class MapBuilder {
 
     // 6. Cities, Numbered Dock Warehouses, Yard Containers/Pallets (Instanced), & Service Stations
     const colliders: BoxCollider[] = [];
-    const parkingBayMeshes = new Map<string, THREE.Mesh>();
+    const depotBayTransforms = new Map<
+      string,
+      { x: number; y: number; z: number; headingRad: number }
+    >();
     const parkingBeaconMeshes = new Map<string, THREE.Mesh>();
 
     const yardPbr = this.textures.getYardConcreteTextures();
@@ -992,20 +1023,41 @@ export class MapBuilder {
       bumpScale: 0.045,
     });
     const bayTexture = this.textures.getParkingBayTexture();
-    disposables.push(yardApronMat);
+    const inactiveBayMat = new THREE.MeshBasicMaterial({
+      map: bayTexture,
+      transparent: true,
+      opacity: 0.24,
+      depthWrite: false,
+      color: '#64748b',
+    });
+    const activeBayGeo = new THREE.PlaneGeometry(5.4, 18.5);
+    const activeBayMat = new THREE.MeshBasicMaterial({
+      map: bayTexture,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      color: '#34d399',
+    });
+    const activeBayMesh = new THREE.Mesh(activeBayGeo, activeBayMat);
+    activeBayMesh.visible = false;
+    root.add(activeBayMesh);
+    disposables.push(yardApronMat, inactiveBayMat, activeBayGeo, activeBayMat);
 
     const yardContainerSpots: { x: number; y: number; z: number; rotY: number; color: string }[] = [];
     const yardPalletSpots: { x: number; y: number; z: number; rotY: number }[] = [];
     const yardFloodLightSpots: { x: number; y: number; z: number }[] = [];
 
+    const sharedMats = this.createBatchMaterials(disposables);
+
     for (const city of manifest.cities) {
       this.buildCityArea(
         city,
         root,
+        batcher,
         yardApronMat,
-        bayTexture,
-        lampHeadMat,
-        parkingBayMeshes,
+        inactiveBayMat,
+        sharedMats,
+        depotBayTransforms,
         parkingBeaconMeshes,
         colliders,
         yardContainerSpots,
@@ -1022,7 +1074,7 @@ export class MapBuilder {
       const cMat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.25 });
       disposables.push(cGeo, cMat);
       yardContInst = new THREE.InstancedMesh(cGeo, cMat, yardContainerSpots.length);
-      yardContInst.castShadow = true;
+      yardContInst.layers.set(1);
       const tmpC = new THREE.Color();
       for (let i = 0; i < yardContainerSpots.length; i++) {
         const s = yardContainerSpots[i]!;
@@ -1054,6 +1106,7 @@ export class MapBuilder {
         yardPalletInst.setMatrixAt(i, dummy.matrix);
       }
       yardPalletInst.instanceMatrix.needsUpdate = true;
+      yardPalletInst.layers.set(1);
       root.add(yardPalletInst);
     }
 
@@ -1078,14 +1131,18 @@ export class MapBuilder {
       }
       mastInst.instanceMatrix.needsUpdate = true;
       floodHeadInst.instanceMatrix.needsUpdate = true;
+      mastInst.layers.set(1);
+      floodHeadInst.layers.set(1);
       root.add(mastInst, floodHeadInst);
     }
 
-    // 7. Landmarks (Wind turbines, Toll Plazas, Bridge Pylons, Port Cranes, Lakes, Warehouses — mountain_peak handled by terrain FBM!)
+    // 7. Landmarks (batched per material; rotors on Layer 1)
     const rotatingRotors: THREE.Object3D[] = [];
     for (const lm of manifest.landmarks) {
-      this.buildLandmark(lm, root, rotatingRotors, colliders, disposables);
+      this.buildLandmark(lm, root, batcher, sharedMats, rotatingRotors, colliders, disposables);
     }
+
+    batcher.flush(root, disposables);
 
     // 8. Multi-Tier Natural Ecology (3 Tree Species + Bushes) & Distant Rural Props (Power Pylons + Cottages)
     const updateSceneryDensity = this.buildEcologyAndRuralProps(
@@ -1224,18 +1281,16 @@ export class MapBuilder {
     };
 
     const highlightDestinationDepot = (depotId: string | null): void => {
-      for (const [id, mesh] of parkingBayMeshes.entries()) {
-        const mat = mesh.material as THREE.MeshBasicMaterial;
-        const beacon = parkingBeaconMeshes.get(id);
-        if (id === depotId) {
-          mat.opacity = 0.95;
-          mat.color.set('#34d399');
-          if (beacon) beacon.visible = true;
-        } else {
-          mat.opacity = 0.24;
-          mat.color.set('#64748b');
-          if (beacon) beacon.visible = false;
-        }
+      const bayInfo = depotId ? depotBayTransforms.get(depotId) : undefined;
+      if (bayInfo) {
+        activeBayMesh.position.set(bayInfo.x, bayInfo.y + 0.095, bayInfo.z);
+        activeBayMesh.rotation.set(-Math.PI / 2, 0, bayInfo.headingRad);
+        activeBayMesh.visible = true;
+      } else {
+        activeBayMesh.visible = false;
+      }
+      for (const [id, beacon] of parkingBeaconMeshes.entries()) {
+        beacon.visible = id === depotId;
       }
     };
 
@@ -1250,14 +1305,19 @@ export class MapBuilder {
 
     let currentElapsedSec = 0;
 
+    const signalLookup = new Map<string, number>();
+    for (const sn of signalNodesList) {
+      signalLookup.set(sn.nodeId, sn.phaseOffset);
+    }
+
     const getTrafficLightState = (
       nodeId: string,
       approachDirX: number,
       approachDirZ: number
     ): SignalState => {
-      const rig = signalRigs.get(nodeId);
-      if (!rig) return 'green';
-      const cycle = (currentElapsedSec + rig.phaseOffset) % 26;
+      const offset = signalLookup.get(nodeId);
+      if (offset === undefined) return 'green';
+      const cycle = (currentElapsedSec + offset) % 26;
       const isNsAxis = Math.abs(approachDirZ) >= Math.abs(approachDirX);
       if (isNsAxis) {
         if (cycle < 11) return 'green';
@@ -1279,30 +1339,24 @@ export class MapBuilder {
 
     const update = (dtSec: number, elapsedSec: number): void => {
       currentElapsedSec = elapsedSec;
-      for (const rig of signalRigs.values()) {
-        const cycle = (elapsedSec + rig.phaseOffset) % 26;
-        const nsGreen = cycle < 11;
-        const nsAmber = cycle >= 11 && cycle < 13;
-        const nsRed = cycle >= 13;
-        const ewGreen = cycle >= 13 && cycle < 24;
-        const ewAmber = cycle >= 24;
-        const ewRed = cycle < 13;
-        rig.nsGreen.emissiveIntensity = nsGreen ? 2.4 : 0.05;
-        rig.nsAmber.emissiveIntensity = nsAmber ? 2.4 : 0.05;
-        rig.nsRed.emissiveIntensity = nsRed ? 2.4 : 0.05;
-        rig.ewGreen.emissiveIntensity = ewGreen ? 2.4 : 0.05;
-        rig.ewAmber.emissiveIntensity = ewAmber ? 2.4 : 0.05;
-        rig.ewRed.emissiveIntensity = ewRed ? 2.4 : 0.05;
+      for (let i = 0; i < signalNodesList.length; i++) {
+        // Compute aggregate visibility from earliest/first signal phase cleanly per axis
+        const cycle = (elapsedSec + signalNodesList[i]!.phaseOffset) % 26;
+        if (i === 0) {
+          nsGreenMat.emissiveIntensity = cycle < 11 ? 2.4 : 0.05;
+          nsAmberMat.emissiveIntensity = cycle >= 11 && cycle < 13 ? 2.4 : 0.05;
+          nsRedMat.emissiveIntensity = cycle >= 13 ? 2.4 : 0.05;
+          ewGreenMat.emissiveIntensity = cycle >= 13 && cycle < 24 ? 2.4 : 0.05;
+          ewAmberMat.emissiveIntensity = cycle >= 24 ? 2.4 : 0.05;
+          ewRedMat.emissiveIntensity = cycle < 13 ? 2.4 : 0.05;
+        }
       }
 
       for (let i = 0; i < rotatingRotors.length; i++) {
         rotatingRotors[i]!.rotation.z += dtSec * 1.15;
       }
-      for (const mesh of parkingBayMeshes.values()) {
-        const mat = mesh.material as THREE.MeshBasicMaterial;
-        if (mat.opacity > 0.5) {
-          mat.opacity = 0.72 + Math.sin(elapsedSec * 4.2) * 0.22;
-        }
+      if (activeBayMesh.visible) {
+        activeBayMat.opacity = 0.72 + Math.sin(elapsedSec * 4.2) * 0.22;
       }
       for (const beacon of parkingBeaconMeshes.values()) {
         if (beacon.visible) {
@@ -1339,13 +1393,117 @@ export class MapBuilder {
     };
   }
 
+  private createBatchMaterials(disposables: { dispose: () => void }[]) {
+    const whSideMat = new THREE.MeshStandardMaterial({
+      color: '#475569',
+      roughness: 0.72,
+      metalness: 0.2,
+    });
+    const officeVertexMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.65,
+    });
+    const ringPadVertexMat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.78,
+    });
+    const stationSlateMat = new THREE.MeshStandardMaterial({
+      color: '#253142',
+      roughness: 0.58,
+      metalness: 0.22,
+    });
+    const stationAlumMat = new THREE.MeshStandardMaterial({
+      color: '#d8e0ea',
+      roughness: 0.44,
+      metalness: 0.42,
+    });
+    const stationFuelTrimMat = new THREE.MeshStandardMaterial({
+      color: '#10b981',
+      emissive: '#10b981',
+      emissiveIntensity: 0.72,
+    });
+    const stationHubTrimMat = new THREE.MeshStandardMaterial({
+      color: '#38bdf8',
+      emissive: '#38bdf8',
+      emissiveIntensity: 0.72,
+    });
+    const lakeMat = new THREE.MeshStandardMaterial({
+      color: '#1b5f7d',
+      roughness: 0.14,
+      metalness: 0.7,
+      envMapIntensity: 1.25,
+    });
+    const turbineWhiteMat = new THREE.MeshStandardMaterial({
+      color: '#e2e8f0',
+      roughness: 0.45,
+    });
+    const warehouseVertexMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.78,
+      metalness: 0.15,
+    });
+    const craneVertexMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.5,
+      metalness: 0.45,
+    });
+    const tollCanopyMat = new THREE.MeshStandardMaterial({ color: '#1e3a8a', roughness: 0.42 });
+    const tollPostMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.5 });
+    const tollLightMat = new THREE.MeshBasicMaterial({ color: '#22c55e' });
+    const tollArmMat = new THREE.MeshStandardMaterial({ color: '#ef4444' });
+    const pylonConcreteMat = new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.55 });
+    const whFrontMats = new Map<string, THREE.MeshStandardMaterial>();
+
+    disposables.push(
+      whSideMat,
+      officeVertexMat,
+      ringPadVertexMat,
+      stationSlateMat,
+      stationAlumMat,
+      stationFuelTrimMat,
+      stationHubTrimMat,
+      lakeMat,
+      turbineWhiteMat,
+      warehouseVertexMat,
+      craneVertexMat,
+      tollCanopyMat,
+      tollPostMat,
+      tollLightMat,
+      tollArmMat,
+      pylonConcreteMat
+    );
+
+    return {
+      whSideMat,
+      officeVertexMat,
+      ringPadVertexMat,
+      stationSlateMat,
+      stationAlumMat,
+      stationFuelTrimMat,
+      stationHubTrimMat,
+      lakeMat,
+      turbineWhiteMat,
+      warehouseVertexMat,
+      craneVertexMat,
+      tollCanopyMat,
+      tollPostMat,
+      tollLightMat,
+      tollArmMat,
+      pylonConcreteMat,
+      whFrontMats,
+    };
+  }
+
   private buildCityArea(
     city: CityDefinition,
     root: THREE.Group,
+    batcher: GeometryBatcher,
     apronMat: THREE.MeshStandardMaterial,
-    bayTexture: THREE.CanvasTexture,
-    _lampHeadMat: THREE.MeshStandardMaterial,
-    parkingBayMeshes: Map<string, THREE.Mesh>,
+    inactiveBayMat: THREE.MeshBasicMaterial,
+    sharedMats: ReturnType<MapBuilder['createBatchMaterials']>,
+    depotBayTransforms: Map<string, { x: number; y: number; z: number; headingRad: number }>,
     parkingBeaconMeshes: Map<string, THREE.Mesh>,
     colliders: BoxCollider[],
     yardContainerSpots: { x: number; y: number; z: number; rotY: number; color: string }[],
@@ -1354,10 +1512,12 @@ export class MapBuilder {
     disposables: { dispose: () => void }[]
   ): void {
     const apronGeo = new THREE.BoxGeometry(270, 0.36, 290);
-    const apronMesh = new THREE.Mesh(apronGeo, apronMat);
-    apronMesh.position.set(city.position[0], city.position[1] - 0.16, city.position[2]);
-    apronMesh.receiveShadow = true;
-    root.add(apronMesh);
+    batcher.add(apronMat, apronGeo, {
+      x: city.position[0],
+      y: city.position[1] - 0.16,
+      z: city.position[2],
+      receiveShadow: true,
+    });
     disposables.push(apronGeo);
 
     const accentHex =
@@ -1374,8 +1534,10 @@ export class MapBuilder {
         depot,
         accentHex,
         root,
-        bayTexture,
-        parkingBayMeshes,
+        batcher,
+        inactiveBayMat,
+        sharedMats,
+        depotBayTransforms,
         parkingBeaconMeshes,
         colliders,
         yardContainerSpots,
@@ -1391,7 +1553,15 @@ export class MapBuilder {
         st.position[2] - city.position[2]
       );
       const isHighwayRestStop = distFromCity > 140;
-      this.buildServiceStation(st, isHighwayRestStop, apronMat, root, colliders, disposables);
+      this.buildServiceStation(
+        st,
+        isHighwayRestStop,
+        apronMat,
+        batcher,
+        sharedMats,
+        colliders,
+        disposables
+      );
     }
   }
 
@@ -1399,8 +1569,10 @@ export class MapBuilder {
     depot: CityDepot,
     accentHex: string,
     root: THREE.Group,
-    bayTexture: THREE.CanvasTexture,
-    parkingBayMeshes: Map<string, THREE.Mesh>,
+    batcher: GeometryBatcher,
+    inactiveBayMat: THREE.MeshBasicMaterial,
+    sharedMats: ReturnType<MapBuilder['createBatchMaterials']>,
+    depotBayTransforms: Map<string, { x: number; y: number; z: number; headingRad: number }>,
     parkingBeaconMeshes: Map<string, THREE.Mesh>,
     colliders: BoxCollider[],
     yardContainerSpots: { x: number; y: number; z: number; rotY: number; color: string }[],
@@ -1410,22 +1582,22 @@ export class MapBuilder {
   ): void {
     const [bx, by, bz] = depot.parkingBayPosition;
     const bayGeo = new THREE.PlaneGeometry(5.4, 18.5);
-    const bayMat = new THREE.MeshBasicMaterial({
-      map: bayTexture,
-      transparent: true,
-      opacity: 0.26,
-      depthWrite: false,
-      color: '#64748b',
+    batcher.add(inactiveBayMat, bayGeo, {
+      x: bx,
+      y: by + 0.08,
+      z: bz,
+      rotX: -Math.PI / 2,
+      rotZ: depot.parkingBayHeadingRad,
     });
-    const bayMesh = new THREE.Mesh(bayGeo, bayMat);
-    bayMesh.rotation.x = -Math.PI / 2;
-    bayMesh.rotation.z = depot.parkingBayHeadingRad;
-    bayMesh.position.set(bx, by + 0.08, bz);
-    root.add(bayMesh);
-    parkingBayMeshes.set(depot.id, bayMesh);
-    disposables.push(bayGeo, bayMat);
+    depotBayTransforms.set(depot.id, {
+      x: bx,
+      y: by,
+      z: bz,
+      headingRad: depot.parkingBayHeadingRad,
+    });
+    disposables.push(bayGeo);
 
-    // Animated vertical emerald guide beacon visible from across the yard when delivering
+    // Animated vertical emerald guide beacon (Layer 1: skipped by mirrors)
     const beaconGeo = new THREE.CylinderGeometry(2.4, 2.8, 22, 16, 1, true);
     const beaconMat = new THREE.MeshBasicMaterial({
       color: '#10b981',
@@ -1437,28 +1609,43 @@ export class MapBuilder {
     });
     const beaconMesh = new THREE.Mesh(beaconGeo, beaconMat);
     beaconMesh.position.set(bx, by + 11.1, bz);
+    beaconMesh.layers.set(1);
     beaconMesh.visible = false;
     root.add(beaconMesh);
     parkingBeaconMeshes.set(depot.id, beaconMesh);
     disposables.push(beaconGeo, beaconMat);
 
-    // Modern steel dock warehouse with numbered DOCK 1..4 bays positioned clear of the parking bay
     const cosH = Math.cos(depot.parkingBayHeadingRad);
     const sinH = Math.sin(depot.parkingBayHeadingRad);
-    // Place warehouse behind the rear of the parking bay (-19m along bay heading)
     const whX = bx - sinH * 19;
     const whZ = bz - cosH * 19;
-    const dockTex = this.textures.getWarehouseDockTexture(accentHex);
-    const whSideMat = new THREE.MeshStandardMaterial({ color: '#475569', roughness: 0.72, metalness: 0.2 });
-    const whFrontMat = new THREE.MeshStandardMaterial({ map: dockTex, roughness: 0.6 });
-    const whGeo = new THREE.BoxGeometry(26, 7.6, 12);
-    const whMesh = new THREE.Mesh(whGeo, [whSideMat, whSideMat, whSideMat, whSideMat, whFrontMat, whSideMat]);
-    whMesh.position.set(whX, by + 3.8, whZ);
-    whMesh.rotation.y = depot.parkingBayHeadingRad;
-    whMesh.castShadow = true;
-    whMesh.receiveShadow = true;
-    root.add(whMesh);
-    disposables.push(whGeo, whSideMat, whFrontMat);
+
+    const whBodyGeo = new THREE.BoxGeometry(26, 7.6, 12);
+    batcher.add(sharedMats.whSideMat, whBodyGeo, {
+      x: whX,
+      y: by + 3.8,
+      z: whZ,
+      rotY: depot.parkingBayHeadingRad,
+      castShadow: true,
+      receiveShadow: true,
+    });
+    disposables.push(whBodyGeo);
+
+    let whFrontMat = sharedMats.whFrontMats.get(accentHex);
+    if (!whFrontMat) {
+      const dockTex = this.textures.getWarehouseDockTexture(accentHex);
+      whFrontMat = new THREE.MeshStandardMaterial({ map: dockTex, roughness: 0.6 });
+      sharedMats.whFrontMats.set(accentHex, whFrontMat);
+      disposables.push(whFrontMat);
+    }
+    const whFrontGeo = new THREE.PlaneGeometry(25.8, 7.5);
+    batcher.add(whFrontMat, whFrontGeo, {
+      x: whX + sinH * 6.02,
+      y: by + 3.8,
+      z: whZ + cosH * 6.02,
+      rotY: depot.parkingBayHeadingRad,
+    });
+    disposables.push(whFrontGeo);
 
     colliders.push({
       minX: whX - 11,
@@ -1469,19 +1656,18 @@ export class MapBuilder {
       label: `${depot.name} 装卸月台`,
     });
 
-    // Gate security kiosk & office booth
     const [ox, oy, oz] = depot.officePosition;
     const officeGeo = new THREE.BoxGeometry(6.5, 4.2, 5.0);
-    const officeMat = new THREE.MeshStandardMaterial({
-      color: depot.type === 'port' ? '#1e3a8a' : depot.type === 'factory' ? '#334155' : '#3f6212',
-      roughness: 0.65,
+    const officeColor =
+      depot.type === 'port' ? '#1e3a8a' : depot.type === 'factory' ? '#334155' : '#3f6212';
+    batcher.add(sharedMats.officeVertexMat, officeGeo, {
+      x: ox + 5.8,
+      y: oy + 2.1,
+      z: oz,
+      colorHex: officeColor,
+      receiveShadow: true,
     });
-    const office = new THREE.Mesh(officeGeo, officeMat);
-    office.position.set(ox + 5.8, oy + 2.1, oz);
-    office.castShadow = true;
-    office.receiveShadow = true;
-    root.add(office);
-    disposables.push(officeGeo, officeMat);
+    disposables.push(officeGeo);
 
     colliders.push({
       minX: ox + 5.8 - 3.3,
@@ -1492,21 +1678,16 @@ export class MapBuilder {
       label: depot.name,
     });
 
-    // Holographic interaction ring at office position
     const ringGeo = new THREE.RingGeometry(2.8, 3.6, 24);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: '#f59e0b',
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.78,
+    batcher.add(sharedMats.ringPadVertexMat, ringGeo, {
+      x: ox,
+      y: oy + 0.1,
+      z: oz,
+      rotX: -Math.PI / 2,
+      colorHex: '#f59e0b',
     });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(ox, oy + 0.1, oz);
-    root.add(ring);
-    disposables.push(ringGeo, ringMat);
+    disposables.push(ringGeo);
 
-    // Queue instanced containers, pallets & floodlight mast near depot edges
     const cColors = ['#b91c1c', '#1d4ed8', '#d97706', '#047857'];
     yardContainerSpots.push(
       { x: bx + cosH * 12, y: by + 1.3, z: bz - sinH * 12, rotY: depot.parkingBayHeadingRad, color: cColors[0]! },
@@ -1524,7 +1705,8 @@ export class MapBuilder {
     st: ServiceStation,
     withOwnApron: boolean,
     apronMat: THREE.MeshStandardMaterial,
-    root: THREE.Group,
+    batcher: GeometryBatcher,
+    sharedMats: ReturnType<MapBuilder['createBatchMaterials']>,
     colliders: BoxCollider[],
     disposables: { dispose: () => void }[]
   ): void {
@@ -1534,47 +1716,46 @@ export class MapBuilder {
 
     if (withOwnApron) {
       const restApronGeo = new THREE.BoxGeometry(58, 0.34, 46);
-      const restApron = new THREE.Mesh(restApronGeo, apronMat);
-      restApron.position.set(sx, sy - 0.14, sz);
-      restApron.rotation.y = st.headingRad;
-      restApron.receiveShadow = true;
-      root.add(restApron);
+      batcher.add(apronMat, restApronGeo, {
+        x: sx,
+        y: sy - 0.14,
+        z: sz,
+        rotY: st.headingRad,
+        receiveShadow: true,
+      });
       disposables.push(restApronGeo);
     }
 
     const roofGeo = new THREE.BoxGeometry(16, 0.9, 12);
-    const roofMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.5, metalness: 0.35 });
-    const roof = new THREE.Mesh(roofGeo, roofMat);
-    roof.position.set(sx, sy + 6.4, sz);
-    roof.castShadow = true;
-    root.add(roof);
+    batcher.add(sharedMats.stationSlateMat, roofGeo, {
+      x: sx,
+      y: sy + 6.4,
+      z: sz,
+      castShadow: true,
+    });
 
     const trimGeo = new THREE.BoxGeometry(16.2, 0.35, 12.2);
-    const trimMat = new THREE.MeshStandardMaterial({
-      color: accentColor,
-      emissive: accentColor,
-      emissiveIntensity: 0.72,
-    });
-    const trim = new THREE.Mesh(trimGeo, trimMat);
-    trim.position.set(sx, sy + 6.4, sz);
-    root.add(trim);
+    batcher.add(
+      isFuelOnly ? sharedMats.stationFuelTrimMat : sharedMats.stationHubTrimMat,
+      trimGeo,
+      { x: sx, y: sy + 6.4, z: sz }
+    );
 
-    // Fuel pump islands under canopy
     const pumpGeo = new THREE.BoxGeometry(0.9, 1.7, 0.65);
-    const pumpMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.4 });
     for (const px of [-3.6, 3.6]) {
-      const pump = new THREE.Mesh(pumpGeo, pumpMat);
-      pump.position.set(sx + px, sy + 0.85, sz);
-      root.add(pump);
+      batcher.add(sharedMats.stationAlumMat, pumpGeo, {
+        x: sx + px,
+        y: sy + 0.85,
+        z: sz,
+      });
     }
 
-    // Convenience store / service reception building beside canopy
     const shopGeo = new THREE.BoxGeometry(10, 4.0, 6.5);
-    const shopMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.65 });
-    const shop = new THREE.Mesh(shopGeo, shopMat);
-    shop.position.set(sx, sy + 2.0, sz - 12.5);
-    shop.castShadow = true;
-    root.add(shop);
+    batcher.add(sharedMats.stationSlateMat, shopGeo, {
+      x: sx,
+      y: sy + 2.0,
+      z: sz - 12.5,
+    });
     colliders.push({
       minX: sx - 5.2,
       maxX: sx + 5.2,
@@ -1585,17 +1766,17 @@ export class MapBuilder {
     });
 
     const pillarGeo = new THREE.BoxGeometry(0.65, 6.2, 0.65);
-    const pillarMat = new THREE.MeshStandardMaterial({ color: '#cbd5e1', metalness: 0.5 });
     for (const [px, pz] of [
       [-6.5, -4.5],
       [6.5, -4.5],
       [-6.5, 4.5],
       [6.5, 4.5],
     ] as const) {
-      const p = new THREE.Mesh(pillarGeo, pillarMat);
-      p.position.set(sx + px, sy + 3.1, sz + pz);
-      p.castShadow = true;
-      root.add(p);
+      batcher.add(sharedMats.stationAlumMat, pillarGeo, {
+        x: sx + px,
+        y: sy + 3.1,
+        z: sz + pz,
+      });
       colliders.push({
         minX: sx + px - 0.5,
         maxX: sx + px + 0.5,
@@ -1607,110 +1788,82 @@ export class MapBuilder {
     }
 
     const padGeo = new THREE.RingGeometry(3.2, 4.1, 24);
-    const padMat = new THREE.MeshBasicMaterial({
-      color: accentColor,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.75,
+    batcher.add(sharedMats.ringPadVertexMat, padGeo, {
+      x: sx,
+      y: sy + 0.09,
+      z: sz,
+      rotX: -Math.PI / 2,
+      colorHex: accentColor,
     });
-    const pad = new THREE.Mesh(padGeo, padMat);
-    pad.rotation.x = -Math.PI / 2;
-    pad.position.set(sx, sy + 0.09, sz);
-    root.add(pad);
 
-    disposables.push(
-      roofGeo,
-      roofMat,
-      trimGeo,
-      trimMat,
-      pumpGeo,
-      pumpMat,
-      shopGeo,
-      shopMat,
-      pillarGeo,
-      pillarMat,
-      padGeo,
-      padMat
-    );
+    disposables.push(roofGeo, trimGeo, pumpGeo, shopGeo, pillarGeo, padGeo);
   }
 
   private buildLandmark(
     lm: MapManifest['landmarks'][number],
     root: THREE.Group,
+    batcher: GeometryBatcher,
+    sharedMats: ReturnType<MapBuilder['createBatchMaterials']>,
     rotatingRotors: THREE.Object3D[],
     colliders: BoxCollider[],
     disposables: { dispose: () => void }[]
   ): void {
     const [x, y, z] = lm.position;
-
-    // mountain_peak is now sculpted directly into the continuous FBM vertex-colored terrain
     if (lm.kind === 'mountain_peak') return;
 
     if (lm.kind === 'lake') {
       const [sx, , sz] = lm.scale ?? [200, 1, 200];
       const geo = new THREE.PlaneGeometry(sx, sz);
-      const mat = new THREE.MeshStandardMaterial({
-        color: '#1b5f7d',
-        roughness: 0.14,
-        metalness: 0.7,
-        envMapIntensity: 1.25,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.position.set(x, y, z);
-      root.add(mesh);
-      disposables.push(geo, mat);
+      batcher.add(sharedMats.lakeMat, geo, { x, y, z, rotX: -Math.PI / 2 });
+      disposables.push(geo);
       return;
     }
 
     if (lm.kind === 'wind_turbine') {
+      const rotY = lm.rotationY ?? 0;
+      const mastGeo = new THREE.CylinderGeometry(0.8, 1.8, 52, 8);
+      const nacelleGeo = new THREE.BoxGeometry(2.6, 2.4, 5.2);
+      batcher.add(sharedMats.turbineWhiteMat, mastGeo, { x, y: y + 26, z, rotY, layer: 1 });
+      batcher.add(sharedMats.turbineWhiteMat, nacelleGeo, { x, y: y + 52, z, rotY, layer: 1 });
+
       const group = new THREE.Group();
       group.position.set(x, y, z);
-      group.rotation.y = lm.rotationY ?? 0;
-
-      const mastGeo = new THREE.CylinderGeometry(0.8, 1.8, 52, 8);
-      const whiteMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.45 });
-      const mast = new THREE.Mesh(mastGeo, whiteMat);
-      mast.position.y = 26;
-      group.add(mast);
-
-      const nacelleGeo = new THREE.BoxGeometry(2.6, 2.4, 5.2);
-      const nacelle = new THREE.Mesh(nacelleGeo, whiteMat);
-      nacelle.position.set(0, 52, 0);
-      group.add(nacelle);
-
+      group.rotation.y = rotY;
       const rotor = new THREE.Group();
       rotor.position.set(0, 52, 2.8);
       const bladeGeo = new THREE.BoxGeometry(1.1, 22, 0.25);
+      const rotorBatch = new GeometryBatcher();
+      const tmpRot = new THREE.Object3D();
+      const tmpBlade = new THREE.Object3D();
+      tmpRot.add(tmpBlade);
       for (let i = 0; i < 3; i++) {
-        const bladeHolder = new THREE.Group();
-        bladeHolder.rotation.z = (i * Math.PI * 2) / 3;
-        const blade = new THREE.Mesh(bladeGeo, whiteMat);
-        blade.position.y = 11;
-        bladeHolder.add(blade);
-        rotor.add(bladeHolder);
+        tmpRot.rotation.z = (i * Math.PI * 2) / 3;
+        tmpBlade.position.y = 11;
+        tmpRot.updateMatrixWorld(true);
+        rotorBatch.add(sharedMats.turbineWhiteMat, bladeGeo, {
+          matrix: tmpBlade.matrixWorld,
+          layer: 1,
+        });
       }
+      rotorBatch.flush(rotor, disposables);
       group.add(rotor);
       rotatingRotors.push(rotor);
       root.add(group);
-      disposables.push(mastGeo, whiteMat, nacelleGeo, bladeGeo);
+      disposables.push(mastGeo, nacelleGeo, bladeGeo);
       return;
     }
 
     if (lm.kind === 'warehouse_block') {
       const [sx, sy, sz] = lm.scale ?? [44, 12, 24];
       const geo = new THREE.BoxGeometry(sx, sy, sz);
-      const mat = new THREE.MeshStandardMaterial({
-        color: lm.color ?? '#475569',
-        roughness: 0.78,
-        metalness: 0.15,
+      batcher.add(sharedMats.warehouseVertexMat, geo, {
+        x,
+        y: y + sy * 0.5,
+        z,
+        colorHex: lm.color ?? '#475569',
+        receiveShadow: true,
       });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(x, y + sy * 0.5, z);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      root.add(mesh);
-      disposables.push(geo, mat);
+      disposables.push(geo);
 
       colliders.push({
         minX: x - sx * 0.5,
@@ -1724,15 +1877,15 @@ export class MapBuilder {
     }
 
     if (lm.kind === 'port_crane') {
-      const group = new THREE.Group();
-      group.position.set(x, y, z);
-      group.rotation.y = lm.rotationY ?? 0;
+      const rotY = lm.rotationY ?? 0;
+      const colorHex = lm.color ?? '#dc2626';
+      const holder = new THREE.Object3D();
+      const child = new THREE.Object3D();
+      holder.add(child);
+      holder.position.set(x, y, z);
+      holder.rotation.y = rotY;
+      holder.updateMatrixWorld(true);
 
-      const steelMat = new THREE.MeshStandardMaterial({
-        color: lm.color ?? '#dc2626',
-        roughness: 0.5,
-        metalness: 0.45,
-      });
       const legGeo = new THREE.BoxGeometry(1.6, 26, 1.6);
       const beamGeo = new THREE.BoxGeometry(4.5, 2.2, 34);
       for (const [lx, lz] of [
@@ -1741,78 +1894,92 @@ export class MapBuilder {
         [-4, 4],
         [4, 4],
       ] as const) {
-        const leg = new THREE.Mesh(legGeo, steelMat);
-        leg.position.set(lx, 13, lz);
-        group.add(leg);
+        child.position.set(lx, 13, lz);
+        child.rotation.set(0, 0, 0);
+        child.updateMatrixWorld();
+        batcher.add(sharedMats.craneVertexMat, legGeo, {
+          matrix: child.matrixWorld,
+          colorHex,
+          layer: 1,
+        });
       }
-      const beam = new THREE.Mesh(beamGeo, steelMat);
-      beam.position.set(0, 26.5, 8);
-      group.add(beam);
-      root.add(group);
-      disposables.push(steelMat, legGeo, beamGeo);
+      child.position.set(0, 26.5, 8);
+      child.updateMatrixWorld();
+      batcher.add(sharedMats.craneVertexMat, beamGeo, {
+        matrix: child.matrixWorld,
+        colorHex,
+        layer: 1,
+      });
+      disposables.push(legGeo, beamGeo);
       return;
     }
 
     if (lm.kind === 'toll_booth') {
-      const group = new THREE.Group();
-      group.position.set(x, y, z);
-      group.rotation.y = lm.rotationY ?? 0;
+      const holder = new THREE.Object3D();
+      const child = new THREE.Object3D();
+      holder.add(child);
+      holder.position.set(x, y, z);
+      holder.rotation.y = lm.rotationY ?? 0;
+      holder.updateMatrixWorld(true);
 
       const canopyGeo = new THREE.BoxGeometry(24, 1.4, 7.2);
-      const canopyMat = new THREE.MeshStandardMaterial({ color: '#1e3a8a', roughness: 0.42 });
-      const canopy = new THREE.Mesh(canopyGeo, canopyMat);
-      canopy.position.set(0, 6.8, 0);
-      group.add(canopy);
-
       const postGeo = new THREE.BoxGeometry(1.0, 6.6, 2.8);
-      const postMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.5 });
-      const greenLightMat = new THREE.MeshBasicMaterial({ color: '#22c55e' });
       const lightGeo = new THREE.BoxGeometry(0.7, 0.5, 0.3);
       const armGeo = new THREE.BoxGeometry(3.8, 0.14, 0.14);
-      const armMat = new THREE.MeshStandardMaterial({ color: '#ef4444' });
+
+      child.position.set(0, 6.8, 0);
+      child.rotation.set(0, 0, 0);
+      child.updateMatrixWorld();
+      batcher.add(sharedMats.tollCanopyMat, canopyGeo, { matrix: child.matrixWorld });
 
       for (const px of [-9.8, -3.2, 3.2, 9.8]) {
-        const post = new THREE.Mesh(postGeo, postMat);
-        post.position.set(px, 3.3, 0);
-        group.add(post);
+        child.position.set(px, 3.3, 0);
+        child.updateMatrixWorld();
+        batcher.add(sharedMats.tollPostMat, postGeo, { matrix: child.matrixWorld });
       }
       for (const lx of [-6.5, 0, 6.5]) {
-        const led = new THREE.Mesh(lightGeo, greenLightMat);
-        led.position.set(lx, 6.6, 3.65);
-        const ledBack = new THREE.Mesh(lightGeo, greenLightMat);
-        ledBack.position.set(lx, 6.6, -3.65);
-        // Raised pass-through barrier arms
-        const arm = new THREE.Mesh(armGeo, armMat);
-        arm.position.set(lx - 1.5, 3.0, 0);
-        arm.rotation.z = 1.15;
-        group.add(led, ledBack, arm);
+        child.rotation.set(0, 0, 0);
+        child.position.set(lx, 6.6, 3.65);
+        child.updateMatrixWorld();
+        batcher.add(sharedMats.tollLightMat, lightGeo, { matrix: child.matrixWorld });
+
+        child.position.set(lx, 6.6, -3.65);
+        child.updateMatrixWorld();
+        batcher.add(sharedMats.tollLightMat, lightGeo, { matrix: child.matrixWorld });
+
+        child.position.set(lx - 1.5, 3.0, 0);
+        child.rotation.set(0, 0, 1.15);
+        child.updateMatrixWorld();
+        batcher.add(sharedMats.tollArmMat, armGeo, { matrix: child.matrixWorld });
       }
-      root.add(group);
-      disposables.push(canopyGeo, canopyMat, postGeo, postMat, greenLightMat, lightGeo, armGeo, armMat);
+      disposables.push(canopyGeo, postGeo, lightGeo, armGeo);
       return;
     }
 
     if (lm.kind === 'bridge_pylon') {
-      const group = new THREE.Group();
-      group.position.set(x, y, z);
-      group.rotation.y = lm.rotationY ?? 0;
+      const holder = new THREE.Object3D();
+      const child = new THREE.Object3D();
+      holder.add(child);
+      holder.position.set(x, y, z);
+      holder.rotation.y = lm.rotationY ?? 0;
+      holder.updateMatrixWorld(true);
 
-      const mat = new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.55 });
       const towerGeo = new THREE.BoxGeometry(1.5, 22, 1.5);
       const crossGeo = new THREE.BoxGeometry(21, 1.2, 1.4);
       const parapetGeo = new THREE.BoxGeometry(0.4, 1.4, 28);
       for (const px of [-9.8, 9.8]) {
-        const t = new THREE.Mesh(towerGeo, mat);
-        t.position.set(px, 9, 0);
-        const para = new THREE.Mesh(parapetGeo, mat);
-        para.position.set(px * 0.88, 0.7, 0);
-        group.add(t, para);
+        child.position.set(px, 9, 0);
+        child.updateMatrixWorld();
+        batcher.add(sharedMats.pylonConcreteMat, towerGeo, { matrix: child.matrixWorld });
+
+        child.position.set(px * 0.88, 0.7, 0);
+        child.updateMatrixWorld();
+        batcher.add(sharedMats.pylonConcreteMat, parapetGeo, { matrix: child.matrixWorld });
       }
-      const c = new THREE.Mesh(crossGeo, mat);
-      c.position.set(0, 16, 0);
-      group.add(c);
-      root.add(group);
-      disposables.push(mat, towerGeo, crossGeo, parapetGeo);
+      child.position.set(0, 16, 0);
+      child.updateMatrixWorld();
+      batcher.add(sharedMats.pylonConcreteMat, crossGeo, { matrix: child.matrixWorld });
+      disposables.push(towerGeo, crossGeo, parapetGeo);
     }
   }
 
@@ -1947,6 +2114,7 @@ export class MapBuilder {
       spruceHighInst.instanceMatrix.needsUpdate = true;
       if (spruceLowInst.instanceColor) spruceLowInst.instanceColor.needsUpdate = true;
       if (spruceHighInst.instanceColor) spruceHighInst.instanceColor.needsUpdate = true;
+      spruceTrunkInst.layers.set(1);
       root.add(spruceTrunkInst, spruceLowInst, spruceHighInst);
     }
 
@@ -1979,6 +2147,7 @@ export class MapBuilder {
       oakTrunkInst.instanceMatrix.needsUpdate = true;
       oakInst.instanceMatrix.needsUpdate = true;
       if (oakInst.instanceColor) oakInst.instanceColor.needsUpdate = true;
+      oakTrunkInst.layers.set(1);
       root.add(oakTrunkInst, oakInst);
     }
 
@@ -1998,6 +2167,7 @@ export class MapBuilder {
         bushInst.setMatrixAt(i, dummy.matrix);
       }
       bushInst.instanceMatrix.needsUpdate = true;
+      bushInst.layers.set(1);
       root.add(bushInst);
     }
 
@@ -2028,6 +2198,8 @@ export class MapBuilder {
       }
       cottageWallInst.instanceMatrix.needsUpdate = true;
       cottageRoofInst.instanceMatrix.needsUpdate = true;
+      cottageWallInst.layers.set(1);
+      cottageRoofInst.layers.set(1);
       root.add(cottageWallInst, cottageRoofInst);
     }
 
@@ -2052,6 +2224,7 @@ export class MapBuilder {
         pylonInst.setMatrixAt(i, dummy.matrix);
       }
       pylonInst.instanceMatrix.needsUpdate = true;
+      pylonInst.layers.set(1);
       root.add(pylonInst);
     }
 
