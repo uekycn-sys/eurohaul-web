@@ -430,9 +430,9 @@ export class MapBuilder {
     root.add(roadGroup);
 
     const skirtMat = new THREE.MeshStandardMaterial({
-      color: '#5a6065',
+      vertexColors: true,
       roughness: 0.92,
-      metalness: 0.03,
+      metalness: 0.02,
     });
     disposables.push(skirtMat);
 
@@ -473,9 +473,14 @@ export class MapBuilder {
       const uvs = new Float32Array(n * 2 * 2);
       const indices: number[] = [];
 
-      // 6-vertex cross-section embankment skirt: graded gravel shoulder -> slope down into terrain
+      // Gentle sloped embankment (8-12.5m wide runout blending gravel shoulder into meadow grass)
       const skirtPos = new Float32Array(n * 6 * 3);
+      const skirtCol = new Float32Array(n * 6 * 3);
       const skirtIndices: number[] = [];
+      const slopeSpan = seg.def.roadClass === 'motorway' ? 12.0 : 9.0;
+      const colEdge = new THREE.Color('#666b6e');
+      const colGravel = new THREE.Color('#6f7468');
+      const colGrass = new THREE.Color('#5a7747');
 
       let accumLen = 0;
       for (let i = 0; i < n; i++) {
@@ -514,29 +519,49 @@ export class MapBuilder {
         uvs[uvBase + 2] = 1;
         uvs[uvBase + 3] = vCoord;
 
-        // Graded gravel shoulder (+1.6m, -0.10m) then embankment slope (+4.2m, -4.0m)
+        const lToeX = lx - rx * slopeSpan;
+        const lToeZ = lz - rz * slopeSpan;
+        const rToeX = rpx + rx * slopeSpan;
+        const rToeZ = rpz + rz * slopeSpan;
+        const lToeY = Math.min(s.y - 0.65, getHeightAt(lToeX, lToeZ) - 0.35);
+        const rToeY = Math.min(s.y - 0.65, getHeightAt(rToeX, rToeZ) - 0.35);
+
         const sb = i * 18;
-        // Left: edge (0), gravel shoulder (1), toe (2)
+        // Left: edge (0), gravel shoulder (1), gentle grass toe (2)
         skirtPos[sb] = lx;
         skirtPos[sb + 1] = s.y + 0.05;
         skirtPos[sb + 2] = lz;
-        skirtPos[sb + 3] = lx - rx * 1.6;
-        skirtPos[sb + 4] = s.y - 0.12;
-        skirtPos[sb + 5] = lz - rz * 1.6;
-        skirtPos[sb + 6] = lx - rx * 4.2;
-        skirtPos[sb + 7] = s.y - 4.0;
-        skirtPos[sb + 8] = lz - rz * 4.2;
+        skirtPos[sb + 3] = lx - rx * 2.1;
+        skirtPos[sb + 4] = s.y - 0.1;
+        skirtPos[sb + 5] = lz - rz * 2.1;
+        skirtPos[sb + 6] = lToeX;
+        skirtPos[sb + 7] = lToeY;
+        skirtPos[sb + 8] = lToeZ;
 
-        // Right: edge (3), gravel shoulder (4), toe (5)
+        // Right: edge (3), gravel shoulder (4), gentle grass toe (5)
         skirtPos[sb + 9] = rpx;
         skirtPos[sb + 10] = s.y + 0.05;
         skirtPos[sb + 11] = rpz;
-        skirtPos[sb + 12] = rpx + rx * 1.6;
-        skirtPos[sb + 13] = s.y - 0.12;
-        skirtPos[sb + 14] = rpz + rz * 1.6;
-        skirtPos[sb + 15] = rpx + rx * 4.2;
-        skirtPos[sb + 16] = s.y - 4.0;
-        skirtPos[sb + 17] = rpz + rz * 4.2;
+        skirtPos[sb + 12] = rpx + rx * 2.1;
+        skirtPos[sb + 13] = s.y - 0.1;
+        skirtPos[sb + 14] = rpz + rz * 2.1;
+        skirtPos[sb + 15] = rToeX;
+        skirtPos[sb + 16] = rToeY;
+        skirtPos[sb + 17] = rToeZ;
+
+        // Vertex color gradient: gravel shoulder -> meadow grass
+        for (const [offset, col] of [
+          [0, colEdge],
+          [3, colGravel],
+          [6, colGrass],
+          [9, colEdge],
+          [12, colGravel],
+          [15, colGrass],
+        ] as [number, THREE.Color][]) {
+          skirtCol[sb + offset] = col.r;
+          skirtCol[sb + offset + 1] = col.g;
+          skirtCol[sb + offset + 2] = col.b;
+        }
 
         if (i < n - 1) {
           const a = i * 2;
@@ -566,12 +591,18 @@ export class MapBuilder {
 
       const skirtGeo = new THREE.BufferGeometry();
       skirtGeo.setAttribute('position', new THREE.BufferAttribute(skirtPos, 3));
+      skirtGeo.setAttribute('color', new THREE.BufferAttribute(skirtCol, 3));
       skirtGeo.setIndex(skirtIndices);
       skirtGeo.computeVertexNormals();
       batcher.add(skirtMat, skirtGeo, { receiveShadow: true });
       disposables.push(skirtGeo);
     }
 
+    const worldVertexMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.62,
+      metalness: 0.22,
+    });
     const junctionMat = new THREE.MeshStandardMaterial({
       color: '#3c4048',
       roughness: 0.88,
@@ -579,10 +610,7 @@ export class MapBuilder {
       polygonOffset: true,
       polygonOffsetFactor: -1,
     });
-    disposables.push(junctionMat);
-
-    const islandMat = new THREE.MeshStandardMaterial({ color: '#4c6642', roughness: 0.9 });
-    disposables.push(islandMat);
+    disposables.push(worldVertexMat, junctionMat);
 
     for (const node of manifest.nodes) {
       const radius = node.kind === 'roundabout' ? 18 : node.kind === 'intersection' ? 12.5 : 10.5;
@@ -597,10 +625,11 @@ export class MapBuilder {
 
       if (node.kind === 'roundabout') {
         const islandGeo = new THREE.CylinderGeometry(5.5, 6.2, 0.7, 18);
-        batcher.add(islandMat, islandGeo, {
+        batcher.add(worldVertexMat, islandGeo, {
           x: node.position[0],
           y: node.position[1] + 0.2,
           z: node.position[2],
+          colorHex: '#4c6642',
         });
         disposables.push(islandGeo);
       }
@@ -716,6 +745,7 @@ export class MapBuilder {
     for (const seg of segments) {
       const halfW = seg.def.width * 0.5;
       if (seg.def.hasGuardrails) {
+        const isDividedMotorway = seg.def.roadClass === 'motorway' && seg.def.lanes >= 4;
         for (let i = 2; i < seg.samples.length - 2; i += 2) {
           const s = seg.samples[i]!;
           const rx = -s.tz;
@@ -723,6 +753,11 @@ export class MapBuilder {
           const rotY = Math.atan2(s.tx, s.tz);
           railTransforms.push({ x: s.x - rx * (halfW + 0.75), y: s.y, z: s.z - rz * (halfW + 0.75), rotY });
           railTransforms.push({ x: s.x + rx * (halfW + 0.75), y: s.y, z: s.z + rz * (halfW + 0.75), rotY });
+
+          // Slim low central double-wave barrier along 4-lane European motorways (reuses railInst, 0 extra DC)
+          if (isDividedMotorway && i >= 4 && i < seg.samples.length - 4) {
+            railTransforms.push({ x: s.x, y: s.y - 0.14, z: s.z, rotY });
+          }
 
           if (i % 4 === 2) {
             delineatorTransforms.push({ x: s.x - rx * (halfW + 1.15), y: s.y, z: s.z - rz * (halfW + 1.15), rotY, isRight: false });
@@ -752,9 +787,9 @@ export class MapBuilder {
           const rotY = Math.atan2(s.tx, s.tz);
           const side = (i / 8) % 2 === 0 ? 1 : -1;
           lightTransforms.push({
-            x: s.x + rx * side * (halfW + 1.4),
+            x: s.x + rx * side * (halfW + 1.5),
             y: s.y,
-            z: s.z + rz * side * (halfW + 1.4),
+            z: s.z + rz * side * (halfW + 1.5),
             rotY: side > 0 ? rotY : rotY + Math.PI,
           });
         }
@@ -785,6 +820,7 @@ export class MapBuilder {
       }
       postInst.instanceMatrix.needsUpdate = true;
       railInst.instanceMatrix.needsUpdate = true;
+      postInst.layers.set(1);
       root.add(postInst, railInst);
     }
 
@@ -1047,7 +1083,7 @@ export class MapBuilder {
     const yardPalletSpots: { x: number; y: number; z: number; rotY: number }[] = [];
     const yardFloodLightSpots: { x: number; y: number; z: number }[] = [];
 
-    const sharedMats = this.createBatchMaterials(disposables);
+    const sharedMats = this.createBatchMaterials(disposables, worldVertexMat);
 
     for (const city of manifest.cities) {
       this.buildCityArea(
@@ -1150,6 +1186,7 @@ export class MapBuilder {
       root,
       findNearestRoadDistanceAndY,
       getHeightAt,
+      lightTransforms,
       delinPostInst,
       delinReflectInst,
       delineatorTransforms.length,
@@ -1400,31 +1437,15 @@ export class MapBuilder {
     };
   }
 
-  private createBatchMaterials(disposables: { dispose: () => void }[]) {
-    const whSideMat = new THREE.MeshStandardMaterial({
-      color: '#475569',
-      roughness: 0.72,
-      metalness: 0.2,
-    });
-    const officeVertexMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.65,
-    });
+  private createBatchMaterials(
+    disposables: { dispose: () => void }[],
+    worldVertexMat: THREE.MeshStandardMaterial
+  ) {
     const ringPadVertexMat = new THREE.MeshBasicMaterial({
       vertexColors: true,
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 0.78,
-    });
-    const stationSlateMat = new THREE.MeshStandardMaterial({
-      color: '#253142',
-      roughness: 0.58,
-      metalness: 0.22,
-    });
-    const stationAlumMat = new THREE.MeshStandardMaterial({
-      color: '#d8e0ea',
-      roughness: 0.44,
-      metalness: 0.42,
     });
     const stationFuelTrimMat = new THREE.MeshStandardMaterial({
       color: '#10b981',
@@ -1442,63 +1463,18 @@ export class MapBuilder {
       metalness: 0.7,
       envMapIntensity: 1.25,
     });
-    const turbineWhiteMat = new THREE.MeshStandardMaterial({
-      color: '#e2e8f0',
-      roughness: 0.45,
-    });
-    const warehouseVertexMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.78,
-      metalness: 0.15,
-    });
-    const craneVertexMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.5,
-      metalness: 0.45,
-    });
-    const tollCanopyMat = new THREE.MeshStandardMaterial({ color: '#1e3a8a', roughness: 0.42 });
-    const tollPostMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.5 });
     const tollLightMat = new THREE.MeshBasicMaterial({ color: '#22c55e' });
-    const tollArmMat = new THREE.MeshStandardMaterial({ color: '#ef4444' });
-    const pylonConcreteMat = new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.55 });
     const whFrontMats = new Map<string, THREE.MeshStandardMaterial>();
 
-    disposables.push(
-      whSideMat,
-      officeVertexMat,
-      ringPadVertexMat,
-      stationSlateMat,
-      stationAlumMat,
-      stationFuelTrimMat,
-      stationHubTrimMat,
-      lakeMat,
-      turbineWhiteMat,
-      warehouseVertexMat,
-      craneVertexMat,
-      tollCanopyMat,
-      tollPostMat,
-      tollLightMat,
-      tollArmMat,
-      pylonConcreteMat
-    );
+    disposables.push(ringPadVertexMat, stationFuelTrimMat, stationHubTrimMat, lakeMat, tollLightMat);
 
     return {
-      whSideMat,
-      officeVertexMat,
+      worldVertexMat,
       ringPadVertexMat,
-      stationSlateMat,
-      stationAlumMat,
       stationFuelTrimMat,
       stationHubTrimMat,
       lakeMat,
-      turbineWhiteMat,
-      warehouseVertexMat,
-      craneVertexMat,
-      tollCanopyMat,
-      tollPostMat,
       tollLightMat,
-      tollArmMat,
-      pylonConcreteMat,
       whFrontMats,
     };
   }
@@ -1628,11 +1604,12 @@ export class MapBuilder {
     const whZ = bz - cosH * 19;
 
     const whBodyGeo = new THREE.BoxGeometry(26, 7.6, 12);
-    batcher.add(sharedMats.whSideMat, whBodyGeo, {
+    batcher.add(sharedMats.worldVertexMat, whBodyGeo, {
       x: whX,
       y: by + 3.8,
       z: whZ,
       rotY: depot.parkingBayHeadingRad,
+      colorHex: '#475569',
       castShadow: true,
       receiveShadow: true,
     });
@@ -1667,7 +1644,7 @@ export class MapBuilder {
     const officeGeo = new THREE.BoxGeometry(6.5, 4.2, 5.0);
     const officeColor =
       depot.type === 'port' ? '#1e3a8a' : depot.type === 'factory' ? '#334155' : '#3f6212';
-    batcher.add(sharedMats.officeVertexMat, officeGeo, {
+    batcher.add(sharedMats.worldVertexMat, officeGeo, {
       x: ox + 5.8,
       y: oy + 2.1,
       z: oz,
@@ -1734,10 +1711,11 @@ export class MapBuilder {
     }
 
     const roofGeo = new THREE.BoxGeometry(16, 0.9, 12);
-    batcher.add(sharedMats.stationSlateMat, roofGeo, {
+    batcher.add(sharedMats.worldVertexMat, roofGeo, {
       x: sx,
       y: sy + 6.4,
       z: sz,
+      colorHex: '#253142',
       castShadow: true,
     });
 
@@ -1750,18 +1728,20 @@ export class MapBuilder {
 
     const pumpGeo = new THREE.BoxGeometry(0.9, 1.7, 0.65);
     for (const px of [-3.6, 3.6]) {
-      batcher.add(sharedMats.stationAlumMat, pumpGeo, {
+      batcher.add(sharedMats.worldVertexMat, pumpGeo, {
         x: sx + px,
         y: sy + 0.85,
         z: sz,
+        colorHex: '#d8e0ea',
       });
     }
 
     const shopGeo = new THREE.BoxGeometry(10, 4.0, 6.5);
-    batcher.add(sharedMats.stationSlateMat, shopGeo, {
+    batcher.add(sharedMats.worldVertexMat, shopGeo, {
       x: sx,
       y: sy + 2.0,
       z: sz - 12.5,
+      colorHex: '#253142',
     });
     colliders.push({
       minX: sx - 5.2,
@@ -1779,10 +1759,11 @@ export class MapBuilder {
       [-6.5, 4.5],
       [6.5, 4.5],
     ] as const) {
-      batcher.add(sharedMats.stationAlumMat, pillarGeo, {
+      batcher.add(sharedMats.worldVertexMat, pillarGeo, {
         x: sx + px,
         y: sy + 3.1,
         z: sz + pz,
+        colorHex: '#d8e0ea',
       });
       colliders.push({
         minX: sx + px - 0.5,
@@ -1830,8 +1811,22 @@ export class MapBuilder {
       const rotY = lm.rotationY ?? 0;
       const mastGeo = new THREE.CylinderGeometry(0.8, 1.8, 52, 8);
       const nacelleGeo = new THREE.BoxGeometry(2.6, 2.4, 5.2);
-      batcher.add(sharedMats.turbineWhiteMat, mastGeo, { x, y: y + 26, z, rotY, layer: 1 });
-      batcher.add(sharedMats.turbineWhiteMat, nacelleGeo, { x, y: y + 52, z, rotY, layer: 1 });
+      batcher.add(sharedMats.worldVertexMat, mastGeo, {
+        x,
+        y: y + 26,
+        z,
+        rotY,
+        colorHex: '#e2e8f0',
+        layer: 1,
+      });
+      batcher.add(sharedMats.worldVertexMat, nacelleGeo, {
+        x,
+        y: y + 52,
+        z,
+        rotY,
+        colorHex: '#e2e8f0',
+        layer: 1,
+      });
 
       const group = new THREE.Group();
       group.position.set(x, y, z);
@@ -1847,8 +1842,9 @@ export class MapBuilder {
         tmpRot.rotation.z = (i * Math.PI * 2) / 3;
         tmpBlade.position.y = 11;
         tmpRot.updateMatrixWorld(true);
-        rotorBatch.add(sharedMats.turbineWhiteMat, bladeGeo, {
+        rotorBatch.add(sharedMats.worldVertexMat, bladeGeo, {
           matrix: tmpBlade.matrixWorld,
+          colorHex: '#e2e8f0',
           layer: 1,
         });
       }
@@ -1863,7 +1859,7 @@ export class MapBuilder {
     if (lm.kind === 'warehouse_block') {
       const [sx, sy, sz] = lm.scale ?? [44, 12, 24];
       const geo = new THREE.BoxGeometry(sx, sy, sz);
-      batcher.add(sharedMats.warehouseVertexMat, geo, {
+      batcher.add(sharedMats.worldVertexMat, geo, {
         x,
         y: y + sy * 0.5,
         z,
@@ -1904,7 +1900,7 @@ export class MapBuilder {
         child.position.set(lx, 13, lz);
         child.rotation.set(0, 0, 0);
         child.updateMatrixWorld();
-        batcher.add(sharedMats.craneVertexMat, legGeo, {
+        batcher.add(sharedMats.worldVertexMat, legGeo, {
           matrix: child.matrixWorld,
           colorHex,
           layer: 1,
@@ -1912,7 +1908,7 @@ export class MapBuilder {
       }
       child.position.set(0, 26.5, 8);
       child.updateMatrixWorld();
-      batcher.add(sharedMats.craneVertexMat, beamGeo, {
+      batcher.add(sharedMats.worldVertexMat, beamGeo, {
         matrix: child.matrixWorld,
         colorHex,
         layer: 1,
@@ -1937,12 +1933,18 @@ export class MapBuilder {
       child.position.set(0, 6.8, 0);
       child.rotation.set(0, 0, 0);
       child.updateMatrixWorld();
-      batcher.add(sharedMats.tollCanopyMat, canopyGeo, { matrix: child.matrixWorld });
+      batcher.add(sharedMats.worldVertexMat, canopyGeo, {
+        matrix: child.matrixWorld,
+        colorHex: '#1e3a8a',
+      });
 
       for (const px of [-9.8, -3.2, 3.2, 9.8]) {
         child.position.set(px, 3.3, 0);
         child.updateMatrixWorld();
-        batcher.add(sharedMats.tollPostMat, postGeo, { matrix: child.matrixWorld });
+        batcher.add(sharedMats.worldVertexMat, postGeo, {
+          matrix: child.matrixWorld,
+          colorHex: '#e2e8f0',
+        });
       }
       for (const lx of [-6.5, 0, 6.5]) {
         child.rotation.set(0, 0, 0);
@@ -1957,7 +1959,10 @@ export class MapBuilder {
         child.position.set(lx - 1.5, 3.0, 0);
         child.rotation.set(0, 0, 1.15);
         child.updateMatrixWorld();
-        batcher.add(sharedMats.tollArmMat, armGeo, { matrix: child.matrixWorld });
+        batcher.add(sharedMats.worldVertexMat, armGeo, {
+          matrix: child.matrixWorld,
+          colorHex: '#ef4444',
+        });
       }
       disposables.push(canopyGeo, postGeo, lightGeo, armGeo);
       return;
@@ -1977,15 +1982,24 @@ export class MapBuilder {
       for (const px of [-9.8, 9.8]) {
         child.position.set(px, 9, 0);
         child.updateMatrixWorld();
-        batcher.add(sharedMats.pylonConcreteMat, towerGeo, { matrix: child.matrixWorld });
+        batcher.add(sharedMats.worldVertexMat, towerGeo, {
+          matrix: child.matrixWorld,
+          colorHex: '#cbd5e1',
+        });
 
         child.position.set(px * 0.88, 0.7, 0);
         child.updateMatrixWorld();
-        batcher.add(sharedMats.pylonConcreteMat, parapetGeo, { matrix: child.matrixWorld });
+        batcher.add(sharedMats.worldVertexMat, parapetGeo, {
+          matrix: child.matrixWorld,
+          colorHex: '#cbd5e1',
+        });
       }
       child.position.set(0, 16, 0);
       child.updateMatrixWorld();
-      batcher.add(sharedMats.pylonConcreteMat, crossGeo, { matrix: child.matrixWorld });
+      batcher.add(sharedMats.worldVertexMat, crossGeo, {
+        matrix: child.matrixWorld,
+        colorHex: '#cbd5e1',
+      });
       disposables.push(towerGeo, crossGeo, parapetGeo);
     }
   }
@@ -1995,6 +2009,7 @@ export class MapBuilder {
     root: THREE.Group,
     findNearestRoadDistanceAndY: (x: number, z: number) => { dist: number; y: number; seg: CompiledRoadSegment | null },
     getHeightAt: (x: number, z: number) => number,
+    lightTransforms: { x: number; y: number; z: number; rotY: number }[],
     delinPostInst: THREE.InstancedMesh | null,
     delinReflectInst: THREE.InstancedMesh | null,
     delinMaxCount: number,
@@ -2019,7 +2034,7 @@ export class MapBuilder {
     const cottageSpots: { x: number; y: number; z: number; rotY: number }[] = [];
     const pylonSpots: { x: number; y: number; z: number; rotY: number }[] = [];
 
-    const maxAttempts = 2400;
+    const maxAttempts = 2800;
     for (let i = 0; i < maxAttempts && spruceSpots.length + oakSpots.length < 760; i++) {
       const x = minX + 70 + rand() * (maxX - minX - 140);
       const z = minZ + 70 + rand() * (maxZ - minZ - 140);
@@ -2034,8 +2049,29 @@ export class MapBuilder {
       if (insideCity) continue;
 
       const roadInfo = findNearestRoadDistanceAndY(x, z);
-      const minClearance = (roadInfo.seg?.def.width ?? 14) * 0.65 + 11;
+      const halfW = (roadInfo.seg?.def.width ?? 14) * 0.5;
+      const minClearance = halfW + 7.2; // Keep trees strictly outside roadHalfWidth + 6.5m & clear of shoulders
       if (roadInfo.dist < minClearance || roadInfo.dist > 280) continue;
+
+      // Reject trees near intersections/nodes (> 22m) or streetlights (> 7.5m) to eliminate canopy clipping
+      let nearObstacle = false;
+      for (let nIdx = 0; nIdx < manifest.nodes.length; nIdx++) {
+        const nd = manifest.nodes[nIdx]!;
+        if (Math.hypot(x - nd.position[0], z - nd.position[2]) < 22) {
+          nearObstacle = true;
+          break;
+        }
+      }
+      if (nearObstacle) continue;
+
+      for (let lIdx = 0; lIdx < lightTransforms.length; lIdx++) {
+        const lt = lightTransforms[lIdx]!;
+        if (Math.hypot(x - lt.x, z - lt.z) < 7.5) {
+          nearObstacle = true;
+          break;
+        }
+      }
+      if (nearObstacle) continue;
 
       const y = getHeightAt(x, z);
       if (y > 68) continue; // Keep above snowline bare rock/snow

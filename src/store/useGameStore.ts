@@ -136,7 +136,9 @@ export function detectHardwareProfile(): DetectedHardwareProfile {
   let gpuRenderer = '';
   try {
     const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    const gl =
+      canvas.getContext('webgl2', { powerPreference: 'high-performance' }) ||
+      canvas.getContext('webgl', { powerPreference: 'high-performance' });
     if (gl) {
       const ext = gl.getExtension('WEBGL_debug_renderer_info');
       if (ext) {
@@ -347,6 +349,7 @@ interface PersistedCareerState {
   drsEnabled: boolean;
   showFps: boolean;
   showDrawCalls: boolean;
+  cabMotionEnabled: boolean;
   mirrorsEnabled: boolean;
   audioEnabled: boolean;
   masterVolume: number;
@@ -384,6 +387,7 @@ interface GameStoreState extends PersistedCareerState {
   setDrsEnabled: (enabled: boolean) => void;
   setShowFps: (show: boolean) => void;
   setShowDrawCalls: (show: boolean) => void;
+  setCabMotionEnabled: (enabled: boolean) => void;
   setMirrorsEnabled: (enabled: boolean) => void;
   setAudioEnabled: (enabled: boolean) => void;
   setMasterVolume: (vol: number) => void;
@@ -488,6 +492,7 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   drsEnabled: true,
   showFps: true,
   showDrawCalls: true,
+  cabMotionEnabled: true,
   mirrorsEnabled: INITIAL_SPEC.defaultMirrors,
   audioEnabled: true,
   masterVolume: 0.6,
@@ -567,6 +572,7 @@ export const useGameStore = create<GameStoreState>()(
       setDrsEnabled: (drsEnabled) => set({ drsEnabled }),
       setShowFps: (showFps) => set({ showFps }),
       setShowDrawCalls: (showDrawCalls) => set({ showDrawCalls }),
+      setCabMotionEnabled: (cabMotionEnabled) => set({ cabMotionEnabled }),
       setMirrorsEnabled: (mirrorsEnabled) => set({ mirrorsEnabled }),
       setAudioEnabled: (audioEnabled) => set({ audioEnabled }),
       setMasterVolume: (masterVolume) => set({ masterVolume: Math.max(0, Math.min(1, masterVolume)) }),
@@ -900,6 +906,7 @@ export const useGameStore = create<GameStoreState>()(
         drsEnabled: state.drsEnabled,
         showFps: state.showFps,
         showDrawCalls: state.showDrawCalls,
+        cabMotionEnabled: state.cabMotionEnabled,
         mirrorsEnabled: state.mirrorsEnabled,
         audioEnabled: state.audioEnabled,
         masterVolume: state.masterVolume,

@@ -5,12 +5,15 @@ import {
   Wrench,
   Settings,
   LogOut,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import {
   CameraMode,
   getDriverRankTitle,
   useGameStore,
 } from '../../store/useGameStore';
+import { toggleDocumentFullscreen, useIsFullscreen } from '../../utils/fullscreen';
 
 interface TopStatusBarProps {
   onRefreshJobs: () => void;
@@ -24,6 +27,7 @@ function formatClock(hours: number): string {
 }
 
 export const TopStatusBar = memo(function TopStatusBar({ onRefreshJobs }: TopStatusBarProps) {
+  const isFullscreen = useIsFullscreen();
   const moneyEur = useGameStore((s) => s.moneyEur);
   const level = useGameStore((s) => s.level);
   const showFps = useGameStore((s) => s.showFps);
@@ -149,6 +153,15 @@ export const TopStatusBar = memo(function TopStatusBar({ onRefreshJobs }: TopSta
           title="画质与音效设置"
         >
           <Settings className="h-4 w-4" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void toggleDocumentFullscreen()}
+          className="rounded-xl border border-slate-700/80 bg-slate-900/85 p-1.5 text-slate-300 backdrop-blur-md hover:border-amber-400/60 hover:text-white"
+          title={isFullscreen ? '退出全屏 [F]' : '进入全屏 [F]'}
+        >
+          {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
         </button>
 
         <button

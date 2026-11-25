@@ -390,7 +390,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
               <b className="text-amber-300">Q / E</b> 左右转向灯
             </span>
             <span>
-              <b className="text-amber-300">L / F</b> 大灯 / 双闪
+              <b className="text-amber-300">L / X</b> 大灯 / 双闪
             </span>
             <span>
               <b className="text-amber-300">C / B</b> 巡航 / 缓速器
@@ -405,7 +405,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
               <b className="text-amber-300">Shift/Ctrl</b> 升降档
             </span>
             <span>
-              <b className="text-amber-300">P / 拖拽</b> 雨刷 / 环视
+              <b className="text-amber-300">P / F</b> 雨刷 / 全屏
             </span>
             <span>
               <b className="text-amber-300">Enter / R</b> 交互 / 休息

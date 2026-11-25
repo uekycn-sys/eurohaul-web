@@ -5,11 +5,11 @@ import { TruckVisualRefs } from '../graphics/TruckMeshBuilder';
 import { InputManager } from '../core/InputManager';
 
 // Realistic 12-speed European heavy-truck gearbox ratios (12th is 0.78 overdrive)
-const GEAR_RATIOS = [12.20, 9.52, 7.42, 5.78, 4.50, 3.51, 2.74, 2.14, 1.67, 1.30, 1.00, 0.78] as const;
+const GEAR_RATIOS = [10.40, 8.05, 6.20, 4.80, 3.76, 2.96, 2.36, 1.88, 1.51, 1.22, 0.98, 0.78] as const;
 // 2 reverse gears: R1 (-10.78) and R2 (-3.50)
 const REVERSE_RATIOS = [-10.78, -3.50] as const;
 
-const FINAL_DRIVE = 3.36;
+const FINAL_DRIVE = 3.48;
 const WHEEL_RADIUS = 0.50;
 const DRIVETRAIN_EFFICIENCY = 0.88;
 
@@ -95,11 +95,26 @@ export class TruckPhysics {
   public hazardLights = false;
   public blinkerLit = false;
 
-  // Cab suspension visual dynamics
+  // Cab suspension visual dynamics (strictly low-pass filtered & clamped)
   public cabPitch = 0;
   public cabRoll = 0;
-  private cabPitchVel = 0;
-  private cabRollVel = 0;
+  private filteredLatAccelMs2 = 0;
+
+  // Previous-step pose snapshot for smooth render-rate interpolation
+  private prevX = 0;
+  private prevY = 0;
+  private prevZ = 0;
+  private prevYaw = 0;
+  private prevPitch = 0;
+  private prevTrailerX = 0;
+  private prevTrailerY = 0;
+  private prevTrailerZ = 0;
+  private prevTrailerYaw = 0;
+  private prevTrailerPitch = 0;
+  private prevCabPitch = 0;
+  private prevCabRoll = 0;
+  private prevWheelSpinAngle = 0;
+  private prevSteerAngleRad = 0;
 
   // Telemetry & stats
   public odometerKm = 0;
@@ -116,8 +131,7 @@ export class TruckPhysics {
   private blinkerClockSec = 0;
   private leftTurnPeakReached = false;
   private rightTurnPeakReached = false;
-  private prevSpeedMs = 0;
-  private filteredAccelMs2 = 0;
+  public filteredAccelMs2 = 0;
   private collisionCooldownSec = 0;
 
   private readonly surfaceMain: SurfaceQueryResult = {
@@ -141,6 +155,23 @@ export class TruckPhysics {
     guardrailHit: false,
   };
 
+  public savePreviousPose(): void {
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.prevZ = this.z;
+    this.prevYaw = this.yaw;
+    this.prevPitch = this.pitch;
+    this.prevTrailerX = this.trailerX;
+    this.prevTrailerY = this.trailerY;
+    this.prevTrailerZ = this.trailerZ;
+    this.prevTrailerYaw = this.trailerYaw;
+    this.prevTrailerPitch = this.trailerPitch;
+    this.prevCabPitch = this.cabPitch;
+    this.prevCabRoll = this.cabRoll;
+    this.prevWheelSpinAngle = this.wheelSpinAngle;
+    this.prevSteerAngleRad = this.steerAngleRad;
+  }
+
   public resetToSpawn(spawnPos: readonly [number, number, number], headingRad: number): void {
     this.x = spawnPos[0];
     this.y = spawnPos[1];
@@ -148,8 +179,8 @@ export class TruckPhysics {
     this.yaw = headingRad;
     this.pitch = 0;
     this.speedMs = 0;
-    this.prevSpeedMs = 0;
     this.filteredAccelMs2 = 0;
+    this.filteredLatAccelMs2 = 0;
     this.steerAngleRad = 0;
     this.gear = 1;
     this.rpm = IDLE_RPM;
@@ -164,9 +195,8 @@ export class TruckPhysics {
     this.hitchAngleRad = 0;
     this.cabPitch = 0;
     this.cabRoll = 0;
-    this.cabPitchVel = 0;
-    this.cabRollVel = 0;
     this.syncAttachedTrailerPosition();
+    this.savePreviousPose();
   }
 
   public toggleLeftBlinker(): void {
@@ -288,6 +318,7 @@ export class TruckPhysics {
       speedLimiterEnabled: boolean;
       truckHealth: number;
       rainIntensity?: number;
+      cabMotionEnabled?: boolean;
       onFuelBurned: (liters: number) => void;
       onDistanceKm: (km: number) => void;
     }
@@ -444,26 +475,26 @@ export class TruckPhysics {
     ) {
       if (this.gear >= 1) {
         const isClimbing = this.pitch < -0.015;
-        const uphillBias = isClimbing ? Math.min(160, -this.pitch * 2600) : 0;
+        const uphillBias = isClimbing ? Math.min(140, -this.pitch * 2200) : 0;
         const baseUpshiftRpm =
-          effectiveThrottle <= 0.5
-            ? THREE.MathUtils.lerp(1480, 1650, effectiveThrottle / 0.5)
-            : THREE.MathUtils.lerp(1650, 1940, (effectiveThrottle - 0.5) / 0.5);
-        const upshiftRpm = Math.min(2020, baseUpshiftRpm + uphillBias);
+          effectiveThrottle <= 0.45
+            ? THREE.MathUtils.lerp(1550, 1650, effectiveThrottle / 0.45)
+            : THREE.MathUtils.lerp(1650, 1940, (effectiveThrottle - 0.45) / 0.55);
+        const upshiftRpm = Math.min(2000, baseUpshiftRpm + uphillBias);
         const minPostShiftRpm =
-          THREE.MathUtils.lerp(1130, 1340, effectiveThrottle) + (isClimbing ? 110 : 0);
+          THREE.MathUtils.lerp(1160, 1340, effectiveThrottle) + (isClimbing ? 100 : 0);
         const nearSpeedLimiter = this.speedMs >= maxForwardSpeedMs - 3.5 / 3.6;
 
         if (this.gear < 12 && throttleCmd > 0.12 && brakeCmd < 0.05) {
           const nextRatio = GEAR_RATIOS[this.gear]!;
           const predictedNextRpm = wheelRpm * nextRatio * FINAL_DRIVE;
           const canCruiseOverdrive =
-            this.gear >= 10 &&
-            this.speedMs >= 72 / 3.6 &&
-            effectiveThrottle < 0.55 &&
+            this.gear === 11 &&
+            this.speedMs >= 78 / 3.6 &&
+            effectiveThrottle < 0.45 &&
             !isClimbing &&
-            predictedNextRpm >= 1140 &&
-            (nearSpeedLimiter || mechanicalRpm >= 1450);
+            predictedNextRpm >= 1150 &&
+            (nearSpeedLimiter || mechanicalRpm >= 1520);
           const normalUpshift =
             mechanicalRpm >= upshiftRpm &&
             predictedNextRpm >= minPostShiftRpm &&
@@ -484,10 +515,10 @@ export class TruckPhysics {
 
           if (lowRpmDownshift || kickdownTrigger) {
             const dropTwo =
-              this.gear > 3 && effectiveThrottle > 0.78 && mechanicalRpm < 1120;
+              this.gear > 4 && effectiveThrottle > 0.8 && mechanicalRpm < 1100;
             this.gear = Math.max(1, this.gear - (dropTwo ? 2 : 1));
             this.shiftTimerSec = 0.18;
-            this.shiftCooldownSec = 0.65;
+            this.shiftCooldownSec = 0.68;
           }
         }
       } else if (this.gear < 0) {
@@ -624,20 +655,29 @@ export class TruckPhysics {
     this.z = THREE.MathUtils.clamp(this.z, b.minZ + 35, b.maxZ - 35);
     if (this.trailerAttached) this.syncAttachedTrailerPosition();
 
-    // Cab suspension spring-damper (pitch on accel/brake, roll on lateral G)
-    const longAccel = (this.speedMs - this.prevSpeedMs) / Math.max(0.001, dtSec);
-    this.prevSpeedMs = this.speedMs;
-    const latAccel = this.speedMs * yawRate;
+    // Cab suspension exponential low-pass filter (strictly clamped ±0.010 pitch, ±0.012 roll; decays to 0 at rest/cruise)
+    const safeDt = Math.min(dtSec, 0.033);
+    const latAccelRaw = this.speedMs * yawRate;
+    const latAlpha = 1 - Math.exp(-5.5 * safeDt);
+    this.filteredLatAccelMs2 += (latAccelRaw - this.filteredLatAccelMs2) * latAlpha;
 
-    const targetCabPitch = THREE.MathUtils.clamp(-longAccel * 0.0065, -0.055, 0.055);
-    const targetCabRoll = THREE.MathUtils.clamp(-latAccel * 0.011, -0.075, 0.075);
+    let targetCabPitch = 0;
+    let targetCabRoll = 0;
+    if (opts.cabMotionEnabled ?? true) {
+      const longAccelFiltered = Math.abs(this.filteredAccelMs2) < 0.08 ? 0 : this.filteredAccelMs2;
+      const latAccelFiltered =
+        Math.abs(this.filteredLatAccelMs2) < 0.12 ? 0 : this.filteredLatAccelMs2;
+      if (Math.abs(this.speedMs) > 0.05 || Math.abs(longAccelFiltered) > 0.05) {
+        targetCabPitch = THREE.MathUtils.clamp(-longAccelFiltered * 0.0028, -0.010, 0.010);
+        targetCabRoll = THREE.MathUtils.clamp(-latAccelFiltered * 0.0032, -0.012, 0.012);
+      }
+    }
 
-    const kSpring = 42;
-    const kDamp = 7.5;
-    this.cabPitchVel += ((targetCabPitch - this.cabPitch) * kSpring - this.cabPitchVel * kDamp) * dtSec;
-    this.cabRollVel += ((targetCabRoll - this.cabRoll) * kSpring - this.cabRollVel * kDamp) * dtSec;
-    this.cabPitch += this.cabPitchVel * dtSec;
-    this.cabRoll += this.cabRollVel * dtSec;
+    const cabAlpha = 1 - Math.exp(-7.0 * safeDt);
+    this.cabPitch += (targetCabPitch - this.cabPitch) * cabAlpha;
+    this.cabRoll += (targetCabRoll - this.cabRoll) * cabAlpha;
+    if (targetCabPitch === 0 && Math.abs(this.cabPitch) < 0.00005) this.cabPitch = 0;
+    if (targetCabRoll === 0 && Math.abs(this.cabRoll) < 0.00005) this.cabRoll = 0;
   }
 
   private syncAttachedTrailerPosition(): void {
@@ -693,26 +733,45 @@ export class TruckPhysics {
     visuals: TruckVisualRefs,
     input: InputManager,
     nightFactor: number,
-    rainIntensity = 0
+    rainIntensity = 0,
+    alpha = 1
   ): void {
-    visuals.tractorRoot.position.set(this.x, this.y, this.z);
-    visuals.tractorRoot.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+    const t = THREE.MathUtils.clamp(alpha, 0, 1);
+    const ix = THREE.MathUtils.lerp(this.prevX, this.x, t);
+    const iy = THREE.MathUtils.lerp(this.prevY, this.y, t);
+    const iz = THREE.MathUtils.lerp(this.prevZ, this.z, t);
+    const ipitch = THREE.MathUtils.lerp(this.prevPitch, this.pitch, t);
+    const iyaw = this.prevYaw + wrapAngle(this.yaw - this.prevYaw) * t;
 
-    visuals.cabSuspensionGroup.rotation.set(this.cabPitch, 0, this.cabRoll);
-    visuals.steeringWheel.rotation.z = this.steerAngleRad * 3.2;
+    const itx = THREE.MathUtils.lerp(this.prevTrailerX, this.trailerX, t);
+    const ity = THREE.MathUtils.lerp(this.prevTrailerY, this.trailerY, t);
+    const itz = THREE.MathUtils.lerp(this.prevTrailerZ, this.trailerZ, t);
+    const itpitch = THREE.MathUtils.lerp(this.prevTrailerPitch, this.trailerPitch, t);
+    const ityaw = this.prevTrailerYaw + wrapAngle(this.trailerYaw - this.prevTrailerYaw) * t;
+
+    const icabPitch = THREE.MathUtils.lerp(this.prevCabPitch, this.cabPitch, t);
+    const icabRoll = THREE.MathUtils.lerp(this.prevCabRoll, this.cabRoll, t);
+    const isteer = THREE.MathUtils.lerp(this.prevSteerAngleRad, this.steerAngleRad, t);
+    const iwheelSpin = THREE.MathUtils.lerp(this.prevWheelSpinAngle, this.wheelSpinAngle, t);
+
+    visuals.tractorRoot.position.set(ix, iy, iz);
+    visuals.tractorRoot.rotation.set(ipitch, iyaw, 0, 'YXZ');
+
+    visuals.cabSuspensionGroup.rotation.set(icabPitch, 0, icabRoll);
+    visuals.steeringWheel.rotation.z = isteer * 3.2;
 
     for (const pivot of visuals.frontWheelSteerPivots) {
-      pivot.rotation.y = this.steerAngleRad;
+      pivot.rotation.y = isteer;
     }
     for (const wheel of visuals.tractorWheelSpinMeshes) {
-      wheel.rotation.x = this.wheelSpinAngle;
+      wheel.rotation.x = iwheelSpin;
     }
 
-    visuals.trailerRoot.position.set(this.trailerX, this.trailerY, this.trailerZ);
-    visuals.trailerRoot.rotation.set(this.trailerPitch, this.trailerYaw, 0, 'YXZ');
+    visuals.trailerRoot.position.set(itx, ity, itz);
+    visuals.trailerRoot.rotation.set(itpitch, ityaw, 0, 'YXZ');
     visuals.trailerLandingGear.position.y = this.trailerAttached ? 0.85 : 0.48;
     for (const wheel of visuals.trailerWheelSpinMeshes) {
-      wheel.rotation.x = this.wheelSpinAngle;
+      wheel.rotation.x = iwheelSpin;
     }
     visuals.syncWheelInstances();
 

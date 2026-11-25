@@ -10,6 +10,9 @@ import {
   RotateCcw,
   Award,
   Coins,
+  Maximize2,
+  Minimize2,
+  Info,
 } from 'lucide-react';
 import {
   ENGINE_TIERS,
@@ -18,6 +21,7 @@ import {
   useGameStore,
 } from '../store/useGameStore';
 import { MapRegistry } from '../map/MapRegistry';
+import { toggleDocumentFullscreen, useIsFullscreen } from '../utils/fullscreen';
 
 interface MainMenuProps {
   onSelectMap: (mapId: string) => void;
@@ -28,6 +32,8 @@ const PRESET_ORDER: QualityPreset[] = ['mobile_fast', 'mobile_balanced', 'pc_igp
 export function MainMenu({ onSelectMap }: MainMenuProps) {
   const maps = MapRegistry.getAllMaps();
   const [confirmReset, setConfirmReset] = useState(false);
+  const [showGpuGuide, setShowGpuGuide] = useState(false);
+  const isFullscreen = useIsFullscreen();
 
   const selectedMapId = useGameStore((s) => s.selectedMapId);
   const setSelectedMapId = useGameStore((s) => s.setSelectedMapId);
@@ -49,10 +55,22 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
   const resetCareer = useGameStore((s) => s.resetCareer);
 
   const engineSpec = ENGINE_TIERS[engineTier] ?? ENGINE_TIERS[0]!;
+  const isIntegratedHint =
+    /核显|Intel|UHD|Iris|桌面端/i.test(detectedDeviceLabel) &&
+    !/高性能独显/i.test(detectedDeviceLabel);
 
   return (
     <div className="safe-area-inset absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-gradient-to-br from-slate-950/85 via-slate-900/65 to-slate-950/85 p-3 backdrop-blur-[2px] sm:p-4">
-      <div className="my-auto grid max-h-[94vh] w-full max-w-5xl grid-cols-1 gap-5 overflow-y-auto rounded-3xl border border-amber-500/25 bg-slate-900/90 p-5 shadow-2xl lg:grid-cols-12 lg:p-8">
+      <div className="relative my-auto grid max-h-[94vh] w-full max-w-5xl grid-cols-1 gap-5 overflow-y-auto rounded-3xl border border-amber-500/25 bg-slate-900/90 p-5 shadow-2xl lg:grid-cols-12 lg:p-8">
+        <button
+          type="button"
+          onClick={() => void toggleDocumentFullscreen()}
+          className="absolute top-4 right-4 z-10 inline-flex items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-800/80 px-2.5 py-1.5 text-xs font-medium text-slate-200 transition hover:border-amber-400/60 hover:text-white"
+          title="进入/退出全屏 [F]"
+        >
+          {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          <span className="hidden sm:inline">{isFullscreen ? '退出全屏' : '全屏'}</span>
+        </button>
         {/* Left Column: Branding + Career Overview + Launch */}
         <div className="flex flex-col justify-between lg:col-span-5">
           <div>
@@ -189,14 +207,38 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
 
           {/* Hardware & Audio Settings */}
           <div className="rounded-2xl border border-slate-700/70 bg-slate-800/50 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 pr-14 sm:pr-20">
               <div className="flex items-center gap-2 text-sm font-semibold text-white">
                 <Settings2 className="h-4 w-4 text-sky-400" />
                 画质分级与多端硬件适配
               </div>
-              <span className="rounded-full bg-sky-500/15 px-2.5 py-0.5 text-[11px] font-medium text-sky-300">
-                已识别: {detectedDeviceLabel}
-              </span>
+              <div className="relative flex items-center gap-1.5">
+                <span className="rounded-full bg-sky-500/15 px-2.5 py-0.5 text-[11px] font-medium text-sky-300">
+                  已识别: {detectedDeviceLabel}
+                </span>
+                {isIntegratedHint && (
+                  <button
+                    type="button"
+                    onClick={() => setShowGpuGuide((v) => !v)}
+                    onMouseEnter={() => setShowGpuGuide(true)}
+                    onMouseLeave={() => setShowGpuGuide(false)}
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-300 hover:bg-amber-500/25"
+                    title="双显卡切换独显说明"
+                  >
+                    <Info className="h-3 w-3" />
+                    独显引导
+                  </button>
+                )}
+                {isIntegratedHint && showGpuGuide && (
+                  <div className="absolute top-7 right-0 z-30 w-72 rounded-xl border border-amber-400/40 bg-slate-950/95 p-3 text-[11px] leading-relaxed text-slate-200 shadow-2xl backdrop-blur-md">
+                    双显卡电脑可能因 Windows 省电策略默认使用核显运行浏览器；若需调用独显，请在{' '}
+                    <span className="font-semibold text-amber-300">
+                      Windows 设置 → 系统 → 屏幕 → 显示卡
+                    </span>{' '}
+                    中将浏览器设为「高性能」，或直接手动点选高画质。
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">

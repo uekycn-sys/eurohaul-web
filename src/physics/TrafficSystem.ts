@@ -2,12 +2,15 @@ import * as THREE from 'three';
 import { BuiltMap, CompiledRoadSegment } from '../map/MapBuilder';
 import { CollisionEvent } from './TruckPhysics';
 
+type TrafficArchetype = 'sedan' | 'van' | 'semi';
+
 interface TrafficAgent {
   segment: CompiledRoadSegment;
   dir: 1 | -1;
   sMeters: number;
   speedMs: number;
   targetSpeedMs: number;
+  archetype: TrafficArchetype;
   isTruck: boolean;
   colorHex: string;
   x: number;
@@ -16,16 +19,25 @@ interface TrafficAgent {
   yaw: number;
 }
 
-const CAR_COLORS = ['#dc2626', '#2563eb', '#e2e8f0', '#475569', '#059669', '#d97706', '#0f172a'] as const;
+const SEDAN_COLORS = ['#dc2626', '#2563eb', '#e2e8f0', '#475569', '#059669', '#0f172a'] as const;
+const VAN_COLORS = ['#f8fafc', '#e2e8f0', '#f1f5f9', '#cbd5e1'] as const;
+const SEMI_COLORS = ['#b91c1c', '#1d4ed8', '#d97706', '#047857'] as const;
+
+const BUBBLE_MIN_M = 80;
+const BUBBLE_MAX_M = 480;
+const RECYCLE_DIST_M = 520;
+const MIN_SAFE_GAP_M = 35;
 
 /**
- * Instanced AI traffic simulation following road splines with right-hand lane offsets,
- * intersection transitions, safe following gaps, and player collision detection.
+ * Instanced AI traffic simulation maintaining a dense player-centered dynamic
+ * traffic bubble (80m..480m) with balanced oncoming/same-direction lanes,
+ * 3 vehicle archetypes (Euro sedans, cargo vans, rival semis), and rain/night lights.
  */
 export class TrafficSystem {
   private readonly builtMap: BuiltMap;
   private readonly agents: TrafficAgent[] = [];
   private readonly nodeConnections = new Map<string, CompiledRoadSegment[]>();
+  private readonly roadPool: CompiledRoadSegment[];
 
   private readonly bodyInst: THREE.InstancedMesh;
   private readonly cabinInst: THREE.InstancedMesh;
@@ -64,7 +76,10 @@ export class TrafficSystem {
       }
     }
 
-    // Create batched InstancedMeshes for all AI vehicles + night headlights/taillights
+    const arterial = builtMap.segments.filter((s) => s.def.roadClass !== 'urban');
+    this.roadPool = arterial.length > 0 ? arterial : builtMap.segments;
+
+    // Create batched InstancedMeshes for all AI vehicles + night/rain headlights/taillights
     const bodyGeo = new THREE.BoxGeometry(2.1, 1.05, 4.6);
     const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.38 });
     const cabinGeo = new THREE.BoxGeometry(1.85, 0.72, 2.3);
@@ -112,7 +127,8 @@ export class TrafficSystem {
       builtMap.root.add(this.shadowInst);
     }
 
-    this.spawnAgents(this.maxCapacity);
+    const [sx, , sz] = builtMap.manifest.defaultSpawnPosition;
+    this.spawnAgents(this.maxCapacity, sx, sz, builtMap.manifest.defaultSpawnHeadingRad);
     this.setActiveCount(this.activeCount);
     builtMap.root.add(this.bodyInst, this.cabinInst, this.wheelInst, this.headlightInst, this.taillightInst);
   }
@@ -129,40 +145,40 @@ export class TrafficSystem {
     }
   }
 
-  private spawnAgents(count: number): void {
-    // Include highway/national segments, weighting Munich-facing corridors slightly so traffic is immediately visible
-    const candidates = this.builtMap.segments.filter((s) => s.def.roadClass !== 'urban');
-    const pool = candidates.length > 0 ? candidates : this.builtMap.segments;
-    const prioritySegs = pool.filter(
-      (s) => s.def.id === 'seg_a9_south' || s.def.id === 'seg_bavaria_express' || s.def.id === 'seg_mid_west'
-    );
+  private speedForAgent(seg: CompiledRoadSegment, archetype: TrafficArchetype): number {
+    const mult = archetype === 'semi' ? 0.78 : archetype === 'van' ? 0.86 : 0.94;
+    return (seg.def.speedLimitKmh * mult) / 3.6;
+  }
+
+  private spawnAgents(count: number, focusX: number, focusZ: number, focusYaw: number): void {
     const tmpColor = new THREE.Color();
 
     for (let i = 0; i < count; i++) {
-      const seg =
-        i < 6 && prioritySegs.length > 0
-          ? prioritySegs[i % prioritySegs.length]!
-          : pool[i % pool.length]!;
-      const dir: 1 | -1 = i % 2 === 0 || seg.def.oneWay ? 1 : -1;
-      const sMeters = ((i * 119 + 45) % Math.max(40, Math.floor(seg.lengthMeters - 20))) + 10;
-      const isTruck = i % 4 === 0;
-      const baseSpeedKmh = seg.def.speedLimitKmh * (isTruck ? 0.78 : 0.9);
-      const colorHex = CAR_COLORS[i % CAR_COLORS.length]!;
+      const archetype: TrafficArchetype =
+        i % 5 === 0 ? 'semi' : i % 3 === 0 ? 'van' : 'sedan';
+      const colorHex =
+        archetype === 'semi'
+          ? SEMI_COLORS[i % SEMI_COLORS.length]!
+          : archetype === 'van'
+          ? VAN_COLORS[i % VAN_COLORS.length]!
+          : SEDAN_COLORS[i % SEDAN_COLORS.length]!;
+      const fallbackSeg = this.roadPool[i % this.roadPool.length]!;
 
       const agent: TrafficAgent = {
-        segment: seg,
-        dir,
-        sMeters,
-        speedMs: baseSpeedKmh / 3.6,
-        targetSpeedMs: baseSpeedKmh / 3.6,
-        isTruck,
+        segment: fallbackSeg,
+        dir: i % 2 === 0 ? 1 : -1,
+        sMeters: Math.min(fallbackSeg.lengthMeters - 10, 15 + i * 24),
+        speedMs: 14,
+        targetSpeedMs: 14,
+        archetype,
+        isTruck: archetype !== 'sedan',
         colorHex,
         x: 0,
         y: 0,
         z: 0,
         yaw: 0,
       };
-      this.syncAgentPose(agent);
+      this.placeAgentInBubble(agent, i, focusX, focusZ, focusYaw, true);
       this.agents.push(agent);
 
       tmpColor.set(colorHex);
@@ -171,6 +187,123 @@ export class TrafficSystem {
     if (this.bodyInst.instanceColor) {
       this.bodyInst.instanceColor.needsUpdate = true;
     }
+  }
+
+  private placeAgentInBubble(
+    agent: TrafficAgent,
+    slotIndex: number,
+    playerX: number,
+    playerZ: number,
+    playerYaw: number,
+    isInitialSpawn: boolean
+  ): void {
+    const pFwdX = Math.sin(playerYaw);
+    const pFwdZ = Math.cos(playerYaw);
+    const wantOncoming = slotIndex % 2 === 0;
+    const wantBehind = !wantOncoming && slotIndex % 4 === 3;
+
+    const minDist = isInitialSpawn ? BUBBLE_MIN_M : wantBehind ? 160 : 280;
+    const maxDist = isInitialSpawn ? BUBBLE_MAX_M : wantBehind ? 260 : BUBBLE_MAX_M;
+
+    const candidates: {
+      seg: CompiledRoadSegment;
+      dir: 1 | -1;
+      sMeters: number;
+      x: number;
+      z: number;
+      score: number;
+    }[] = [];
+
+    for (let sIdx = 0; sIdx < this.roadPool.length; sIdx++) {
+      const seg = this.roadPool[sIdx]!;
+      if (seg.samples.length < 3 || seg.lengthMeters < 40) continue;
+
+      const step = Math.max(1, Math.floor(seg.samples.length / 18));
+      for (let pIdx = 1; pIdx < seg.samples.length - 1; pIdx += step) {
+        const pt = seg.samples[pIdx]!;
+        const dx = pt.x - playerX;
+        const dz = pt.z - playerZ;
+        const dist = Math.hypot(dx, dz);
+        if (dist < minDist || dist > maxDist) continue;
+
+        const dirX = dx / dist;
+        const dirZ = dz / dist;
+        const alongPlayer = dirX * pFwdX + dirZ * pFwdZ;
+
+        if (!isInitialSpawn) {
+          if (wantBehind && alongPlayer > -0.2) continue;
+          if (!wantBehind && alongPlayer < 0.1) continue;
+        }
+
+        const dirDot = pt.tx * pFwdX + pt.tz * pFwdZ;
+        let travelDir: 1 | -1;
+        if (seg.def.oneWay) {
+          travelDir = 1;
+        } else if (wantOncoming) {
+          travelDir = dirDot >= 0 ? -1 : 1;
+        } else {
+          travelDir = dirDot >= 0 ? 1 : -1;
+        }
+
+        const sMeters = THREE.MathUtils.clamp(pt.t * seg.lengthMeters, 12, seg.lengthMeters - 12);
+        const rx = -pt.tz * travelDir;
+        const rz = pt.tx * travelDir;
+        const laneOff = seg.def.width * 0.25;
+        const candX = pt.x + rx * laneOff;
+        const candZ = pt.z + rz * laneOff;
+
+        if (Math.hypot(candX - playerX, candZ - playerZ) < BUBBLE_MIN_M) continue;
+
+        let tooClose = false;
+        for (let j = 0; j < this.agents.length; j++) {
+          const other = this.agents[j]!;
+          if (other === agent) continue;
+          if (Math.hypot(candX - other.x, candZ - other.z) < MIN_SAFE_GAP_M) {
+            tooClose = true;
+            break;
+          }
+        }
+        if (tooClose) continue;
+
+        const alignBonus = wantOncoming
+          ? (pt.tx * travelDir * pFwdX + pt.tz * travelDir * pFwdZ < -0.25 ? 2 : 0)
+          : (pt.tx * travelDir * pFwdX + pt.tz * travelDir * pFwdZ > 0.25 ? 2 : 0);
+        const score = alignBonus + Math.abs(alongPlayer) + Math.random() * 0.6;
+        candidates.push({ seg, dir: travelDir, sMeters, x: candX, z: candZ, score });
+      }
+    }
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.score - a.score);
+      const topSpan = Math.min(candidates.length, 6);
+      const pick = candidates[(slotIndex + Math.floor(Math.random() * topSpan)) % topSpan]!;
+      agent.segment = pick.seg;
+      agent.dir = pick.dir;
+      agent.sMeters = pick.sMeters;
+      agent.targetSpeedMs = this.speedForAgent(pick.seg, agent.archetype);
+      agent.speedMs = agent.targetSpeedMs;
+      this.syncAgentPose(agent);
+      return;
+    }
+
+    // Relaxed fallback within 100..480m on any segment
+    for (let sIdx = 0; sIdx < this.builtMap.segments.length; sIdx++) {
+      const seg = this.builtMap.segments[(sIdx + slotIndex) % this.builtMap.segments.length]!;
+      if (seg.samples.length < 3) continue;
+      const mid = seg.samples[Math.floor(seg.samples.length * 0.5)]!;
+      const dist = Math.hypot(mid.x - playerX, mid.z - playerZ);
+      if (dist >= 90 && dist <= BUBBLE_MAX_M) {
+        agent.segment = seg;
+        agent.dir = seg.def.oneWay || slotIndex % 2 === 0 ? 1 : -1;
+        agent.sMeters = seg.lengthMeters * 0.5;
+        agent.targetSpeedMs = this.speedForAgent(seg, agent.archetype);
+        agent.speedMs = agent.targetSpeedMs;
+        this.syncAgentPose(agent);
+        return;
+      }
+    }
+
+    this.syncAgentPose(agent);
   }
 
   private syncAgentPose(agent: TrafficAgent): void {
@@ -212,7 +345,7 @@ export class TrafficSystem {
       agent.dir = 1;
       agent.sMeters = 2;
     }
-    agent.targetSpeedMs = (agent.segment.def.speedLimitKmh * (agent.isTruck ? 0.78 : 0.9)) / 3.6;
+    agent.targetSpeedMs = this.speedForAgent(agent.segment, agent.archetype);
   }
 
   public update(
@@ -220,12 +353,15 @@ export class TrafficSystem {
     playerX: number,
     playerY: number,
     playerZ: number,
+    playerYaw: number,
     trailerX: number,
     trailerZ: number,
-    nightFactor = 0
+    nightFactor = 0,
+    rainIntensity = 0
   ): CollisionEvent | null {
-    this.headlightMat.color.setHex(nightFactor > 0.25 ? 0xfffbeb : 0xe2e8f0);
-    this.taillightMat.color.setHex(nightFactor > 0.25 ? 0xff2d2d : 0xb91c1c);
+    const lightsOn = nightFactor > 0.25 || rainIntensity > 0.25;
+    this.headlightMat.color.setHex(lightsOn ? 0xfffbeb : 0xe2e8f0);
+    this.taillightMat.color.setHex(lightsOn ? 0xff2d2d : 0xb91c1c);
     let collision: CollisionEvent | null = null;
     if (this.collisionCooldownSec > 0) {
       this.collisionCooldownSec = Math.max(0, this.collisionCooldownSec - dtSec);
@@ -233,6 +369,13 @@ export class TrafficSystem {
 
     for (let i = 0; i < this.activeCount; i++) {
       const a = this.agents[i]!;
+
+      // Dynamic Traffic Bubble: seamlessly recycle agents outside 520m radius back into 80m..480m around player
+      const distSqToPlayer = (a.x - playerX) * (a.x - playerX) + (a.z - playerZ) * (a.z - playerZ);
+      if (distSqToPlayer > RECYCLE_DIST_M * RECYCLE_DIST_M) {
+        this.placeAgentInBubble(a, i, playerX, playerZ, playerYaw, false);
+      }
+
       let desiredSpeed = a.targetSpeedMs;
 
       const fwdX = Math.sin(a.yaw);
@@ -294,13 +437,21 @@ export class TrafficSystem {
         if (dPlayer < 3.5) {
           a.speedMs = 0;
           this.collisionCooldownSec = 1.6;
-          collision = { impactSpeedKmh: 26, label: a.isTruck ? 'AI 箱式货车' : '社会乘用车' };
+          collision = {
+            impactSpeedKmh: 26,
+            label:
+              a.archetype === 'semi'
+                ? '竞争对手半挂车'
+                : a.archetype === 'van'
+                ? '欧系厢式货车'
+                : '社会乘用车',
+          };
         }
       }
 
-      // Update instanced matrices
-      const scaleZ = a.isTruck ? 1.55 : 0.96;
-      const scaleY = a.isTruck ? 1.85 : 1.0;
+      // Update instanced matrices for 3 distinct archetypes
+      const scaleZ = a.archetype === 'semi' ? 1.85 : a.archetype === 'van' ? 1.16 : 0.96;
+      const scaleY = a.archetype === 'semi' ? 1.95 : a.archetype === 'van' ? 1.52 : 0.95;
 
       this.dummy.position.set(a.x, a.y + 0.62 * scaleY, a.z);
       this.dummy.rotation.set(0, a.yaw, 0);
@@ -308,12 +459,15 @@ export class TrafficSystem {
       this.dummy.updateMatrix();
       this.bodyInst.setMatrixAt(i, this.dummy.matrix);
 
-      this.dummy.position.set(a.x + fwdX * (a.isTruck ? 1.6 : -0.2), a.y + (a.isTruck ? 1.55 : 1.38), a.z + fwdZ * (a.isTruck ? 1.6 : -0.2));
-      this.dummy.scale.set(1, 1, a.isTruck ? 0.65 : 1.0);
+      const cabOff = a.archetype === 'semi' ? 2.45 : a.archetype === 'van' ? 1.55 : -0.2;
+      const cabY = a.archetype === 'semi' ? 1.68 : a.archetype === 'van' ? 1.58 : 1.35;
+      const cabScaleZ = a.archetype === 'semi' ? 0.56 : a.archetype === 'van' ? 0.58 : 1.0;
+      this.dummy.position.set(a.x + fwdX * cabOff, a.y + cabY, a.z + fwdZ * cabOff);
+      this.dummy.scale.set(1, 1, cabScaleZ);
       this.dummy.updateMatrix();
       this.cabinInst.setMatrixAt(i, this.dummy.matrix);
 
-      const axleOffset = a.isTruck ? 2.1 : 1.35;
+      const axleOffset = a.archetype === 'semi' ? 2.55 : a.archetype === 'van' ? 1.65 : 1.35;
       this.dummy.position.set(a.x + fwdX * axleOffset, a.y + 0.36, a.z + fwdZ * axleOffset);
       this.dummy.scale.set(1, 1, 1);
       this.dummy.updateMatrix();
@@ -326,16 +480,15 @@ export class TrafficSystem {
       // Front headlights & rear taillights
       const rightX = -fwdZ;
       const rightZ = fwdX;
-      const frontLen = a.isTruck ? 3.55 : 2.25;
-      const rearLen = a.isTruck ? 3.55 : 2.25;
+      const halfLen = 2.3 * scaleZ;
       for (const [idxOffset, side] of [
         [0, -0.74],
         [1, 0.74],
       ] as const) {
         this.dummy.position.set(
-          a.x + fwdX * frontLen + rightX * side,
+          a.x + fwdX * halfLen + rightX * side,
           a.y + 0.65,
-          a.z + fwdZ * frontLen + rightZ * side
+          a.z + fwdZ * halfLen + rightZ * side
         );
         this.dummy.rotation.set(0, a.yaw, 0);
         this.dummy.scale.set(1, 1, 1);
@@ -343,9 +496,9 @@ export class TrafficSystem {
         this.headlightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
 
         this.dummy.position.set(
-          a.x - fwdX * rearLen + rightX * side,
+          a.x - fwdX * halfLen + rightX * side,
           a.y + 0.68,
-          a.z - fwdZ * rearLen + rightZ * side
+          a.z - fwdZ * halfLen + rightZ * side
         );
         this.dummy.updateMatrix();
         this.taillightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
@@ -354,7 +507,7 @@ export class TrafficSystem {
       if (this.shadowInst) {
         this.dummy.position.set(a.x, a.y + 0.032, a.z);
         this.dummy.rotation.set(0, a.yaw, 0);
-        this.dummy.scale.set(1, 1, a.isTruck ? 1.48 : 0.96);
+        this.dummy.scale.set(1, 1, scaleZ * 0.96);
         this.dummy.updateMatrix();
         this.shadowInst.setMatrixAt(i, this.dummy.matrix);
       }

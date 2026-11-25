@@ -21,6 +21,7 @@ import { ActiveRoute, NavigationSystem, RoutePoint } from '../gameplay/Navigatio
 import { EconomyManager } from '../gameplay/EconomyManager';
 import { ParkingValidator } from '../gameplay/ParkingValidator';
 import { MapManifest } from '../map/types';
+import { toggleDocumentFullscreen } from '../utils/fullscreen';
 
 export type MobileActionType =
   | 'camera'
@@ -81,6 +82,7 @@ export class GameEngine {
   private manualParkHoldSec = 0;
   private wipersMode: WipersMode = 0;
   private wipersManualOverride = false;
+  private prevRainIntensity = 0;
   private redLightCooldownByNode = new Map<string, number>();
   private upcomingSignal: SignalState | null = null;
   private upcomingSignalDistMeters: number | null = null;
@@ -132,9 +134,9 @@ export class GameEngine {
     this.camera = new THREE.PerspectiveCamera(58, width / height, 0.25, 1600);
     this.camera.layers.enableAll();
 
-    this.leftMirrorCam = new THREE.PerspectiveCamera(46, 256 / 160, 0.4, 160);
+    this.leftMirrorCam = new THREE.PerspectiveCamera(42, 256 / 160, 0.4, 150);
     this.leftMirrorCam.layers.set(0);
-    this.rightMirrorCam = new THREE.PerspectiveCamera(46, 256 / 160, 0.4, 160);
+    this.rightMirrorCam = new THREE.PerspectiveCamera(42, 256 / 160, 0.4, 150);
     this.rightMirrorCam.layers.set(0);
 
     const initMirrorW = store.qualityPreset === 'ultra' ? 320 : 256;
@@ -216,6 +218,7 @@ export class GameEngine {
       },
       onRest: () => this.handleStationRest(),
       onCycleWipers: () => this.cycleWipers(),
+      onToggleFullscreen: () => void toggleDocumentFullscreen(),
       onToggleMap: () => {
         const s = useGameStore.getState();
         if (s.gamePhase !== 'playing') return;
@@ -238,11 +241,19 @@ export class GameEngine {
       },
     });
 
-    this.physics.syncVisuals(this.truckVisuals, this.input, this.env.nightFactor);
+    this.physics.syncVisuals(
+      this.truckVisuals,
+      this.input,
+      this.env.nightFactor,
+      this.env.rainIntensity,
+      1
+    );
 
     window.addEventListener('keydown', this.unlockAudioOnce);
     window.addEventListener('pointerdown', this.unlockAudioOnce);
     window.addEventListener('resize', this.handleResize);
+    document.addEventListener('fullscreenchange', this.handleFullscreenResize);
+    document.addEventListener('webkitfullscreenchange', this.handleFullscreenResize);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
 
     this.applyQualityPreset(store.qualityPreset);
@@ -476,6 +487,11 @@ export class GameEngine {
     this.renderer.setSize(width, height, false);
   };
 
+  private readonly handleFullscreenResize = (): void => {
+    this.handleResize();
+    requestAnimationFrame(() => this.handleResize());
+  };
+
   public start(): void {
     if (this.rafId !== null || this.isPausedHidden) return;
     this.lastTimeMs = performance.now();
@@ -488,6 +504,8 @@ export class GameEngine {
       this.rafId = null;
     }
     window.removeEventListener('resize', this.handleResize);
+    document.removeEventListener('fullscreenchange', this.handleFullscreenResize);
+    document.removeEventListener('webkitfullscreenchange', this.handleFullscreenResize);
     window.removeEventListener('keydown', this.unlockAudioOnce);
     window.removeEventListener('pointerdown', this.unlockAudioOnce);
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
@@ -529,16 +547,22 @@ export class GameEngine {
 
     this.accumulatorSec += frameDtSec;
     while (this.accumulatorSec >= this.fixedDtSec) {
+      this.physics.savePreviousPose();
       this.fixedStep(this.fixedDtSec);
       this.accumulatorSec -= this.fixedDtSec;
     }
 
     const store = useGameStore.getState();
+    const interpAlpha =
+      store.gamePhase === 'playing' && store.activeModal === 'none'
+        ? THREE.MathUtils.clamp(this.accumulatorSec / this.fixedDtSec, 0, 1)
+        : 1;
     this.physics.syncVisuals(
       this.truckVisuals,
       this.input,
       this.env.nightFactor,
-      this.env.rainIntensity
+      this.env.rainIntensity,
+      interpAlpha
     );
     this.truckVisuals.updateWipers(this.elapsedSec, this.wipersMode);
     this.cameraRig.update(
@@ -546,7 +570,8 @@ export class GameEngine {
       store.cameraMode,
       this.physics,
       this.truckVisuals,
-      store.gamePhase === 'menu'
+      store.gamePhase === 'menu',
+      store.cabMotionEnabled
     );
 
     this.audio.setSettings(store.audioEnabled, store.masterVolume);
@@ -635,9 +660,9 @@ export class GameEngine {
 
         if (renderLeft) {
           this.lastLeftMirrorMs = nowMs;
-          this.tempVecA.set(1.52, 2.55, 2.5);
+          this.tempVecA.set(1.87, 2.48, 2.45);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-          this.tempVecB.set(2.3, 1.9, -18);
+          this.tempVecB.set(3.0, 1.9, -22);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
           this.leftMirrorCam.position.copy(this.tempVecA);
           this.leftMirrorCam.lookAt(this.tempVecB);
@@ -648,9 +673,9 @@ export class GameEngine {
           this.renderer.render(this.scene, this.leftMirrorCam);
         } else {
           this.lastRightMirrorMs = nowMs;
-          this.tempVecA.set(-1.52, 2.55, 2.5);
+          this.tempVecA.set(-1.87, 2.48, 2.45);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-          this.tempVecB.set(-2.3, 1.9, -18);
+          this.tempVecB.set(-3.0, 1.9, -22);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
           this.rightMirrorCam.position.copy(this.tempVecA);
           this.rightMirrorCam.lookAt(this.tempVecB);
@@ -766,6 +791,7 @@ export class GameEngine {
         speedLimiterEnabled: store.speedLimiterEnabled,
         truckHealth: store.truckHealth,
         rainIntensity: this.env.rainIntensity,
+        cabMotionEnabled: store.cabMotionEnabled,
         onFuelBurned: (liters) => store.consumeFuel(liters),
         onDistanceKm: (km) => store.addCareerDistance(km),
       });
@@ -775,9 +801,11 @@ export class GameEngine {
         this.physics.x,
         this.physics.y,
         this.physics.z,
+        this.physics.yaw,
         this.physics.trailerX,
         this.physics.trailerZ,
-        this.env.nightFactor
+        this.env.nightFactor,
+        this.env.rainIntensity
       );
 
       const impact = this.physics.lastCollision ?? trafficCollision;
@@ -822,9 +850,11 @@ export class GameEngine {
         this.physics.x,
         this.physics.y,
         this.physics.z,
+        this.physics.yaw,
         this.physics.trailerX,
         this.physics.trailerZ,
-        this.env.nightFactor
+        this.env.nightFactor,
+        this.env.rainIntensity
       );
     }
 
@@ -833,17 +863,19 @@ export class GameEngine {
     this.env.update(dtSec, this.physics.x, this.physics.z, this.physics.y);
     this.builtMap.setRainWetness(this.env.rainIntensity);
 
-    // Rain-sensing automatic wipers (yields to manual P-key override until rain clears)
-    if (this.env.rainIntensity > 0.25) {
+    // Rain-sensing automatic wipers (yields to manual P-key override)
+    const isRaining = this.env.rainIntensity > 0.25;
+    const wasRaining = this.prevRainIntensity > 0.25;
+    if (isRaining && !wasRaining) {
       if (!this.wipersManualOverride) {
         this.wipersMode = this.env.rainIntensity > 0.65 ? 2 : 1;
       }
-    } else if (this.env.rainIntensity < 0.08) {
-      if (!this.wipersManualOverride && this.wipersMode !== 0) {
+    } else if (!isRaining && wasRaining) {
+      if (!this.wipersManualOverride) {
         this.wipersMode = 0;
       }
-      this.wipersManualOverride = false;
     }
+    this.prevRainIntensity = this.env.rainIntensity;
   }
 
   private evaluateTrafficSignals(speedKmh: number, nowMs: number): void {
@@ -939,6 +971,7 @@ export class GameEngine {
         parkingBrake: this.physics.parkingBrake,
         leftBlinker: this.physics.blinkerLit && (this.physics.leftBlinker || this.physics.hazardLights),
         rightBlinker: this.physics.blinkerLit && (this.physics.rightBlinker || this.physics.hazardLights),
+        cruiseControlKmh: this.physics.cruiseControlKmh,
       });
       this.textures.updateDynamicCabGps({
         speedKmh: Math.round(kmh),

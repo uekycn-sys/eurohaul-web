@@ -43,6 +43,8 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
   const setShowFps = useGameStore((s) => s.setShowFps);
   const showDrawCalls = useGameStore((s) => s.showDrawCalls);
   const setShowDrawCalls = useGameStore((s) => s.setShowDrawCalls);
+  const cabMotionEnabled = useGameStore((s) => s.cabMotionEnabled);
+  const setCabMotionEnabled = useGameStore((s) => s.setCabMotionEnabled);
   const mirrorsEnabled = useGameStore((s) => s.mirrorsEnabled);
   const setMirrorsEnabled = useGameStore((s) => s.setMirrorsEnabled);
   const speedLimiterEnabled = useGameStore((s) => s.speedLimiterEnabled);
@@ -145,6 +147,19 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
                   }`}
                 >
                   {showDrawCalls ? '已开启' : '已关闭'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">驾驶室减震晃动</span>
+                <button
+                  type="button"
+                  onClick={() => setCabMotionEnabled(!cabMotionEnabled)}
+                  className={`rounded-lg px-3 py-1 font-semibold ${
+                    cabMotionEnabled ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  {cabMotionEnabled ? '柔和' : '关闭'}
                 </button>
               </div>
 

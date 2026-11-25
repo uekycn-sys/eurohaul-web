@@ -16,6 +16,7 @@ export interface InputActions {
   onInteract?: () => void;
   onRest?: () => void;
   onCycleWipers?: () => void;
+  onToggleFullscreen?: () => void;
   onEscape?: () => void;
 }
 
@@ -131,6 +132,17 @@ export class InputManager {
   }
 
   private readonly handleKeyDown = (e: KeyboardEvent): void => {
+    const target = e.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+
     if (e.code === 'Tab') {
       e.preventDefault();
     }
@@ -140,9 +152,13 @@ export class InputManager {
 
     if (e.repeat) return;
 
-    // Global shortcuts even if modal open
+    // Global shortcuts even if modal open or on main menu
     if (e.code === 'Escape') {
       this.actions.onEscape?.();
+      return;
+    }
+    if (e.code === 'KeyF') {
+      this.actions.onToggleFullscreen?.();
       return;
     }
     if (e.code === 'KeyM') {
@@ -161,7 +177,8 @@ export class InputManager {
       case 'KeyE':
         this.actions.onToggleRightBlinker?.();
         break;
-      case 'KeyF':
+      case 'KeyX':
+      case 'KeyG':
         this.actions.onToggleHazards?.();
         break;
       case 'KeyL':

@@ -454,15 +454,64 @@ export class TruckMeshBuilder {
     const cabRoofGeo = new THREE.BoxGeometry(2.42, 0.22, 2.34);
     cabBatcher.add(paintMat, cabRoofGeo, { x: 0, y: 3.34, z: 1.76, castShadow: true });
 
-    const headlinerGeo = new THREE.PlaneGeometry(2.18, 1.9);
+    // Full sealed interior cab shell (headliner, windshield header beam, floor, B-pillars, roof rails, door panels)
+    const headlinerGeo = new THREE.PlaneGeometry(2.36, 1.7);
     cabBatcher.add(cabInteriorMat, headlinerGeo, {
       x: 0,
-      y: 3.22,
-      z: 1.82,
+      y: 3.225,
+      z: 2.08,
       rotX: Math.PI / 2,
-      colorHex: '#64748b',
+      colorHex: '#4f5a6b',
       layer: 1,
     });
+    const headerBeamGeo = new THREE.BoxGeometry(2.36, 0.14, 0.28);
+    cabBatcher.add(cabInteriorMat, headerBeamGeo, {
+      x: 0,
+      y: 3.245,
+      z: 2.86,
+      colorHex: '#27303f',
+      layer: 1,
+    });
+    const cabFloorGeo = new THREE.BoxGeometry(2.26, 0.08, 1.56);
+    cabBatcher.add(cabInteriorMat, cabFloorGeo, {
+      x: 0,
+      y: 1.76,
+      z: 2.05,
+      colorHex: '#242c38',
+      layer: 1,
+    });
+    const bPillarGeo = new THREE.BoxGeometry(0.1, 1.18, 0.18);
+    const roofRailGeo = new THREE.BoxGeometry(0.1, 0.12, 1.48);
+    const doorTrimGeo = new THREE.BoxGeometry(0.1, 0.36, 1.38);
+    const sideGlassGeo = new THREE.PlaneGeometry(1.36, 0.96);
+    for (const side of [-1, 1]) {
+      cabBatcher.add(cabInteriorMat, bPillarGeo, {
+        x: side * 1.18,
+        y: 2.66,
+        z: 1.44,
+        colorHex: '#334155',
+        layer: 1,
+      });
+      cabBatcher.add(cabInteriorMat, roofRailGeo, {
+        x: side * 1.18,
+        y: 3.18,
+        z: 2.12,
+        colorHex: '#3b4656',
+        layer: 1,
+      });
+      cabBatcher.add(cabInteriorMat, doorTrimGeo, {
+        x: side * 1.14,
+        y: 2.08,
+        z: 2.12,
+        colorHex: '#3b4656',
+        layer: 1,
+      });
+      const sideGlass = new THREE.Mesh(sideGlassGeo, glassMat);
+      sideGlass.position.set(side * 1.19, 2.68, 2.14);
+      sideGlass.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
+      sideGlass.layers.set(1);
+      cabSuspensionGroup.add(sideGlass);
+    }
 
     const spoilerGeo = new THREE.BoxGeometry(2.36, 0.44, 0.96);
     cabBatcher.add(paintMat, spoilerGeo, { x: 0, y: 3.56, z: 1.08, rotX: 0.22 });
@@ -475,32 +524,27 @@ export class TruckMeshBuilder {
     });
     cabBatcher.add(lightboxMat, lightboxGeo, { x: 0, y: 3.47, z: 2.74 });
 
-    // Slimmer, higher external sunvisor for open upper windshield sightline
-    const visorGeo = new THREE.BoxGeometry(2.42, 0.075, 0.26);
+    // Slim flush sunvisor seated tightly against windshield header (zero roof gap)
+    const visorGeo = new THREE.BoxGeometry(2.42, 0.065, 0.22);
     cabBatcher.add(darkChassisMat, visorGeo, {
       x: 0,
-      y: 3.25,
+      y: 3.27,
       z: 2.94,
-      rotX: 0.16,
+      rotX: 0.14,
       colorHex: '#1e2736',
     });
 
     const markerGeo = new THREE.BoxGeometry(0.16, 0.065, 0.08);
-    const markerMat = new THREE.MeshStandardMaterial({
-      color: '#fbbf24',
-      emissive: '#f59e0b',
-      emissiveIntensity: 1.0,
-    });
     for (const mx of [-0.82, -0.41, 0, 0.41, 0.82]) {
-      cabBatcher.add(markerMat, markerGeo, { x: mx, y: 3.28, z: 3.06 });
+      cabBatcher.add(sideMarkerMat, markerGeo, { x: mx, y: 3.29, z: 3.05 });
     }
 
-    // Slim matte-charcoal A-pillars with beveled outer angle to minimize corner blindspots
-    const pillarGeo = new THREE.BoxGeometry(0.052, 1.24, 0.082);
+    // Symmetrical angled matte-charcoal A-pillars with clear diagonal sightline
+    const pillarGeo = new THREE.BoxGeometry(0.056, 1.24, 0.085);
     for (const side of [-1, 1]) {
       cabBatcher.add(darkChassisMat, pillarGeo, {
-        x: side * 1.19,
-        y: 2.6,
+        x: side * 1.185,
+        y: 2.61,
         z: 2.86,
         rotX: -0.08,
         rotY: side * 0.25,
@@ -520,35 +564,73 @@ export class TruckMeshBuilder {
     windshield.layers.set(1);
     cabSuspensionGroup.add(windshield);
 
-    const wiperGeo = new THREE.BoxGeometry(0.76, 0.03, 0.04);
+    // Slim two-piece windshield wipers tucked cleanly at the lower glass cowl, sweeping across the glass
+    const wiperArmGeo = new THREE.BoxGeometry(0.36, 0.016, 0.018);
+    const wiperGeo = new THREE.BoxGeometry(0.58, 0.018, 0.022);
     const wiperPivots: THREE.Group[] = [];
-    for (const wx of [-0.1, 0.72]) {
+    for (const wx of [-0.18, 0.52]) {
       const pivot = new THREE.Group();
-      pivot.position.set(wx, 2.04, 2.94);
+      pivot.position.set(wx, 2.06, 2.925);
+      pivot.rotation.x = -0.08;
+      const arm = new THREE.Mesh(wiperArmGeo, wiperMat);
+      arm.position.set(-0.18, 0.012, 0.004);
+      arm.layers.set(1);
       const blade = new THREE.Mesh(wiperGeo, wiperMat);
-      blade.position.set(-0.36, 0.04, 0);
+      blade.position.set(-0.44, 0.024, 0.008);
       blade.layers.set(1);
-      pivot.add(blade);
-      pivot.rotation.z = -0.06;
+      pivot.add(arm, blade);
+      pivot.rotation.z = -0.02;
       cabSuspensionGroup.add(pivot);
       wiperPivots.push(pivot);
     }
 
-    // Compact aerodynamic mirror arms & housings positioned to keep diagonal A-pillar view open
-    const mirrorArmGeo = new THREE.BoxGeometry(0.19, 0.036, 0.04);
-    const mirrorHousingGeo = new THREE.BoxGeometry(0.11, 0.36, 0.14);
+    // European aerodynamic twin-arm vertical side mirrors with reflective glass & wide-angle lower blindspot pod
+    const mirrorArmGeo = new THREE.BoxGeometry(0.24, 0.022, 0.028);
+    const mirrorHousingGeo = new THREE.BoxGeometry(0.062, 0.42, 0.11);
+    const mirrorCapGeo = new THREE.BoxGeometry(0.028, 0.4, 0.095);
+    const mirrorGlassGeo = new THREE.PlaneGeometry(0.092, 0.38);
+    const blindMirrorGeo = new THREE.BoxGeometry(0.056, 0.14, 0.09);
     for (const side of [-1, 1]) {
-      cabBatcher.add(darkChassisMat, mirrorArmGeo, {
-        x: side * 1.31,
-        y: 2.48,
-        z: 2.68,
-        colorHex: '#252f3f',
+      cabBatcher.add(metalMat, mirrorArmGeo, {
+        x: side * 1.33,
+        y: 2.71,
+        z: 2.74,
+        rotZ: side * -0.15,
+        colorHex: '#94a3b8',
+      });
+      cabBatcher.add(metalMat, mirrorArmGeo, {
+        x: side * 1.33,
+        y: 2.34,
+        z: 2.72,
+        rotZ: side * 0.16,
+        colorHex: '#94a3b8',
       });
       cabBatcher.add(darkChassisMat, mirrorHousingGeo, {
-        x: side * 1.43,
-        y: 2.44,
-        z: 2.66,
-        colorHex: '#252f3f',
+        x: side * 1.47,
+        y: 2.54,
+        z: 2.71,
+        rotY: side * -0.08,
+        colorHex: '#1e2634',
+      });
+      cabBatcher.add(paintMat, mirrorCapGeo, {
+        x: side * 1.47,
+        y: 2.54,
+        z: 2.76,
+        rotY: side * -0.08,
+      });
+      cabBatcher.add(metalMat, mirrorGlassGeo, {
+        x: side * 1.47,
+        y: 2.54,
+        z: 2.65,
+        rotY: Math.PI + side * -0.08,
+        colorHex: '#e0f2fe',
+      });
+      cabBatcher.add(darkChassisMat, blindMirrorGeo, {
+        x: side * 1.47,
+        y: 2.22,
+        z: 2.7,
+        rotY: side * -0.1,
+        colorHex: '#1e2634',
       });
     }
 
@@ -561,6 +643,15 @@ export class TruckMeshBuilder {
       colorHex: '#3b4656',
       layer: 1,
     });
+    const centerConsoleGeo = new THREE.BoxGeometry(0.68, 0.36, 0.56);
+    cabBatcher.add(cabInteriorMat, centerConsoleGeo, {
+      x: 0.05,
+      y: 1.98,
+      z: 2.48,
+      rotY: 0.24,
+      colorHex: '#334155',
+      layer: 1,
+    });
 
     const cowlGeo = new THREE.BoxGeometry(2.18, 0.08, 0.38);
     cabBatcher.add(cabInteriorMat, cowlGeo, {
@@ -571,13 +662,13 @@ export class TruckMeshBuilder {
       layer: 1,
     });
 
-    // Dynamic glowing instrument cluster (Layer 1: skipped by mirrors)
-    const clusterGeo = new THREE.PlaneGeometry(0.72, 0.25);
+    // Dynamic glowing instrument cluster aligned inside upper steering wheel opening (Layer 1: skipped by mirrors)
+    const clusterGeo = new THREE.PlaneGeometry(0.68, 0.22);
     const clusterMat = new THREE.MeshBasicMaterial({ map: dashTex });
     const cluster = new THREE.Mesh(clusterGeo, clusterMat);
-    cluster.position.set(0.58, 2.27, 2.33);
+    cluster.position.set(0.58, 2.33, 2.36);
     cluster.rotation.y = Math.PI;
-    cluster.rotation.x = 0.22;
+    cluster.rotation.x = 0.16;
     cluster.layers.set(1);
     cabSuspensionGroup.add(cluster);
 
@@ -622,8 +713,8 @@ export class TruckMeshBuilder {
 
     const wheelGroup = new THREE.Group();
     const steeringWheel = new THREE.Group();
-    steeringWheel.position.set(0.58, 2.26, 2.17);
-    steeringWheel.rotation.x = -0.36;
+    steeringWheel.position.set(0.58, 2.22, 2.18);
+    steeringWheel.rotation.x = -0.42;
     const rimTorusGeo = new THREE.TorusGeometry(0.21, 0.026, 8, 24);
     const spokeGeo = new THREE.BoxGeometry(0.39, 0.042, 0.022);
     const spokeLowerGeo = new THREE.BoxGeometry(0.055, 0.19, 0.022);
@@ -1067,19 +1158,29 @@ export class TruckMeshBuilder {
       heatShieldGeo,
       cabRoofGeo,
       headlinerGeo,
+      headerBeamGeo,
+      cabFloorGeo,
+      bPillarGeo,
+      roofRailGeo,
+      doorTrimGeo,
+      sideGlassGeo,
       spoilerGeo,
       lightboxGeo,
       lightboxMat,
       visorGeo,
       markerGeo,
-      markerMat,
       pillarGeo,
       sideLowerDoorGeo,
       windshieldGeo,
+      wiperArmGeo,
       wiperGeo,
       mirrorArmGeo,
       mirrorHousingGeo,
+      mirrorCapGeo,
+      mirrorGlassGeo,
+      blindMirrorGeo,
       dashBodyGeo,
+      centerConsoleGeo,
       cowlGeo,
       clusterGeo,
       clusterMat,
@@ -1182,8 +1283,8 @@ export class TruckMeshBuilder {
     const updateWipers = (elapsedSec: number, mode: WipersMode): void => {
       const targetAngle =
         mode === 0
-          ? -0.06
-          : -0.06 - (0.5 - 0.5 * Math.cos(elapsedSec * (mode === 1 ? 3.8 : 6.4))) * 1.45;
+          ? -0.02
+          : -0.02 - (0.5 - 0.5 * Math.cos(elapsedSec * (mode === 1 ? 3.8 : 6.4))) * 1.48;
       for (let i = 0; i < wiperPivots.length; i++) {
         wiperPivots[i]!.rotation.z += (targetAngle - wiperPivots[i]!.rotation.z) * 0.35;
       }

@@ -28,10 +28,9 @@ export class CameraRig {
   private lastPointerY = 0;
   private initialized = false;
 
-  // Air-suspension driver seat spring-damper state (heave & micro road rumble)
+  // Air-suspension driver seat exponential low-pass filter state (heave ±0.015m max)
   private seatHeaveY = 0;
-  private seatHeaveVel = 0;
-  private prevTruckSpeedMs = 0;
+  private smoothLookSteer = 0;
   private rumbleClockSec = 0;
 
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
@@ -80,7 +79,8 @@ export class CameraRig {
     mode: CameraMode,
     physics: TruckPhysics,
     visuals: TruckVisualRefs,
-    isMenu: boolean
+    isMenu: boolean,
+    cabMotionEnabled = true
   ): void {
     const absKmh = Math.abs(physics.speedMs) * 3.6;
 
@@ -115,58 +115,52 @@ export class CameraRig {
     }
 
     if (mode === 1) {
-      // First-person LHD driver eye inside air-suspended cab with spring-damper heave & shoulder micro-vibration:
-      // frames steering wheel, dynamic gauges, A-pillar SatNav, wipers, and wide windshield view
-      const safeDt = Math.min(0.05, Math.max(0.001, dtSec));
-      const longAccel = (physics.speedMs - this.prevTruckSpeedMs) / safeDt;
-      this.prevTruckSpeedMs = physics.speedMs;
+      // First-person LHD driver eye rigidly transformed in cabSuspensionGroup local space
+      // after tractorRoot world matrix update (eliminates rAF vs fixed-step phase judder).
+      const safeDt = Math.min(0.033, Math.max(0.001, dtSec));
 
-      this.rumbleClockSec += safeDt * (1 + Math.min(2.5, absKmh / 45));
-      const speedNorm = THREE.MathUtils.clamp(absKmh / 80, 0, 1);
-      const shoulderRumble =
-        !physics.onRoad && absKmh > 3
-          ? (Math.sin(this.rumbleClockSec * 29) * 0.016 + Math.cos(this.rumbleClockSec * 43) * 0.01) *
-            Math.min(1, absKmh / 25)
-          : Math.sin(this.rumbleClockSec * 8.5) * 0.004 * speedNorm;
-      const targetHeave = THREE.MathUtils.clamp(
-        longAccel * 0.0045 + shoulderRumble,
-        -0.045,
-        0.045
-      );
-      this.seatHeaveVel +=
-        ((targetHeave - this.seatHeaveY) * 52 - this.seatHeaveVel * 9.5) * safeDt;
-      this.seatHeaveY = THREE.MathUtils.clamp(
-        this.seatHeaveY + this.seatHeaveVel * safeDt,
-        -0.05,
-        0.05
-      );
+      let heaveY = 0;
+      if (cabMotionEnabled) {
+        this.rumbleClockSec += safeDt * (1 + Math.min(2.0, absKmh / 45));
+        const accelSignal = Math.abs(physics.filteredAccelMs2) < 0.08 ? 0 : physics.filteredAccelMs2;
+        const offroadRumble =
+          !physics.onRoad && absKmh > 3
+            ? Math.sin(this.rumbleClockSec * 22) * 0.008 * Math.min(1, absKmh / 30)
+            : 0;
+        const targetHeave = THREE.MathUtils.clamp(accelSignal * 0.0032 + offroadRumble, -0.015, 0.015);
+        const lpAlpha = 1 - Math.exp(-8.5 * safeDt);
+        this.seatHeaveY += (targetHeave - this.seatHeaveY) * lpAlpha;
+        if (targetHeave === 0 && Math.abs(this.seatHeaveY) < 0.00015) {
+          this.seatHeaveY = 0;
+        }
+        heaveY = THREE.MathUtils.clamp(this.seatHeaveY, -0.015, 0.015);
+      } else {
+        this.seatHeaveY = 0;
+      }
+
+      const steerAlpha = 1 - Math.exp(-7.5 * safeDt);
+      this.smoothLookSteer += (physics.steerAngleRad * 4.5 - this.smoothLookSteer) * steerAlpha;
 
       visuals.tractorRoot.updateMatrixWorld(true);
-      this.tempVec.set(0.58, 2.58 + this.seatHeaveY, 1.72);
+      this.tempVec.set(0.58, 2.57 + heaveY, 1.74);
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredPos.copy(this.tempVec);
 
-      const lookOffsetSide = physics.steerAngleRad * 6.0;
       const headYawSin = Math.sin(this.cabLookYaw);
       const headYawCos = Math.cos(this.cabLookYaw);
       this.tempVec.set(
-        0.58 + lookOffsetSide * headYawCos + headYawSin * 20,
-        2.35 + this.seatHeaveY * 0.45 + this.cabLookPitch * 14,
-        1.72 + headYawCos * 20.3
+        0.58 + this.smoothLookSteer * headYawCos + headYawSin * 20,
+        2.40 + heaveY * 0.35 + this.cabLookPitch * 14,
+        1.74 + headYawCos * 20.3
       );
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredLook.copy(this.tempVec);
 
-      if (!this.initialized) {
-        this.currentPos.copy(this.desiredPos);
-        this.currentLook.copy(this.desiredLook);
-        this.initialized = true;
-      } else {
-        const eyeFollow = Math.min(1, safeDt * 24);
-        this.currentPos.lerp(this.desiredPos, eyeFollow);
-        this.currentLook.lerp(this.desiredLook, eyeFollow);
-      }
-      this.camera.fov += (68 - this.camera.fov) * Math.min(1, safeDt * 8);
+      this.currentPos.copy(this.desiredPos);
+      this.currentLook.copy(this.desiredLook);
+      this.initialized = true;
+      const fovAlpha = 1 - Math.exp(-8 * safeDt);
+      this.camera.fov += (64 - this.camera.fov) * fovAlpha;
       this.camera.updateProjectionMatrix();
       this.camera.position.copy(this.currentPos);
       this.camera.lookAt(this.currentLook);

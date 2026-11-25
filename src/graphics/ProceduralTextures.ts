@@ -15,6 +15,7 @@ export interface DashboardDrawState {
   parkingBrake: boolean;
   leftBlinker: boolean;
   rightBlinker: boolean;
+  cruiseControlKmh?: number | null;
 }
 
 export interface CabGpsDrawState {
@@ -172,7 +173,7 @@ export class ProceduralTextures {
       }
     }
 
-    // Reflective European road markings (crisp solid edges + center divider)
+    // Reflective European road markings (white solid outer edges + European white centerlines; zero US yellow lines)
     const paintPaint = (x: number, y: number, w: number, h: number, color: string) => {
       ctx.fillStyle = color;
       ctx.fillRect(x, y, w, h);
@@ -186,8 +187,11 @@ export class ProceduralTextures {
     paintPaint(size - 29 * sScale, 0, 7 * sScale, size, '#e5e7eb');
 
     if (roadClass === 'motorway' && laneCount >= 4) {
-      paintPaint(size / 2 - 10 * sScale, 0, 6 * sScale, size, '#f59e0b');
-      paintPaint(size / 2 + 4 * sScale, 0, 6 * sScale, size, '#f59e0b');
+      // European divided motorway: twin solid white center lines flanking dark median strip
+      ctx.fillStyle = '#20252d';
+      ctx.fillRect(size / 2 - 8 * sScale, 0, 16 * sScale, size);
+      paintPaint(size / 2 - 12 * sScale, 0, 5 * sScale, size, '#f8fafc');
+      paintPaint(size / 2 + 7 * sScale, 0, 5 * sScale, size, '#f8fafc');
     } else {
       for (let y = 16 * sScale; y < size; y += 96 * sScale) {
         paintPaint(size / 2 - 3 * sScale, y, 6 * sScale, 48 * sScale, '#f8fafc');
@@ -874,17 +878,17 @@ export class ProceduralTextures {
     ctx.textBaseline = 'middle';
     ctx.fillText(String(state.speedLimitKmh), 216, 37);
 
-    // Bottom bar distance + guidance (measured & ellipsized so text never overflows right edge)
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+    // Bottom bar distance + guidance (generous margins & strict ellipsis so text never clips right edge)
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
     ctx.fillRect(0, 120, 256, 40);
 
     const distText = state.hasActiveJob
       ? `${(state.distanceMeters / 1000).toFixed(1)}km`
       : 'SATNAV';
-    ctx.font = 'bold 12px monospace';
+    ctx.font = 'bold 11px monospace';
     const distWidth = ctx.measureText(distText).width;
     const badgeW = Math.ceil(distWidth) + 12;
-    const badgeX = 256 - badgeW - 8;
+    const badgeX = 256 - badgeW - 10;
 
     ctx.fillStyle = state.hasActiveJob ? 'rgba(16, 185, 129, 0.16)' : 'rgba(148, 163, 184, 0.14)';
     ctx.fillRect(badgeX, 128, badgeW, 24);
@@ -894,17 +898,20 @@ export class ProceduralTextures {
     ctx.fillText(distText, badgeX + badgeW / 2, 140);
 
     ctx.fillStyle = '#e2e8f0';
-    ctx.font = 'bold 11.5px sans-serif';
+    ctx.font = 'bold 10px sans-serif';
     ctx.textAlign = 'left';
-    const maxInstrWidth = Math.max(40, badgeX - 18);
+    const maxInstrWidth = Math.max(40, badgeX - 16);
     let instr = state.instruction.trim();
+    if (!state.hasActiveJob && instr.includes('自由')) {
+      instr = '自由漫游 · 货场接单';
+    }
     if (ctx.measureText(instr).width > maxInstrWidth) {
       while (instr.length > 1 && ctx.measureText(`${instr}…`).width > maxInstrWidth) {
         instr = instr.slice(0, -1);
       }
       instr = `${instr}…`;
     }
-    ctx.fillText(instr, 10, 140);
+    ctx.fillText(instr, 10, 139);
 
     this.gpsTexture.needsUpdate = true;
   }
@@ -1077,12 +1084,12 @@ export class ProceduralTextures {
 
   public updateDynamicDashboard(state: DashboardDrawState): void {
     if (!this.dashCtx || !this.dashTexture) return;
-    const key = `${state.speedKmh}_${Math.round(state.rpm / 25)}_${state.gearLabel}_${Math.round(state.fuelPct)}_${state.parkingBrake}_${state.leftBlinker}_${state.rightBlinker}`;
+    const key = `${state.speedKmh}_${Math.round(state.rpm / 25)}_${state.gearLabel}_${Math.round(state.fuelPct)}_${state.parkingBrake}_${state.leftBlinker}_${state.rightBlinker}_${state.cruiseControlKmh ?? 'none'}`;
     if (key === this.lastDashKey) return;
     this.lastDashKey = key;
 
     const ctx = this.dashCtx;
-    ctx.fillStyle = '#0c1322';
+    ctx.fillStyle = '#0a101d';
     ctx.fillRect(0, 0, 512, 192);
 
     // Soft backlit console bezel
@@ -1105,7 +1112,6 @@ export class ProceduralTextures {
       ctx.arc(cx, cy, radius, Math.PI * 0.75, Math.PI * 2.25);
       ctx.stroke();
 
-      // Eco or redline arc
       ctx.strokeStyle = '#ef4444';
       ctx.lineWidth = 6;
       ctx.beginPath();
@@ -1118,7 +1124,6 @@ export class ProceduralTextures {
       );
       ctx.stroke();
 
-      // Tick marks
       for (let i = 0; i <= 10; i++) {
         const a = Math.PI * 0.75 + (i / 10) * Math.PI * 1.5;
         ctx.strokeStyle = i / 10 >= redStartRatio ? '#f87171' : '#e2e8f0';
@@ -1129,7 +1134,6 @@ export class ProceduralTextures {
         ctx.stroke();
       }
 
-      // Rotating orange needle
       const needleAngle = Math.PI * 0.75 + Math.max(0, Math.min(1, ratio)) * Math.PI * 1.5;
       ctx.strokeStyle = '#f97316';
       ctx.lineWidth = 4;
@@ -1144,47 +1148,73 @@ export class ProceduralTextures {
       ctx.fill();
 
       ctx.fillStyle = '#94a3b8';
-      ctx.font = 'bold 13px sans-serif';
+      ctx.font = 'bold 12px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(title, cx, cy + 36);
+      ctx.fillText(title, cx, cy + 34);
 
       ctx.fillStyle = '#f8fafc';
-      ctx.font = 'bold 18px monospace';
-      ctx.fillText(valueText, cx, cy + 56);
+      ctx.font = 'bold 16px monospace';
+      ctx.fillText(valueText, cx, cy + 54);
     };
 
-    drawDial(104, 92, 66, state.speedKmh / 120, 'KM/H', String(state.speedKmh), 0.78);
-    drawDial(408, 92, 66, state.rpm / 2500, 'RPM', String(Math.round(state.rpm)), 0.88);
+    drawDial(92, 96, 62, state.speedKmh / 120, 'KM/H', String(state.speedKmh), 0.78);
+    drawDial(420, 96, 62, state.rpm / 2500, 'RPM', String(Math.round(state.rpm)), 0.88);
 
-    // Center MFD trip screen
-    ctx.fillStyle = '#111c33';
-    ctx.fillRect(194, 24, 124, 144);
+    // Center High-Contrast Digital MFD positioned inside the unobstructed upper steering wheel opening
+    ctx.fillStyle = '#0f1b33';
+    ctx.fillRect(172, 16, 168, 160);
     ctx.strokeStyle = '#38bdf8';
     ctx.lineWidth = 2;
-    ctx.strokeRect(194, 24, 124, 144);
+    ctx.strokeRect(172, 16, 168, 160);
 
-    // Blinker arrows
+    // Top row: Blinker arrows + Cruise indicator
+    ctx.textBaseline = 'middle';
     ctx.font = 'bold 18px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = state.leftBlinker ? '#34d399' : '#1e293b';
-    ctx.fillText('◄', 216, 46);
+    ctx.fillText('◄', 192, 34);
     ctx.fillStyle = state.rightBlinker ? '#34d399' : '#1e293b';
-    ctx.fillText('►', 296, 46);
+    ctx.fillText('►', 320, 34);
 
-    // Gear & Parking brake
+    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = state.cruiseControlKmh != null ? '#34d399' : '#475569';
+    ctx.fillText(
+      state.cruiseControlKmh != null ? `CC ${state.cruiseControlKmh}` : 'CC --',
+      256,
+      34
+    );
+
+    // Core high-contrast digital speedometer (clearly visible through upper wheel rim)
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 46px monospace';
+    ctx.fillText(String(state.speedKmh), 256, 80);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillText('KM/H', 256, 110);
+
+    // Gear & Parking brake row
     ctx.fillStyle = '#fbbf24';
-    ctx.font = 'bold 34px monospace';
-    ctx.fillText(state.gearLabel, 256, 94);
+    ctx.font = 'bold 26px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(state.gearLabel, 188, 136);
 
-    ctx.fillStyle = state.parkingBrake ? '#ef4444' : '#334155';
-    ctx.font = 'bold 14px monospace';
-    ctx.fillText(state.parkingBrake ? 'PARK [P]' : 'DRIVE', 256, 122);
+    ctx.fillStyle = state.parkingBrake ? '#ef4444' : '#64748b';
+    ctx.font = 'bold 13px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(state.parkingBrake ? 'PARK [P]' : 'DRIVE', 324, 136);
 
-    // Fuel bar
+    // Compact RPM & Fuel dual status bars
+    const rpmFrac = Math.max(0, Math.min(1, (state.rpm - 600) / 1700));
     ctx.fillStyle = '#1e293b';
-    ctx.fillRect(210, 138, 92, 10);
+    ctx.fillRect(186, 152, 140, 6);
+    ctx.fillStyle = state.rpm > 1850 ? '#ef4444' : state.rpm > 1550 ? '#fbbf24' : '#38bdf8';
+    ctx.fillRect(186, 152, 140 * rpmFrac, 6);
+
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(186, 162, 140, 6);
     ctx.fillStyle = state.fuelPct < 18 ? '#ef4444' : '#10b981';
-    ctx.fillRect(210, 138, 92 * Math.max(0, Math.min(1, state.fuelPct / 100)), 10);
+    ctx.fillRect(186, 162, 140 * Math.max(0, Math.min(1, state.fuelPct / 100)), 6);
 
     this.dashTexture.needsUpdate = true;
   }
