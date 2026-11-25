@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   QUALITY_SPECS,
   QualityPreset,
+  getMaxFuelLiters,
   useGameStore,
 } from '../store/useGameStore';
 import { ProceduralTextures } from '../graphics/ProceduralTextures';
@@ -103,7 +104,7 @@ export class GameEngine {
     this.renderer.autoClear = false;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.08;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.width = '100%';
@@ -137,7 +138,8 @@ export class GameEngine {
     this.mirrorBlitScene.add(blitQuad);
 
     this.textures = new ProceduralTextures();
-    this.env = new EnvironmentSystem(this.scene);
+    this.textures.configureQuality(store.qualityPreset);
+    this.env = new EnvironmentSystem(this.scene, this.renderer);
     this.mapBuilder = new MapBuilder(this.textures, this.env);
 
     const manifest = MapRegistry.getMapById(store.selectedMapId);
@@ -350,13 +352,15 @@ export class GameEngine {
 
   public loadMap(mapId: string): void {
     const manifest = MapRegistry.getMapById(mapId);
-    const spec = QUALITY_SPECS[useGameStore.getState().qualityPreset];
+    const preset = useGameStore.getState().qualityPreset;
+    const spec = QUALITY_SPECS[preset];
     this.traffic.dispose();
     this.scene.remove(this.builtMap.root);
     this.builtMap.dispose();
 
     this.builtMap = this.mapBuilder.build(manifest);
     this.builtMap.setFoliageDensity(spec.foliageDensity);
+    this.builtMap.setPbrDetailEnabled(preset !== 'mobile_fast');
     this.scene.add(this.builtMap.root);
 
     this.traffic = new TrafficSystem(this.builtMap, spec.maxTraffic, 28);
@@ -371,16 +375,20 @@ export class GameEngine {
   public applyQualityPreset(preset: QualityPreset): void {
     const spec = QUALITY_SPECS[preset];
     const dpr = window.devicePixelRatio || 1;
+    const enableDetailMaps = preset !== 'mobile_fast';
 
+    this.textures.configureQuality(preset);
     this.renderer.setPixelRatio(Math.min(dpr, spec.maxDpr));
     this.renderer.shadowMap.enabled = spec.shadowsEnabled;
     this.truckVisuals.setBlobShadowVisible(!spec.shadowsEnabled);
+    this.truckVisuals.setPbrDetailEnabled(enableDetailMaps);
 
-    this.env.configureQuality(spec.shadowsEnabled, spec.shadowMapSize, spec.fogScale);
+    this.env.configureForPreset(preset, spec.shadowsEnabled, spec.shadowMapSize, spec.fogScale);
     this.camera.far = spec.cameraFar;
     this.camera.updateProjectionMatrix();
 
     this.builtMap.setFoliageDensity(spec.foliageDensity);
+    this.builtMap.setPbrDetailEnabled(enableDetailMaps);
     this.traffic.setActiveCount(spec.maxTraffic);
     this.mirrorUpdateInterval = Math.max(1, spec.mirrorUpdateInterval);
 
@@ -418,6 +426,7 @@ export class GameEngine {
     this.traffic.dispose();
     this.truckVisuals.dispose();
     this.builtMap.dispose();
+    this.env.dispose();
     this.textures.dispose();
     this.mirrorRtLeft.dispose();
     this.mirrorRtRight.dispose();
@@ -703,6 +712,20 @@ export class GameEngine {
       kmh
     );
     store.setParkingGuide(parkingGuide);
+
+    // Update 3D cockpit instrument cluster CanvasTexture cleanly when in 1st-person view
+    if (store.cameraMode === 1 && store.gamePhase === 'playing') {
+      const maxFuel = getMaxFuelLiters(store.tankTier);
+      this.textures.updateDynamicDashboard({
+        speedKmh: Math.round(kmh),
+        rpm: this.physics.rpm,
+        gearLabel,
+        fuelPct: (store.fuelLiters / maxFuel) * 100,
+        parkingBrake: this.physics.parkingBrake,
+        leftBlinker: this.physics.blinkerLit && (this.physics.leftBlinker || this.physics.hazardLights),
+        rightBlinker: this.physics.blinkerLit && (this.physics.rightBlinker || this.physics.hazardLights),
+      });
+    }
 
     store.updateTelemetry({
       speedKmh: Math.round(kmh),

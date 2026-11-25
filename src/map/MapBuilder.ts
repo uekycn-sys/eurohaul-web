@@ -67,6 +67,7 @@ export interface BuiltMap {
   querySurface: (x: number, z: number, out: SurfaceQueryResult) => void;
   highlightDestinationDepot: (depotId: string | null) => void;
   setFoliageDensity: (ratio: number) => void;
+  setPbrDetailEnabled: (enabled: boolean) => void;
   update: (dtSec: number, elapsedSec: number) => void;
   dispose: () => void;
 }
@@ -253,12 +254,28 @@ export class MapBuilder {
       heightGrid[i] = finalY;
     }
 
+    const pbrMaterialBindings: {
+      mat: THREE.MeshStandardMaterial;
+      roughnessMap: THREE.CanvasTexture;
+      bumpMap: THREE.CanvasTexture;
+      bumpScale: number;
+    }[] = [];
+
     terrainGeo.computeVertexNormals();
-    const terrainTex = this.textures.getTerrainTexture();
+    const terrainPbr = this.textures.getTerrainTextures();
     const terrainMat = new THREE.MeshStandardMaterial({
-      map: terrainTex,
+      map: terrainPbr.map,
+      roughnessMap: terrainPbr.roughnessMap,
+      bumpMap: terrainPbr.bumpMap,
+      bumpScale: 0.14,
       roughness: 0.94,
       metalness: 0.02,
+    });
+    pbrMaterialBindings.push({
+      mat: terrainMat,
+      roughnessMap: terrainPbr.roughnessMap,
+      bumpMap: terrainPbr.bumpMap,
+      bumpScale: 0.14,
     });
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     terrainMesh.receiveShadow = true;
@@ -296,15 +313,23 @@ export class MapBuilder {
     disposables.push(skirtMat);
 
     for (const seg of segments) {
-      const { map, roughnessMap } = this.textures.getRoadTextures(seg.def.lanes, seg.def.roadClass);
+      const roadPbr = this.textures.getRoadTextures(seg.def.lanes, seg.def.roadClass);
       const segMat = new THREE.MeshStandardMaterial({
-        map,
-        roughnessMap,
+        map: roadPbr.map,
+        roughnessMap: roadPbr.roughnessMap,
+        bumpMap: roadPbr.bumpMap,
+        bumpScale: 0.035,
         roughness: 0.85,
         metalness: 0.04,
         polygonOffset: true,
         polygonOffsetFactor: -1,
         polygonOffsetUnits: -1,
+      });
+      pbrMaterialBindings.push({
+        mat: segMat,
+        roughnessMap: roadPbr.roughnessMap,
+        bumpMap: roadPbr.bumpMap,
+        bumpScale: 0.035,
       });
       disposables.push(segMat);
 
@@ -584,12 +609,22 @@ export class MapBuilder {
     const colliders: BoxCollider[] = [];
     const parkingBayMeshes = new Map<string, THREE.Mesh>();
 
+    const yardPbr = this.textures.getYardConcreteTextures();
     const yardApronMat = new THREE.MeshStandardMaterial({
-      color: '#434954',
-      roughness: 0.9,
-      metalness: 0.04,
+      map: yardPbr.map,
+      roughnessMap: yardPbr.roughnessMap,
+      bumpMap: yardPbr.bumpMap,
+      bumpScale: 0.045,
+      roughness: 0.86,
+      metalness: 0.05,
       polygonOffset: true,
       polygonOffsetFactor: -1,
+    });
+    pbrMaterialBindings.push({
+      mat: yardApronMat,
+      roughnessMap: yardPbr.roughnessMap,
+      bumpMap: yardPbr.bumpMap,
+      bumpScale: 0.045,
     });
     const bayTexture = this.textures.getParkingBayTexture();
     disposables.push(yardApronMat);
@@ -745,6 +780,15 @@ export class MapBuilder {
       }
     };
 
+    const setPbrDetailEnabled = (enabled: boolean): void => {
+      for (const b of pbrMaterialBindings) {
+        b.mat.roughnessMap = enabled ? b.roughnessMap : null;
+        b.mat.bumpMap = enabled ? b.bumpMap : null;
+        b.mat.bumpScale = enabled ? b.bumpScale : 0;
+        b.mat.needsUpdate = true;
+      }
+    };
+
     const update = (dtSec: number, elapsedSec: number): void => {
       for (let i = 0; i < rotatingRotors.length; i++) {
         rotatingRotors[i]!.rotation.z += dtSec * 1.15;
@@ -776,6 +820,7 @@ export class MapBuilder {
       querySurface,
       highlightDestinationDepot,
       setFoliageDensity,
+      setPbrDetailEnabled,
       update,
       dispose,
     };
