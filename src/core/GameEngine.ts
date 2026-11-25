@@ -359,7 +359,7 @@ export class GameEngine {
     this.builtMap.dispose();
 
     this.builtMap = this.mapBuilder.build(manifest);
-    this.builtMap.setFoliageDensity(spec.foliageDensity);
+    this.builtMap.setFoliageDensity(spec.foliageDensity, preset === 'mobile_fast');
     this.builtMap.setPbrDetailEnabled(preset !== 'mobile_fast');
     this.scene.add(this.builtMap.root);
 
@@ -387,7 +387,7 @@ export class GameEngine {
     this.camera.far = spec.cameraFar;
     this.camera.updateProjectionMatrix();
 
-    this.builtMap.setFoliageDensity(spec.foliageDensity);
+    this.builtMap.setFoliageDensity(spec.foliageDensity, preset === 'mobile_fast');
     this.builtMap.setPbrDetailEnabled(enableDetailMaps);
     this.traffic.setActiveCount(spec.maxTraffic);
     this.mirrorUpdateInterval = Math.max(1, spec.mirrorUpdateInterval);

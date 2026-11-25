@@ -60,6 +60,8 @@ export interface RoadSegment {
   hasStreetLights: boolean;
   /** Whether metallic safety guardrails are generated on shoulders */
   hasGuardrails: boolean;
+  /** Optional acoustic noise barriers along suburban/motorway stretches */
+  hasNoiseBarrier?: boolean;
   /** If true, traffic flows only from fromNode -> toNode */
   oneWay?: boolean;
 }
@@ -94,11 +96,19 @@ export interface ServiceStation {
   radius: number;
 }
 
+export type CityRegionStyle =
+  | 'german_industrial'
+  | 'alpine_wood'
+  | 'coastal_port'
+  | 'countryside_farm';
+
 export interface CityDefinition {
   id: string;
   name: string;
   country: string;
   economyTag: string;
+  /** Optional architectural/atmosphere theme for city depots and props */
+  regionStyle?: CityRegionStyle;
   /** Approximate city center coordinate */
   position: Vec3Tuple;
   /** Radius in meters used for city zone detection and minimap labels */
@@ -116,7 +126,20 @@ export type LandmarkKind =
   | 'mountain_peak'
   | 'lake'
   | 'warehouse_block'
-  | 'port_crane';
+  | 'port_crane'
+  | 'power_pylon'
+  | 'rural_barn';
+
+export interface HighwayGantryDef {
+  id: string;
+  segmentId: string;
+  /** Normalized spline position [0..1] along the segment */
+  t: number;
+  routeCode: string;
+  destinationLabel: string;
+  distanceLabel: string;
+  style: 'motorway' | 'national';
+}
 
 export interface LandmarkDefinition {
   id: string;
@@ -159,4 +182,6 @@ export interface MapManifest {
   cities: CityDefinition[];
   landmarks: LandmarkDefinition[];
   speedCameras: SpeedCameraDef[];
+  /** Optional overhead highway/national route gantry signs */
+  gantries?: HighwayGantryDef[];
 }

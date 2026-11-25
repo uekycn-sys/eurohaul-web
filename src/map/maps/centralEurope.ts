@@ -74,6 +74,7 @@ export const centralEuropeMap: MapManifest = {
       roadClass: 'motorway',
       hasStreetLights: true,
       hasGuardrails: true,
+      hasNoiseBarrier: true,
     },
     // West Junction -> Hamburg Entry (A7 Coastal Motorway)
     {
@@ -139,6 +140,7 @@ export const centralEuropeMap: MapManifest = {
       roadClass: 'motorway',
       hasStreetLights: true,
       hasGuardrails: true,
+      hasNoiseBarrier: true,
     },
     // Frankfurt spur
     {
@@ -233,6 +235,7 @@ export const centralEuropeMap: MapManifest = {
       roadClass: 'motorway',
       hasStreetLights: true,
       hasGuardrails: true,
+      hasNoiseBarrier: true,
     },
     // Central East-West Highway Connector
     {
@@ -247,6 +250,7 @@ export const centralEuropeMap: MapManifest = {
       roadClass: 'motorway',
       hasStreetLights: true,
       hasGuardrails: true,
+      hasNoiseBarrier: true,
     },
     {
       id: 'seg_mid_east',
@@ -260,6 +264,7 @@ export const centralEuropeMap: MapManifest = {
       roadClass: 'motorway',
       hasStreetLights: true,
       hasGuardrails: true,
+      hasNoiseBarrier: true,
     },
     // Central North-South Countryside Connector
     {
@@ -295,6 +300,7 @@ export const centralEuropeMap: MapManifest = {
       name: '慕尼黑物流枢纽',
       country: '德国',
       economyTag: '精密制造 · 欧洲干线中心',
+      regionStyle: 'german_industrial',
       position: [-920, 0, 520],
       radius: 260,
       entryNodeId: 'munich_yard',
@@ -329,6 +335,14 @@ export const centralEuropeMap: MapManifest = {
           headingRad: 0,
           radius: 15,
         },
+        {
+          id: 'a9_rest_stop',
+          name: 'A9 纽伦堡高速休息加油站',
+          kind: 'fuel',
+          position: [-728, 0, -180],
+          headingRad: 0,
+          radius: 18,
+        },
       ],
     },
     {
@@ -336,6 +350,7 @@ export const centralEuropeMap: MapManifest = {
       name: '汉堡北海港',
       country: '德国',
       economyTag: '海运集装箱 · 船舶重工',
+      regionStyle: 'coastal_port',
       position: [-980, 0, -1120],
       radius: 280,
       entryNodeId: 'hamburg_port',
@@ -377,6 +392,7 @@ export const centralEuropeMap: MapManifest = {
       name: '法兰克福中央区',
       country: '德国',
       economyTag: '汽车工业 · 农产品集散',
+      regionStyle: 'countryside_farm',
       position: [990, 0, -660],
       radius: 260,
       entryNodeId: 'frankfurt_hub',
@@ -411,6 +427,14 @@ export const centralEuropeMap: MapManifest = {
           headingRad: 0,
           radius: 15,
         },
+        {
+          id: 'a2_kassel_rest',
+          name: 'A2 卡塞尔高速服务区',
+          kind: 'fuel',
+          position: [110, 4, -955],
+          headingRad: Math.PI / 2,
+          radius: 18,
+        },
       ],
     },
     {
@@ -418,6 +442,7 @@ export const centralEuropeMap: MapManifest = {
       name: '因斯布鲁克山谷',
       country: '奥地利',
       economyTag: '高山林木 · 跨境山口货运',
+      regionStyle: 'alpine_wood',
       position: [980, 40, 1010],
       radius: 270,
       entryNodeId: 'innsbruck_town',
@@ -493,5 +518,61 @@ export const centralEuropeMap: MapManifest = {
     { id: 'cam_a2', segmentId: 'seg_a2_east', t: 0.5, speedLimitKmh: 100 },
     { id: 'cam_alpine', segmentId: 'seg_alpine_climb', t: 0.62, speedLimitKmh: 60 },
     { id: 'cam_south', segmentId: 'seg_bavaria_express', t: 0.45, speedLimitKmh: 90 },
+  ],
+  gantries: [
+    {
+      id: 'gan_a9_north',
+      segmentId: 'seg_a9_south',
+      t: 0.25,
+      routeCode: 'A9',
+      destinationLabel: 'Hamburg / Frankfurt',
+      distanceLabel: '2 km',
+      style: 'motorway',
+    },
+    {
+      id: 'gan_a7_port',
+      segmentId: 'seg_a7_north',
+      t: 0.72,
+      routeCode: 'A7',
+      destinationLabel: 'Hamburg Port',
+      distanceLabel: '1 km',
+      style: 'motorway',
+    },
+    {
+      id: 'gan_a2_frankfurt',
+      segmentId: 'seg_a2_east',
+      t: 0.68,
+      routeCode: 'A2',
+      destinationLabel: 'Frankfurt / Main',
+      distanceLabel: '1 km',
+      style: 'motorway',
+    },
+    {
+      id: 'gan_alpine_inns',
+      segmentId: 'seg_alpine_climb',
+      t: 0.42,
+      routeCode: 'B171',
+      destinationLabel: 'Innsbruck',
+      distanceLabel: '3 km',
+      style: 'national',
+    },
+    {
+      id: 'gan_bavaria_mun',
+      segmentId: 'seg_bavaria_express',
+      t: 0.62,
+      routeCode: 'A95',
+      destinationLabel: 'München',
+      distanceLabel: '2 km',
+      style: 'motorway',
+    },
+    {
+      id: 'gan_mid_east',
+      segmentId: 'seg_mid_east',
+      t: 0.52,
+      routeCode: 'A8',
+      destinationLabel: 'Innsbruck / Alps',
+      distanceLabel: '4 km',
+      style: 'motorway',
+    },
   ],
 };

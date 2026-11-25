@@ -571,6 +571,116 @@ export class ProceduralTextures {
     return { map, roughnessMap, bumpMap };
   }
 
+  public getHighwayGantryTexture(
+    routeCode: string,
+    destinationLabel: string,
+    distanceLabel: string,
+    style: 'motorway' | 'national'
+  ): THREE.CanvasTexture {
+    const key = `gantry_${routeCode}_${destinationLabel}_${distanceLabel}_${style}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 192;
+    const ctx = canvas.getContext('2d')!;
+
+    const isMotorway = style === 'motorway';
+    ctx.fillStyle = isMotorway ? '#1d4ed8' : '#eab308';
+    ctx.fillRect(0, 0, 512, 192);
+
+    // Outer white or black reflective border
+    ctx.strokeStyle = isMotorway ? '#f8fafc' : '#0f172a';
+    ctx.lineWidth = 8;
+    ctx.strokeRect(8, 8, 496, 176);
+
+    // Route shield badge
+    ctx.fillStyle = isMotorway ? '#1e3a8a' : '#fef08a';
+    ctx.fillRect(26, 30, 108, 56);
+    ctx.strokeStyle = isMotorway ? '#ffffff' : '#0f172a';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(26, 30, 108, 56);
+
+    ctx.fillStyle = isMotorway ? '#ffffff' : '#0f172a';
+    ctx.font = 'bold 34px Inter, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(routeCode, 80, 59);
+
+    // Destination text & distance
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 34px Inter, Arial, sans-serif';
+    ctx.fillText(destinationLabel, 152, 62);
+
+    ctx.font = 'bold 26px monospace';
+    ctx.fillStyle = isMotorway ? '#bae6fd' : '#1e293b';
+    ctx.fillText(`↑ ${distanceLabel}`, 152, 126);
+
+    // Downward lane arrows
+    ctx.fillStyle = isMotorway ? '#ffffff' : '#0f172a';
+    ctx.font = 'bold 30px sans-serif';
+    ctx.fillText('⬇   ⬇', 382, 134);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getWarehouseDockTexture(accentHex: string): THREE.CanvasTexture {
+    const key = `warehouse_dock_${accentHex}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 192;
+    const ctx = canvas.getContext('2d')!;
+
+    // Corrugated steel warehouse facade
+    ctx.fillStyle = '#475569';
+    ctx.fillRect(0, 0, 512, 192);
+    for (let x = 0; x < 512; x += 8) {
+      ctx.fillStyle = 'rgba(0,0,0,0.12)';
+      ctx.fillRect(x, 0, 3, 192);
+    }
+
+    // Upper branding fascia stripe
+    ctx.fillStyle = accentHex;
+    ctx.fillRect(0, 0, 512, 34);
+
+    // 4 Numbered Loading Docks (Dock 1..4)
+    for (let d = 0; d < 4; d++) {
+      const dx = 28 + d * 120;
+      // Yellow/black dock bumper frame
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(dx - 4, 62, 92, 130);
+      // Roll-up shutter door
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(dx + 2, 70, 80, 122);
+      for (let ry = 82; ry < 188; ry += 12) {
+        ctx.fillStyle = '#334155';
+        ctx.fillRect(dx + 4, ry, 76, 4);
+      }
+      // Dock number sign
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(dx + 16, 40, 52, 20);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 13px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`DOCK ${d + 1}`, dx + 42, 50);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
   public getSpeedSignTexture(speedLimitKmh: number): THREE.CanvasTexture {
     const key = `sign_${speedLimitKmh}`;
     const cached = this.cache.get(key);

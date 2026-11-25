@@ -90,7 +90,12 @@ constructor() {
 3. **平滑坡道与山路**：
    - `RoadSegment.controlPoints` 之间会通过向心 Catmull-Rom 样条 (`centripetal`) 插值。
    - 爬坡路段的相邻控制点高度差建议控制在 `10m / 150m` 以内（约 6%~7% 欧洲公路坡度上限），以保证重货（24t）爬坡体验真实而不卡顿。
-4. **生态群系 (`biome`)**：
-   - 可选 `'highway' | 'alpine' | 'countryside' | 'industrial' | 'coastal'`，影响沿途自动生成的树木种类（针叶松/阔叶林）与航标视觉氛围。
-5. **寻路连通性**：
+4. **生态群系 (`biome`) 与区域风格 (`regionStyle`)**：
+   - `RoadSegment.biome` 可选 `'highway' | 'alpine' | 'countryside' | 'industrial' | 'coastal'`，影响沿途自动生成的云杉/橡树/灌木比例。
+   - `CityDefinition.regionStyle`（可选）：`'german_industrial' | 'alpine_wood' | 'coastal_port' | 'countryside_farm'`，用于定制场站建筑与围栏外观。
+5. **可选高速设施扩展**：
+   - `RoadSegment.hasNoiseBarrier?: boolean`：开启高速隔音墙批处理。
+   - `MapManifest.gantries?: HighwayGantryDef[]`：在指定路段跨越车道生成欧式蓝底/黄底龙门架指路牌。
+   - 远郊与公路中段可通过 `CityDefinition.stations` 布置高速服务区加油站（`MapBuilder` 会自动为其生成独立硬化坪台），`landmarks` 支持 `'power_pylon'` 与 `'rural_barn'`。
+6. **寻路连通性**：
    - 确保每座城市的 `entryNodeId` 通过 `segments` 与主路网相连，且全图构成连通图，否则 `NavigationSystem`（Dijkstra）与 `EconomyManager` 无法规划跨城航线。
