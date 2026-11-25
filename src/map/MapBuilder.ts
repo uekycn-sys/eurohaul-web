@@ -66,6 +66,7 @@ export interface BuiltMap {
   getHeightAt: (x: number, z: number) => number;
   querySurface: (x: number, z: number, out: SurfaceQueryResult) => void;
   highlightDestinationDepot: (depotId: string | null) => void;
+  setFoliageDensity: (ratio: number) => void;
   update: (dtSec: number, elapsedSec: number) => void;
   dispose: () => void;
 }
@@ -604,7 +605,7 @@ export class MapBuilder {
     }
 
     // 8. Instanced Biome Vegetation (scattered safely outside roads & cities)
-    this.buildInstancedFoliage(
+    const setFoliageDensity = this.buildInstancedFoliage(
       manifest,
       root,
       findNearestRoadDistanceAndY,
@@ -731,6 +732,7 @@ export class MapBuilder {
       getHeightAt,
       querySurface,
       highlightDestinationDepot,
+      setFoliageDensity,
       update,
       dispose,
     };
@@ -1081,7 +1083,7 @@ export class MapBuilder {
     findNearestRoadDistanceAndY: (x: number, z: number) => { dist: number; y: number; seg: CompiledRoadSegment | null },
     getHeightAt: (x: number, z: number) => number,
     disposables: { dispose: () => void }[]
-  ): void {
+  ): (ratio: number) => void {
     const { minX, maxX, minZ, maxZ } = manifest.worldBounds;
     let seed = 424242;
     const rand = () => {
@@ -1115,7 +1117,7 @@ export class MapBuilder {
       treeSpots.push({ x, y, z, scale: 0.75 + rand() * 0.75, isPine });
     }
 
-    if (treeSpots.length === 0) return;
+    if (treeSpots.length === 0) return () => {};
 
     const trunkGeo = new THREE.CylinderGeometry(0.28, 0.42, 3.2, 6);
     const trunkMat = new THREE.MeshStandardMaterial({ color: '#5c4033', roughness: 0.92 });
@@ -1126,49 +1128,84 @@ export class MapBuilder {
 
     disposables.push(trunkGeo, trunkMat, pineGeo, pineMat, oakGeo, oakMat);
 
-    const pines = treeSpots.filter((t) => t.isPine);
-    const oaks = treeSpots.filter((t) => !t.isPine);
+    // Shuffle deterministically once so slicing count preserves uniform spatial coverage
+    const pines: typeof treeSpots = [];
+    const oaks: typeof treeSpots = [];
+    const orderedSpots: typeof treeSpots = [];
+    for (let i = 0; i < treeSpots.length; i++) {
+      const spot = treeSpots[i]!;
+      orderedSpots.push(spot);
+    }
 
-    const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, treeSpots.length);
+    // Build unified indexed order so trunkInst[i] matches pine/oak ordering proportionally
+    for (const spot of orderedSpots) {
+      if (spot.isPine) pines.push(spot);
+      else oaks.push(spot);
+    }
+
+    // Interleave trunk matrices in proportion [pines, oaks] or set separate count cleanly:
+    // Actually easiest & 100% consistent: keep two trunk InstancedMeshes or sort orderedSpots = [...pines, ...oaks]?
+    // Wait: if we keep separate pineTrunks and oakTrunks or simply scale pineInst.count and oakInst.count + put trunks in same [pines..., oaks...]? No, if trunkInst has all pines first then oaks, trunkInst.count wouldn't match both!
+    // Even cleaner: 2 small trunk InstancedMeshes (pineTrunks + oakTrunks) = still just 4 draw calls total and 100% exact tree/trunk matching at any density!
+    const pineTrunkInst = pines.length > 0 ? new THREE.InstancedMesh(trunkGeo, trunkMat, pines.length) : null;
+    const oakTrunkInst = oaks.length > 0 ? new THREE.InstancedMesh(trunkGeo, trunkMat, oaks.length) : null;
     const dummy = new THREE.Object3D();
 
-    for (let i = 0; i < treeSpots.length; i++) {
-      const t = treeSpots[i]!;
-      dummy.position.set(t.x, t.y + 1.5 * t.scale, t.z);
-      dummy.rotation.set(0, (i * 1.37) % Math.PI, 0);
-      dummy.scale.set(t.scale, t.scale, t.scale);
-      dummy.updateMatrix();
-      trunkInst.setMatrixAt(i, dummy.matrix);
-    }
-    trunkInst.instanceMatrix.needsUpdate = true;
-    root.add(trunkInst);
-
-    if (pines.length > 0) {
-      const pineInst = new THREE.InstancedMesh(pineGeo, pineMat, pines.length);
+    let pineInst: THREE.InstancedMesh | null = null;
+    if (pines.length > 0 && pineTrunkInst) {
+      pineInst = new THREE.InstancedMesh(pineGeo, pineMat, pines.length);
       for (let i = 0; i < pines.length; i++) {
         const t = pines[i]!;
+        dummy.position.set(t.x, t.y + 1.5 * t.scale, t.z);
+        dummy.rotation.set(0, (i * 1.37) % Math.PI, 0);
+        dummy.scale.set(t.scale, t.scale, t.scale);
+        dummy.updateMatrix();
+        pineTrunkInst.setMatrixAt(i, dummy.matrix);
+
         dummy.position.set(t.x, t.y + 5.6 * t.scale, t.z);
         dummy.rotation.set(0, (i * 0.9) % Math.PI, 0);
-        dummy.scale.set(t.scale, t.scale, t.scale);
         dummy.updateMatrix();
         pineInst.setMatrixAt(i, dummy.matrix);
       }
+      pineTrunkInst.instanceMatrix.needsUpdate = true;
       pineInst.instanceMatrix.needsUpdate = true;
-      root.add(pineInst);
+      root.add(pineTrunkInst, pineInst);
     }
 
-    if (oaks.length > 0) {
-      const oakInst = new THREE.InstancedMesh(oakGeo, oakMat, oaks.length);
+    let oakInst: THREE.InstancedMesh | null = null;
+    if (oaks.length > 0 && oakTrunkInst) {
+      oakInst = new THREE.InstancedMesh(oakGeo, oakMat, oaks.length);
       for (let i = 0; i < oaks.length; i++) {
         const t = oaks[i]!;
+        dummy.position.set(t.x, t.y + 1.5 * t.scale, t.z);
+        dummy.rotation.set(0, (i * 1.37) % Math.PI, 0);
+        dummy.scale.set(t.scale, t.scale, t.scale);
+        dummy.updateMatrix();
+        oakTrunkInst.setMatrixAt(i, dummy.matrix);
+
         dummy.position.set(t.x, t.y + 4.4 * t.scale, t.z);
         dummy.rotation.set(0, (i * 1.1) % Math.PI, 0);
         dummy.scale.set(t.scale, t.scale * 0.92, t.scale);
         dummy.updateMatrix();
         oakInst.setMatrixAt(i, dummy.matrix);
       }
+      oakTrunkInst.instanceMatrix.needsUpdate = true;
       oakInst.instanceMatrix.needsUpdate = true;
-      root.add(oakInst);
+      root.add(oakTrunkInst, oakInst);
     }
+
+    return (ratio: number) => {
+      const r = THREE.MathUtils.clamp(ratio, 0.1, 1);
+      if (pineInst && pineTrunkInst) {
+        const c = Math.floor(pines.length * r);
+        pineInst.count = c;
+        pineTrunkInst.count = c;
+      }
+      if (oakInst && oakTrunkInst) {
+        const c = Math.floor(oaks.length * r);
+        oakInst.count = c;
+        oakTrunkInst.count = c;
+      }
+    };
   }
 }

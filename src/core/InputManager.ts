@@ -30,6 +30,11 @@ export class InputManager {
   public steer = 0; // +1 = Left, -1 = Right
   public horn = false;
 
+  private touchSteer: number | null = null;
+  private touchThrottle = 0;
+  private touchBrake = 0;
+  private touchHorn = false;
+
   constructor(actions: InputActions) {
     this.actions = actions;
     window.addEventListener('keydown', this.handleKeyDown);
@@ -42,7 +47,27 @@ export class InputManager {
     if (!enabled) {
       this.keys.clear();
       this.horn = false;
+      this.touchSteer = null;
+      this.touchThrottle = 0;
+      this.touchBrake = 0;
+      this.touchHorn = false;
     }
+  }
+
+  public setTouchSteer(steerNorm: number | null): void {
+    this.touchSteer = steerNorm === null ? null : Math.max(-1, Math.min(1, steerNorm));
+  }
+
+  public setTouchThrottle(val: number): void {
+    this.touchThrottle = Math.max(0, Math.min(1, val));
+  }
+
+  public setTouchBrake(val: number): void {
+    this.touchBrake = Math.max(0, Math.min(1, val));
+  }
+
+  public setTouchHorn(active: boolean): void {
+    this.touchHorn = active;
   }
 
   public update(dtSec: number, speedKmh: number): void {
@@ -54,23 +79,28 @@ export class InputManager {
       return;
     }
 
-    const wantThrottle = this.keys.has('KeyW') || this.keys.has('ArrowUp');
-    const wantBrake = this.keys.has('KeyS') || this.keys.has('ArrowDown');
+    const kbThrottle = this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0;
+    const kbBrake = this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0;
     const wantLeft = this.keys.has('KeyA') || this.keys.has('ArrowLeft');
     const wantRight = this.keys.has('KeyD') || this.keys.has('ArrowRight');
 
-    this.horn = this.keys.has('KeyH');
+    this.horn = this.keys.has('KeyH') || this.touchHorn;
 
-    // Progressive throttle & brake application
-    const throttleRate = wantThrottle ? 2.4 : 4.2;
-    const targetThrottle = wantThrottle ? 1 : 0;
+    // Progressive throttle & brake application (blend keyboard + touch)
+    const targetThrottle = Math.max(kbThrottle, this.touchThrottle);
+    const throttleRate = targetThrottle > this.throttle ? 2.4 : 4.2;
     this.throttle += (targetThrottle - this.throttle) * Math.min(1, dtSec * throttleRate * 3);
 
-    const brakeRate = wantBrake ? 3.2 : 4.8;
-    const targetBrake = wantBrake ? 1 : 0;
+    const targetBrake = Math.max(kbBrake, this.touchBrake);
+    const brakeRate = targetBrake > this.brake ? 3.2 : 4.8;
     this.brake += (targetBrake - this.brake) * Math.min(1, dtSec * brakeRate * 3);
 
     // Speed-sensitive steering ramp & auto self-centering
+    if (this.touchSteer !== null) {
+      this.steer += (this.touchSteer - this.steer) * Math.min(1, dtSec * 14);
+      return;
+    }
+
     let targetSteer = 0;
     if (wantLeft && !wantRight) targetSteer = 1;
     else if (wantRight && !wantLeft) targetSteer = -1;

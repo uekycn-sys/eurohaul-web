@@ -1,13 +1,150 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type QualityPreset = 'low' | 'medium' | 'high';
+export type QualityPreset = 'mobile_fast' | 'mobile_balanced' | 'high' | 'ultra';
+export type MobileSteeringStyle = 'wheel' | 'buttons';
 export type GamePhase = 'menu' | 'playing';
 export type ActiveModal = 'none' | 'jobs' | 'garage' | 'map' | 'settings' | 'delivery_summary';
 export type TransmissionMode = 'auto' | 'sequential';
 export type HeadlightMode = 0 | 1 | 2; // 0: Off, 1: Low/DRL, 2: High Beam
 export type CameraMode = 1 | 2 | 3 | 4;
 export type AdvisorTab = 'nav' | 'cargo' | 'truck' | 'controls';
+
+export interface QualitySpec {
+  id: QualityPreset;
+  label: string;
+  shortDesc: string;
+  maxDpr: number;
+  shadowsEnabled: boolean;
+  shadowMapSize: number;
+  cameraFar: number;
+  fogScale: number;
+  foliageDensity: number;
+  maxTraffic: number;
+  mirrorUpdateInterval: number; // 0 = disabled by default, 1 = every frame, 2/4 = frame-skip
+  defaultMirrors: boolean;
+}
+
+export const QUALITY_SPECS: Record<QualityPreset, QualitySpec> = {
+  mobile_fast: {
+    id: 'mobile_fast',
+    label: '极速 / 入门手机',
+    shortDesc: '1.0x DPR · 贴片假阴影 · 40%植被 · 6辆AI',
+    maxDpr: 1.0,
+    shadowsEnabled: false,
+    shadowMapSize: 512,
+    cameraFar: 720,
+    fogScale: 1.55,
+    foliageDensity: 0.4,
+    maxTraffic: 6,
+    mirrorUpdateInterval: 4,
+    defaultMirrors: false,
+  },
+  mobile_balanced: {
+    id: 'mobile_balanced',
+    label: '均衡 / 旗舰手机',
+    shortDesc: '1.5x DPR · 512px阴影 · 隔帧后视镜 · 12辆AI',
+    maxDpr: 1.5,
+    shadowsEnabled: true,
+    shadowMapSize: 512,
+    cameraFar: 1100,
+    fogScale: 1.15,
+    foliageDensity: 0.7,
+    maxTraffic: 12,
+    mirrorUpdateInterval: 4,
+    defaultMirrors: false,
+  },
+  high: {
+    id: 'high',
+    label: '高画质 (PC推荐)',
+    shortDesc: '1.75x DPR · 1024px阴影 · 100%植被 · 20辆AI',
+    maxDpr: 1.75,
+    shadowsEnabled: true,
+    shadowMapSize: 1024,
+    cameraFar: 1600,
+    fogScale: 0.9,
+    foliageDensity: 1.0,
+    maxTraffic: 20,
+    mirrorUpdateInterval: 2,
+    defaultMirrors: true,
+  },
+  ultra: {
+    id: 'ultra',
+    label: '极致画质 (独显满血)',
+    shortDesc: '2.0x DPR · 2048px阴影 · 实时双镜 · 28辆AI',
+    maxDpr: 2.0,
+    shadowsEnabled: true,
+    shadowMapSize: 2048,
+    cameraFar: 2100,
+    fogScale: 0.75,
+    foliageDensity: 1.0,
+    maxTraffic: 28,
+    mirrorUpdateInterval: 1,
+    defaultMirrors: true,
+  },
+};
+
+export interface DetectedHardwareProfile {
+  isTouchDevice: boolean;
+  recommendedPreset: QualityPreset;
+  deviceLabel: string;
+}
+
+export function detectHardwareProfile(): DetectedHardwareProfile {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return {
+      isTouchDevice: false,
+      recommendedPreset: 'high',
+      deviceLabel: 'PC 桌面端',
+    };
+  }
+
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/i.test(ua);
+  const isTouch = isIOS || isAndroid || navigator.maxTouchPoints > 1 || 'ontouchstart' in window;
+  const isMobileScreen = Math.min(window.screen.width, window.screen.height) <= 900;
+
+  let gpuRenderer = '';
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    if (gl) {
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) {
+        gpuRenderer = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '');
+      }
+    }
+  } catch {
+    gpuRenderer = '';
+  }
+
+  if (isIOS) {
+    return {
+      isTouchDevice: true,
+      recommendedPreset: 'mobile_balanced',
+      deviceLabel: `iOS 移动设备${gpuRenderer ? ` (${gpuRenderer.slice(0, 24)})` : ''}`,
+    };
+  }
+
+  if (isAndroid || (isTouch && isMobileScreen)) {
+    const isFlagshipGpu = /Adreno \(TM\) 7[345]\d|Immortalis|Xclipse 94/i.test(gpuRenderer);
+    return {
+      isTouchDevice: true,
+      recommendedPreset: isFlagshipGpu ? 'mobile_balanced' : 'mobile_fast',
+      deviceLabel: isFlagshipGpu ? '旗舰安卓移动端' : '安卓移动端 (省电极速)',
+    };
+  }
+
+  const isDiscreteGpu = /RTX|GTX|Radeon RX|Apple M[1-9]/i.test(gpuRenderer);
+  return {
+    isTouchDevice: false,
+    recommendedPreset: 'high',
+    deviceLabel: isDiscreteGpu
+      ? `高性能独显 (${gpuRenderer.slice(0, 28)})`
+      : `PC 桌面端${gpuRenderer ? ` (${gpuRenderer.slice(0, 24)})` : ''}`,
+  };
+}
 
 export interface EngineUpgradeTier {
   tier: number;
@@ -71,7 +208,7 @@ export interface ActiveJobState {
   job: FreightJob;
   acceptedAtMs: number;
   remainingSeconds: number;
-  cargoHealth: number; // 0..100
+  cargoHealth: number;
   pickedUp: boolean;
 }
 
@@ -114,13 +251,13 @@ export interface HudNotification {
 export interface TelemetrySnapshot {
   speedKmh: number;
   rpm: number;
-  gear: number; // -1=R, 0=N, 1..12=Forward
+  gear: number;
   gearLabel: string;
   throttle: number;
   brake: number;
   steerAngleNorm: number;
   cruiseControlKmh: number | null;
-  retarderLevel: number; // 0..3
+  retarderLevel: number;
   parkingBrake: boolean;
   headlightMode: HeadlightMode;
   leftBlinker: boolean;
@@ -134,7 +271,7 @@ export interface TelemetrySnapshot {
   isSpeeding: boolean;
   odometerKm: number;
   fps: number;
-  timeOfDayHours: number; // 0..24
+  timeOfDayHours: number;
   currentCityName: string;
   navDistanceMeters: number;
   navEtaSeconds: number;
@@ -157,16 +294,20 @@ interface PersistedCareerState {
   engineTier: number;
   tankTier: number;
   paintHex: string;
-  truckHealth: number; // 0..100
+  truckHealth: number;
   fuelLiters: number;
   qualityPreset: QualityPreset;
   showFps: boolean;
   mirrorsEnabled: boolean;
   audioEnabled: boolean;
   masterVolume: number;
+  mobileControlsEnabled: boolean;
+  mobileSteeringStyle: MobileSteeringStyle;
 }
 
 interface GameStoreState extends PersistedCareerState {
+  detectedDeviceLabel: string;
+  isTouchDevice: boolean;
   gamePhase: GamePhase;
   activeModal: ActiveModal;
   cameraMode: CameraMode;
@@ -188,11 +329,13 @@ interface GameStoreState extends PersistedCareerState {
   setCameraMode: (mode: CameraMode) => void;
   setAdvisorTab: (tab: AdvisorTab) => void;
   toggleTransmissionMode: () => void;
-  setQualityPreset: (preset: QualityPreset) => void;
+  setQualityPreset: (preset: QualityPreset, syncDefaults?: boolean) => void;
   setShowFps: (show: boolean) => void;
   setMirrorsEnabled: (enabled: boolean) => void;
   setAudioEnabled: (enabled: boolean) => void;
   setMasterVolume: (vol: number) => void;
+  setMobileControlsEnabled: (enabled: boolean) => void;
+  setMobileSteeringStyle: (style: MobileSteeringStyle) => void;
 
   // Gameplay & economy actions
   setAvailableJobs: (jobs: FreightJob[]) => void;
@@ -265,6 +408,9 @@ const DEFAULT_PARKING_GUIDE: ParkingGuideState = {
   readyToDeliver: false,
 };
 
+const INITIAL_HARDWARE = detectHardwareProfile();
+const INITIAL_SPEC = QUALITY_SPECS[INITIAL_HARDWARE.recommendedPreset];
+
 const INITIAL_PERSISTED: PersistedCareerState = {
   selectedMapId: 'central-europe',
   moneyEur: 12500,
@@ -277,11 +423,13 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   paintHex: '#d97706',
   truckHealth: 100,
   fuelLiters: 450,
-  qualityPreset: 'medium',
+  qualityPreset: INITIAL_HARDWARE.recommendedPreset,
   showFps: true,
-  mirrorsEnabled: true,
+  mirrorsEnabled: INITIAL_SPEC.defaultMirrors,
   audioEnabled: true,
   masterVolume: 0.6,
+  mobileControlsEnabled: INITIAL_HARDWARE.isTouchDevice,
+  mobileSteeringStyle: 'wheel',
 };
 
 let notificationSeq = 1;
@@ -294,10 +442,21 @@ export function computeLevelFromXp(xp: number): number {
   return Math.max(1, Math.floor(Math.sqrt(xp / 250)) + 1);
 }
 
+function migrateQualityPreset(val: unknown): QualityPreset {
+  if (val === 'mobile_fast' || val === 'mobile_balanced' || val === 'high' || val === 'ultra') {
+    return val;
+  }
+  if (val === 'low') return 'mobile_fast';
+  if (val === 'medium') return 'mobile_balanced';
+  return INITIAL_HARDWARE.recommendedPreset;
+}
+
 export const useGameStore = create<GameStoreState>()(
   persist(
     (set, get) => ({
       ...INITIAL_PERSISTED,
+      detectedDeviceLabel: INITIAL_HARDWARE.deviceLabel,
+      isTouchDevice: INITIAL_HARDWARE.isTouchDevice,
       gamePhase: 'menu',
       activeModal: 'none',
       cameraMode: 1,
@@ -321,11 +480,17 @@ export const useGameStore = create<GameStoreState>()(
         set((s) => ({
           transmissionMode: s.transmissionMode === 'auto' ? 'sequential' : 'auto',
         })),
-      setQualityPreset: (qualityPreset) => set({ qualityPreset }),
+      setQualityPreset: (qualityPreset, syncDefaults = true) =>
+        set((s) => ({
+          qualityPreset,
+          mirrorsEnabled: syncDefaults ? QUALITY_SPECS[qualityPreset].defaultMirrors : s.mirrorsEnabled,
+        })),
       setShowFps: (showFps) => set({ showFps }),
       setMirrorsEnabled: (mirrorsEnabled) => set({ mirrorsEnabled }),
       setAudioEnabled: (audioEnabled) => set({ audioEnabled }),
       setMasterVolume: (masterVolume) => set({ masterVolume: Math.max(0, Math.min(1, masterVolume)) }),
+      setMobileControlsEnabled: (mobileControlsEnabled) => set({ mobileControlsEnabled }),
+      setMobileSteeringStyle: (mobileSteeringStyle) => set({ mobileSteeringStyle }),
 
       setAvailableJobs: (availableJobs) => set({ availableJobs }),
 
@@ -567,6 +732,15 @@ export const useGameStore = create<GameStoreState>()(
     }),
     {
       name: 'eurohaul_save_v1',
+      version: 2,
+      migrate: (persistedState) => {
+        const st = (persistedState ?? {}) as Partial<PersistedCareerState>;
+        return {
+          ...INITIAL_PERSISTED,
+          ...st,
+          qualityPreset: migrateQualityPreset(st.qualityPreset),
+        };
+      },
       partialize: (state) => ({
         selectedMapId: state.selectedMapId,
         moneyEur: state.moneyEur,
@@ -584,6 +758,8 @@ export const useGameStore = create<GameStoreState>()(
         mirrorsEnabled: state.mirrorsEnabled,
         audioEnabled: state.audioEnabled,
         masterVolume: state.masterVolume,
+        mobileControlsEnabled: state.mobileControlsEnabled,
+        mobileSteeringStyle: state.mobileSteeringStyle,
       }),
     }
   )

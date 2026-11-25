@@ -364,6 +364,35 @@ export class ProceduralTextures {
     return tex;
   }
 
+  public getBlobShadowTexture(): THREE.CanvasTexture {
+    const key = 'blob_shadow';
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.clearRect(0, 0, 128, 256);
+    ctx.save();
+    ctx.translate(64, 128);
+    ctx.scale(1, 2);
+    const grad = ctx.createRadialGradient(0, 0, 14, 0, 0, 56);
+    grad.addColorStop(0, 'rgba(2, 6, 23, 0.58)');
+    grad.addColorStop(0.55, 'rgba(2, 6, 23, 0.34)');
+    grad.addColorStop(1, 'rgba(2, 6, 23, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, 58, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    this.cache.set(key, tex);
+    return tex;
+  }
+
   public dispose(): void {
     for (const tex of this.cache.values()) {
       tex.dispose();

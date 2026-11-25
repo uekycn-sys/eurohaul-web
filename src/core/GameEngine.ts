@@ -1,5 +1,9 @@
 import * as THREE from 'three';
-import { QualityPreset, useGameStore } from '../store/useGameStore';
+import {
+  QUALITY_SPECS,
+  QualityPreset,
+  useGameStore,
+} from '../store/useGameStore';
 import { ProceduralTextures } from '../graphics/ProceduralTextures';
 import { EnvironmentSystem } from '../graphics/EnvironmentSystem';
 import { MapRegistry } from '../map/MapRegistry';
@@ -15,10 +19,19 @@ import { EconomyManager } from '../gameplay/EconomyManager';
 import { ParkingValidator } from '../gameplay/ParkingValidator';
 import { MapManifest } from '../map/types';
 
+export type MobileActionType =
+  | 'camera'
+  | 'lights'
+  | 'left_blinker'
+  | 'right_blinker'
+  | 'parking_brake'
+  | 'trailer'
+  | 'interact';
+
 /**
  * Core WebGL / Fixed-timestep simulation engine.
  * Owns 3D rendering, physics, AI traffic, audio synthesis, navigation, and economy checks.
- * Decoupled from React; pushes telemetry to Zustand at ~18 Hz.
+ * Supports 4-tier hardware scaling, cached frame-skipped mirrors, and visibility lifecycle protection.
  */
 export class GameEngine {
   private readonly container: HTMLElement;
@@ -27,6 +40,15 @@ export class GameEngine {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly leftMirrorCam: THREE.PerspectiveCamera;
   private readonly rightMirrorCam: THREE.PerspectiveCamera;
+
+  // Offscreen render targets & orthographic blit quad for zero-flicker frame-skipped mirrors
+  private readonly mirrorRtLeft: THREE.WebGLRenderTarget;
+  private readonly mirrorRtRight: THREE.WebGLRenderTarget;
+  private readonly mirrorBlitScene: THREE.Scene;
+  private readonly mirrorBlitCam: THREE.OrthographicCamera;
+  private readonly mirrorBlitMat: THREE.MeshBasicMaterial;
+  private mirrorUpdateInterval = 2;
+  private frameIndex = 0;
 
   private readonly textures: ProceduralTextures;
   private readonly env: EnvironmentSystem;
@@ -50,6 +72,7 @@ export class GameEngine {
   private manualParkHoldSec = 0;
 
   private rafId: number | null = null;
+  private isPausedHidden = false;
   private lastTimeMs = 0;
   private accumulatorSec = 0;
   private readonly fixedDtSec = 1 / 60;
@@ -69,9 +92,11 @@ export class GameEngine {
 
   constructor(container: HTMLElement) {
     this.container = container;
+    const store = useGameStore.getState();
 
+    // Disable hardware MSAA on touch/mobile devices to save mobile tile-GPU bandwidth
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !store.isTouchDevice,
       powerPreference: 'high-performance',
       stencil: false,
     });
@@ -93,11 +118,28 @@ export class GameEngine {
     this.leftMirrorCam = new THREE.PerspectiveCamera(46, 196 / 108, 0.4, 240);
     this.rightMirrorCam = new THREE.PerspectiveCamera(46, 196 / 108, 0.4, 240);
 
+    this.mirrorRtLeft = new THREE.WebGLRenderTarget(196, 108, {
+      depthBuffer: true,
+      stencilBuffer: false,
+    });
+    this.mirrorRtRight = new THREE.WebGLRenderTarget(196, 108, {
+      depthBuffer: true,
+      stencilBuffer: false,
+    });
+    this.mirrorBlitScene = new THREE.Scene();
+    this.mirrorBlitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    this.mirrorBlitMat = new THREE.MeshBasicMaterial({
+      map: this.mirrorRtLeft.texture,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const blitQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.mirrorBlitMat);
+    this.mirrorBlitScene.add(blitQuad);
+
     this.textures = new ProceduralTextures();
     this.env = new EnvironmentSystem(this.scene);
     this.mapBuilder = new MapBuilder(this.textures, this.env);
 
-    const store = useGameStore.getState();
     const manifest = MapRegistry.getMapById(store.selectedMapId);
     this.builtMap = this.mapBuilder.build(manifest);
     this.scene.add(this.builtMap.root);
@@ -111,7 +153,8 @@ export class GameEngine {
     this.physics = new TruckPhysics();
     this.physics.resetToSpawn(manifest.defaultSpawnPosition, manifest.defaultSpawnHeadingRad);
 
-    this.traffic = new TrafficSystem(this.builtMap, 20);
+    const initialSpec = QUALITY_SPECS[store.qualityPreset];
+    this.traffic = new TrafficSystem(this.builtMap, initialSpec.maxTraffic, 28);
     this.nav = new NavigationSystem(this.builtMap);
     this.economy = new EconomyManager(this.builtMap, this.nav);
 
@@ -130,21 +173,7 @@ export class GameEngine {
       onToggleParkingBrake: () => this.physics.toggleParkingBrake(),
       onToggleCruiseControl: () => this.physics.toggleCruiseControl(),
       onCycleRetarder: () => this.physics.cycleRetarder(),
-      onToggleTrailer: () => {
-        const res = this.physics.tryToggleTrailer();
-        if (res.changed) {
-          this.audio.playAirBrake();
-          useGameStore
-            .getState()
-            .pushNotification(
-              'info',
-              res.attached ? '半挂车已挂接' : '半挂车已摘除',
-              res.attached ? '气路与第五轮锁止完成' : '支腿已放下，可单独驾驶牵引车'
-            );
-        } else if (res.reason) {
-          useGameStore.getState().pushNotification('warning', '操作受限', res.reason);
-        }
-      },
+      onToggleTrailer: () => this.handleToggleTrailer(),
       onShiftUp: () => this.physics.shiftUp(useGameStore.getState().transmissionMode),
       onShiftDown: () => this.physics.shiftDown(useGameStore.getState().transmissionMode),
       onCameraMode: (mode) => useGameStore.getState().setCameraMode(mode),
@@ -174,15 +203,97 @@ export class GameEngine {
 
     window.addEventListener('keydown', this.unlockAudioOnce);
     window.addEventListener('pointerdown', this.unlockAudioOnce);
+    window.addEventListener('resize', this.handleResize);
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
 
     this.applyQualityPreset(store.qualityPreset);
     this.handleResize();
-    window.addEventListener('resize', this.handleResize);
   }
 
   private readonly unlockAudioOnce = (): void => {
     this.audio.unlock();
   };
+
+  private readonly handleVisibilityChange = (): void => {
+    if (document.hidden) {
+      this.isPausedHidden = true;
+      this.accumulatorSec = 0;
+      if (this.rafId !== null) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+      }
+      this.audio.suspend();
+    } else {
+      this.isPausedHidden = false;
+      this.audio.resume();
+      this.lastTimeMs = performance.now();
+      if (this.rafId === null) {
+        this.rafId = requestAnimationFrame(this.loop);
+      }
+    }
+  };
+
+  private handleToggleTrailer(): void {
+    const res = this.physics.tryToggleTrailer();
+    if (res.changed) {
+      this.audio.playAirBrake();
+      useGameStore
+        .getState()
+        .pushNotification(
+          'info',
+          res.attached ? '半挂车已挂接' : '半挂车已摘除',
+          res.attached ? '气路与第五轮锁止完成' : '支腿已放下，可单独驾驶牵引车'
+        );
+    } else if (res.reason) {
+      useGameStore.getState().pushNotification('warning', '操作受限', res.reason);
+    }
+  }
+
+  public setTouchSteer(steerNorm: number | null): void {
+    this.input.setTouchSteer(steerNorm);
+  }
+
+  public setTouchThrottle(val: number): void {
+    this.input.setTouchThrottle(val);
+  }
+
+  public setTouchBrake(val: number): void {
+    this.input.setTouchBrake(val);
+  }
+
+  public setTouchHorn(active: boolean): void {
+    this.input.setTouchHorn(active);
+  }
+
+  public triggerMobileAction(action: MobileActionType): void {
+    this.audio.unlock();
+    const s = useGameStore.getState();
+    switch (action) {
+      case 'camera': {
+        const nextMode = ((s.cameraMode % 4) + 1) as 1 | 2 | 3 | 4;
+        s.setCameraMode(nextMode);
+        break;
+      }
+      case 'lights':
+        this.physics.cycleHeadlights();
+        break;
+      case 'left_blinker':
+        this.physics.toggleLeftBlinker();
+        break;
+      case 'right_blinker':
+        this.physics.toggleRightBlinker();
+        break;
+      case 'parking_brake':
+        this.physics.toggleParkingBrake();
+        break;
+      case 'trailer':
+        this.handleToggleTrailer();
+        break;
+      case 'interact':
+        this.handleZoneInteract();
+        break;
+    }
+  }
 
   public getMapManifest(): MapManifest {
     return this.builtMap.manifest;
@@ -238,14 +349,16 @@ export class GameEngine {
 
   public loadMap(mapId: string): void {
     const manifest = MapRegistry.getMapById(mapId);
+    const spec = QUALITY_SPECS[useGameStore.getState().qualityPreset];
     this.traffic.dispose();
     this.scene.remove(this.builtMap.root);
     this.builtMap.dispose();
 
     this.builtMap = this.mapBuilder.build(manifest);
+    this.builtMap.setFoliageDensity(spec.foliageDensity);
     this.scene.add(this.builtMap.root);
 
-    this.traffic = new TrafficSystem(this.builtMap, 20);
+    this.traffic = new TrafficSystem(this.builtMap, spec.maxTraffic, 28);
     this.nav = new NavigationSystem(this.builtMap);
     this.economy = new EconomyManager(this.builtMap, this.nav);
     this.physics.resetToSpawn(manifest.defaultSpawnPosition, manifest.defaultSpawnHeadingRad);
@@ -255,24 +368,21 @@ export class GameEngine {
   }
 
   public applyQualityPreset(preset: QualityPreset): void {
+    const spec = QUALITY_SPECS[preset];
     const dpr = window.devicePixelRatio || 1;
-    if (preset === 'low') {
-      this.renderer.setPixelRatio(Math.min(dpr, 1.0));
-      this.renderer.shadowMap.enabled = false;
-      this.env.configureQuality(false, 512, 1.35);
-      this.camera.far = 950;
-    } else if (preset === 'medium') {
-      this.renderer.setPixelRatio(Math.min(dpr, 1.25));
-      this.renderer.shadowMap.enabled = true;
-      this.env.configureQuality(true, 1024, 1.0);
-      this.camera.far = 1400;
-    } else {
-      this.renderer.setPixelRatio(Math.min(dpr, 1.5));
-      this.renderer.shadowMap.enabled = true;
-      this.env.configureQuality(true, 2048, 0.85);
-      this.camera.far = 1900;
-    }
+
+    this.renderer.setPixelRatio(Math.min(dpr, spec.maxDpr));
+    this.renderer.shadowMap.enabled = spec.shadowsEnabled;
+    this.truckVisuals.setBlobShadowVisible(!spec.shadowsEnabled);
+
+    this.env.configureQuality(spec.shadowsEnabled, spec.shadowMapSize, spec.fogScale);
+    this.camera.far = spec.cameraFar;
     this.camera.updateProjectionMatrix();
+
+    this.builtMap.setFoliageDensity(spec.foliageDensity);
+    this.traffic.setActiveCount(spec.maxTraffic);
+    this.mirrorUpdateInterval = Math.max(1, spec.mirrorUpdateInterval);
+
     this.handleResize();
   }
 
@@ -287,7 +397,7 @@ export class GameEngine {
   };
 
   public start(): void {
-    if (this.rafId !== null) return;
+    if (this.rafId !== null || this.isPausedHidden) return;
     this.lastTimeMs = performance.now();
     this.rafId = requestAnimationFrame(this.loop);
   }
@@ -300,6 +410,7 @@ export class GameEngine {
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('keydown', this.unlockAudioOnce);
     window.removeEventListener('pointerdown', this.unlockAudioOnce);
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     this.input.dispose();
     this.cameraRig.dispose();
     this.audio.dispose();
@@ -307,6 +418,9 @@ export class GameEngine {
     this.truckVisuals.dispose();
     this.builtMap.dispose();
     this.textures.dispose();
+    this.mirrorRtLeft.dispose();
+    this.mirrorRtRight.dispose();
+    this.mirrorBlitMat.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement === this.container) {
       this.container.removeChild(this.renderer.domElement);
@@ -314,6 +428,10 @@ export class GameEngine {
   }
 
   private readonly loop = (nowMs: number): void => {
+    if (this.isPausedHidden) {
+      this.rafId = null;
+      return;
+    }
     this.rafId = requestAnimationFrame(this.loop);
 
     const frameDtSec = Math.min(0.1, Math.max(0, (nowMs - this.lastTimeMs) / 1000));
@@ -359,6 +477,7 @@ export class GameEngine {
       this.syncTelemetry();
     }
 
+    this.frameIndex += 1;
     this.renderFrame(store.gamePhase === 'playing' && store.activeModal === 'none' && store.mirrorsEnabled);
   };
 
@@ -366,49 +485,67 @@ export class GameEngine {
     const w = this.viewportWidth;
     const h = this.viewportHeight;
 
+    // Update cached offscreen mirror RenderTargets at configured cadence (1/2/4 frames)
+    const canShowMirrors = renderMirrors && w >= 640;
+    if (canShowMirrors && this.frameIndex % this.mirrorUpdateInterval === 0) {
+      this.truckVisuals.tractorRoot.updateMatrixWorld(true);
+
+      // Left mirror (+X)
+      this.tempVecA.set(1.52, 2.55, 2.5);
+      this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
+      this.tempVecB.set(2.3, 1.9, -18);
+      this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
+      this.leftMirrorCam.position.copy(this.tempVecA);
+      this.leftMirrorCam.lookAt(this.tempVecB);
+
+      this.renderer.setRenderTarget(this.mirrorRtLeft);
+      this.renderer.setScissorTest(false);
+      this.renderer.clear();
+      this.renderer.render(this.scene, this.leftMirrorCam);
+
+      // Right mirror (-X)
+      this.tempVecA.set(-1.52, 2.55, 2.5);
+      this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
+      this.tempVecB.set(-2.3, 1.9, -18);
+      this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
+      this.rightMirrorCam.position.copy(this.tempVecA);
+      this.rightMirrorCam.lookAt(this.tempVecB);
+
+      this.renderer.setRenderTarget(this.mirrorRtRight);
+      this.renderer.clear();
+      this.renderer.render(this.scene, this.rightMirrorCam);
+
+      this.renderer.setRenderTarget(null);
+    }
+
+    // Main camera pass
+    this.renderer.setRenderTarget(null);
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
 
-    if (!renderMirrors || w < 640) return;
+    if (!canShowMirrors) return;
 
+    // Blit cached mirror textures into top-corner viewports (ultra-low cost every frame, zero flicker)
     const mirrorW = 196;
     const mirrorH = 108;
     const marginX = 18;
     const topY = 66;
     const scissorY = Math.max(0, h - topY - mirrorH);
 
-    // Update mirror cameras from tractor exterior mirror mounts looking backward
-    this.truckVisuals.tractorRoot.updateMatrixWorld(true);
     this.renderer.setScissorTest(true);
 
-    // Left mirror (+X side)
-    this.tempVecA.set(1.52, 2.55, 2.5);
-    this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-    this.tempVecB.set(2.3, 1.9, -18);
-    this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
-    this.leftMirrorCam.position.copy(this.tempVecA);
-    this.leftMirrorCam.lookAt(this.tempVecB);
-
+    this.mirrorBlitMat.map = this.mirrorRtLeft.texture;
     this.renderer.setViewport(marginX, scissorY, mirrorW, mirrorH);
     this.renderer.setScissor(marginX, scissorY, mirrorW, mirrorH);
-    this.renderer.clearDepth();
-    this.renderer.render(this.scene, this.leftMirrorCam);
-
-    // Right mirror (-X side)
-    this.tempVecA.set(-1.52, 2.55, 2.5);
-    this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-    this.tempVecB.set(-2.3, 1.9, -18);
-    this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
-    this.rightMirrorCam.position.copy(this.tempVecA);
-    this.rightMirrorCam.lookAt(this.tempVecB);
+    this.renderer.render(this.mirrorBlitScene, this.mirrorBlitCam);
 
     const rightX = w - marginX - mirrorW;
+    this.mirrorBlitMat.map = this.mirrorRtRight.texture;
     this.renderer.setViewport(rightX, scissorY, mirrorW, mirrorH);
     this.renderer.setScissor(rightX, scissorY, mirrorW, mirrorH);
-    this.renderer.clearDepth();
-    this.renderer.render(this.scene, this.rightMirrorCam);
+    this.renderer.render(this.mirrorBlitScene, this.mirrorBlitCam);
 
     this.renderer.setScissorTest(false);
   }
@@ -422,7 +559,6 @@ export class GameEngine {
       this.truckVisuals.setPaintColor(store.paintHex);
     }
 
-    // Track active job changes for routing & container livery
     const currentJobId = store.activeJob?.job.id ?? null;
     if (currentJobId !== this.trackedJobId) {
       this.trackedJobId = currentJobId;
@@ -488,7 +624,6 @@ export class GameEngine {
         );
       }
 
-      // Speed camera enforcement
       const kmh = Math.abs(this.physics.speedMs) * 3.6;
       const fine = this.economy.checkSpeedCameras(this.physics.x, this.physics.z, kmh, performance.now());
       if (fine !== null) {
@@ -497,7 +632,6 @@ export class GameEngine {
         this.audio.playCameraFlash();
       }
 
-      // Active job timer & auto-complete on steady manual parking
       if (store.activeJob) {
         store.tickJobTimer(dtSec);
         if (store.parkingGuide.readyToDeliver) {

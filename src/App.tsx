@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { GameEngine } from './core/GameEngine';
+import { GameEngine, MobileActionType } from './core/GameEngine';
 import { useGameStore } from './store/useGameStore';
 import { MapRegistry } from './map/MapRegistry';
 import { MainMenu } from './ui/MainMenu';
@@ -7,6 +7,7 @@ import { HUD } from './ui/HUD';
 import { VirtualMirrors } from './ui/VirtualMirrors';
 import { JobMarketModal } from './ui/JobMarketModal';
 import { GarageModal } from './ui/GarageModal';
+import { MobileControls } from './ui/MobileControls';
 
 export function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -53,6 +54,26 @@ export function App() {
     return engineRef.current?.getActiveRoutePoints() ?? [];
   }, []);
 
+  const handleTouchSteer = useCallback((steerNorm: number | null) => {
+    engineRef.current?.setTouchSteer(steerNorm);
+  }, []);
+
+  const handleTouchThrottle = useCallback((val: number) => {
+    engineRef.current?.setTouchThrottle(val);
+  }, []);
+
+  const handleTouchBrake = useCallback((val: number) => {
+    engineRef.current?.setTouchBrake(val);
+  }, []);
+
+  const handleTouchHorn = useCallback((active: boolean) => {
+    engineRef.current?.setTouchHorn(active);
+  }, []);
+
+  const handleMobileAction = useCallback((action: MobileActionType) => {
+    engineRef.current?.triggerMobileAction(action);
+  }, []);
+
   const mapManifest = MapRegistry.getMapById(selectedMapId);
 
   return (
@@ -70,6 +91,13 @@ export function App() {
             onRefreshJobs={handleRefreshJobs}
             onCompleteDelivery={handleCompleteDelivery}
             onSetTimeOfDay={handleSetTimeOfDay}
+          />
+          <MobileControls
+            onTouchSteer={handleTouchSteer}
+            onTouchThrottle={handleTouchThrottle}
+            onTouchBrake={handleTouchBrake}
+            onTouchHorn={handleTouchHorn}
+            onMobileAction={handleMobileAction}
           />
           <JobMarketModal onRefreshJobs={handleRefreshJobs} />
           <GarageModal />

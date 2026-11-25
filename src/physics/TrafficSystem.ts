@@ -30,13 +30,17 @@ export class TrafficSystem {
   private readonly bodyInst: THREE.InstancedMesh;
   private readonly cabinInst: THREE.InstancedMesh;
   private readonly wheelInst: THREE.InstancedMesh;
+  private readonly maxCapacity: number;
+  private activeCount: number;
   private readonly dummy = new THREE.Object3D();
   private readonly disposables: { dispose: () => void }[] = [];
 
   private collisionCooldownSec = 0;
 
-  constructor(builtMap: BuiltMap, vehicleCount = 20) {
+  constructor(builtMap: BuiltMap, vehicleCount = 20, maxCapacity = 28) {
     this.builtMap = builtMap;
+    this.maxCapacity = Math.max(maxCapacity, vehicleCount);
+    this.activeCount = Math.min(this.maxCapacity, vehicleCount);
 
     for (const seg of builtMap.segments) {
       const a = this.nodeConnections.get(seg.def.fromNodeId) ?? [];
@@ -61,13 +65,21 @@ export class TrafficSystem {
 
     this.disposables.push(bodyGeo, bodyMat, cabinGeo, cabinMat, wheelGeo, wheelMat);
 
-    this.bodyInst = new THREE.InstancedMesh(bodyGeo, bodyMat, vehicleCount);
+    this.bodyInst = new THREE.InstancedMesh(bodyGeo, bodyMat, this.maxCapacity);
     this.bodyInst.castShadow = true;
-    this.cabinInst = new THREE.InstancedMesh(cabinGeo, cabinMat, vehicleCount);
-    this.wheelInst = new THREE.InstancedMesh(wheelGeo, wheelMat, vehicleCount * 2);
+    this.cabinInst = new THREE.InstancedMesh(cabinGeo, cabinMat, this.maxCapacity);
+    this.wheelInst = new THREE.InstancedMesh(wheelGeo, wheelMat, this.maxCapacity * 2);
 
-    this.spawnAgents(vehicleCount);
+    this.spawnAgents(this.maxCapacity);
+    this.setActiveCount(this.activeCount);
     builtMap.root.add(this.bodyInst, this.cabinInst, this.wheelInst);
+  }
+
+  public setActiveCount(count: number): void {
+    this.activeCount = Math.max(0, Math.min(this.maxCapacity, Math.round(count)));
+    this.bodyInst.count = this.activeCount;
+    this.cabinInst.count = this.activeCount;
+    this.wheelInst.count = this.activeCount * 2;
   }
 
   private spawnAgents(count: number): void {
@@ -163,7 +175,7 @@ export class TrafficSystem {
       this.collisionCooldownSec = Math.max(0, this.collisionCooldownSec - dtSec);
     }
 
-    for (let i = 0; i < this.agents.length; i++) {
+    for (let i = 0; i < this.activeCount; i++) {
       const a = this.agents[i]!;
       let desiredSpeed = a.targetSpeedMs;
 
@@ -186,7 +198,7 @@ export class TrafficSystem {
       }
 
       // Check distance to other AI vehicles ahead
-      for (let j = 0; j < this.agents.length; j++) {
+      for (let j = 0; j < this.activeCount; j++) {
         if (i === j) continue;
         const b = this.agents[j]!;
         if (Math.abs(a.y - b.y) > 5) continue;

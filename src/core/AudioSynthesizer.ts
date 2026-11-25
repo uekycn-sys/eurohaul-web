@@ -257,6 +257,18 @@ export class AudioSynthesizer {
     }
   }
 
+  public suspend(): void {
+    if (this.ctx && this.ctx.state === 'running') {
+      void this.ctx.suspend();
+    }
+  }
+
+  public resume(): void {
+    if (this.ctx && this.ctx.state === 'suspended' && this.enabled) {
+      void this.ctx.resume();
+    }
+  }
+
   public dispose(): void {
     if (this.ctx) {
       void this.ctx.close();

@@ -14,6 +14,7 @@ export interface TruckVisualRefs {
   trailerContainerMesh: THREE.Mesh;
   setPaintColor: (hex: string) => void;
   setTrailerCargoVisual: (colorHex: string, label: string) => void;
+  setBlobShadowVisible: (visible: boolean) => void;
   updateLights: (opts: {
     headlightMode: HeadlightMode;
     nightFactor: number;
@@ -467,7 +468,32 @@ export class TruckMeshBuilder {
       }
     }
 
+    // 6. Fake Blob Shadows (used on mobile_fast when real-time shadowMap is off)
+    const blobTex = this.textures.getBlobShadowTexture();
+    const blobMat = new THREE.MeshBasicMaterial({
+      map: blobTex,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.75,
+    });
+    const tractorBlobGeo = new THREE.PlaneGeometry(3.6, 7.6);
+    const tractorBlob = new THREE.Mesh(tractorBlobGeo, blobMat);
+    tractorBlob.rotation.x = -Math.PI / 2;
+    tractorBlob.position.set(0, 0.06, -0.1);
+    tractorBlob.visible = false;
+    tractorRoot.add(tractorBlob);
+
+    const trailerBlobGeo = new THREE.PlaneGeometry(3.6, 14.6);
+    const trailerBlob = new THREE.Mesh(trailerBlobGeo, blobMat);
+    trailerBlob.rotation.x = -Math.PI / 2;
+    trailerBlob.position.set(0, 0.06, 0);
+    trailerBlob.visible = false;
+    trailerRoot.add(trailerBlob);
+
     disposables.push(
+      blobMat,
+      tractorBlobGeo,
+      trailerBlobGeo,
       railGeo,
       deckGeo,
       fifthWheelGeo,
@@ -521,6 +547,11 @@ export class TruckMeshBuilder {
       containerMat.needsUpdate = true;
     };
 
+    const setBlobShadowVisible = (visible: boolean): void => {
+      tractorBlob.visible = visible;
+      trailerBlob.visible = visible;
+    };
+
     const updateLights = (opts: {
       headlightMode: HeadlightMode;
       nightFactor: number;
@@ -559,6 +590,7 @@ export class TruckMeshBuilder {
       trailerContainerMesh,
       setPaintColor,
       setTrailerCargoVisual,
+      setBlobShadowVisible,
       updateLights,
       dispose,
     };

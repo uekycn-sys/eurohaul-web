@@ -22,6 +22,8 @@ import {
   AdvisorTab,
   CameraMode,
   ENGINE_TIERS,
+  MobileSteeringStyle,
+  QUALITY_SPECS,
   QualityPreset,
   getMaxFuelLiters,
   useGameStore,
@@ -77,6 +79,11 @@ export function HUD({
   const setAudioEnabled = useGameStore((s) => s.setAudioEnabled);
   const masterVolume = useGameStore((s) => s.masterVolume);
   const setMasterVolume = useGameStore((s) => s.setMasterVolume);
+  const mobileControlsEnabled = useGameStore((s) => s.mobileControlsEnabled);
+  const setMobileControlsEnabled = useGameStore((s) => s.setMobileControlsEnabled);
+  const mobileSteeringStyle = useGameStore((s) => s.mobileSteeringStyle);
+  const setMobileSteeringStyle = useGameStore((s) => s.setMobileSteeringStyle);
+  const detectedDeviceLabel = useGameStore((s) => s.detectedDeviceLabel);
 
   const cameraMode = useGameStore((s) => s.cameraMode);
   const setCameraMode = useGameStore((s) => s.setCameraMode);
@@ -353,7 +360,14 @@ export function HUD({
       )}
 
       {/* Top Navigation & Economy Bar */}
-      <div className="pointer-events-none fixed top-0 left-0 right-0 z-20 flex items-center justify-between gap-3 bg-gradient-to-b from-slate-950/85 to-transparent px-4 py-2.5">
+      <div
+        className="pointer-events-none fixed top-0 left-0 right-0 z-20 flex items-center justify-between gap-2 bg-gradient-to-b from-slate-950/85 to-transparent py-2"
+        style={{
+          paddingTop: 'max(0.5rem, env(safe-area-inset-top, 0px))',
+          paddingLeft: 'max(0.75rem, env(safe-area-inset-left, 0px))',
+          paddingRight: 'max(0.75rem, env(safe-area-inset-right, 0px))',
+        }}
+      >
         <div className="pointer-events-auto flex flex-wrap items-center gap-2.5">
           <div className="rounded-xl border border-slate-700/80 bg-slate-900/85 px-3 py-1.5 text-xs backdrop-blur-md">
             <span className="font-mono font-bold text-emerald-400">€{moneyEur.toLocaleString()}</span>
@@ -549,8 +563,23 @@ export function HUD({
       )}
 
       {/* Center-Bottom Digital Truck Dashboard */}
-      <div className="pointer-events-none fixed bottom-3 left-3 z-20 sm:left-1/2 sm:-translate-x-1/2">
-        <div className="pointer-events-auto flex items-center gap-4 rounded-2xl border border-slate-700/80 bg-slate-950/88 px-4 py-2.5 shadow-2xl backdrop-blur-md">
+      <div
+        className={`pointer-events-none fixed z-20 ${
+          mobileControlsEnabled
+            ? 'left-1/2 -translate-x-1/2'
+            : 'bottom-3 left-3 sm:left-1/2 sm:-translate-x-1/2'
+        }`}
+        style={
+          mobileControlsEnabled
+            ? { bottom: 'max(10px, env(safe-area-inset-bottom, 0px))' }
+            : undefined
+        }
+      >
+        <div
+          className={`pointer-events-auto flex items-center rounded-2xl border border-slate-700/80 bg-slate-950/88 shadow-2xl backdrop-blur-md ${
+            mobileControlsEnabled ? 'gap-2.5 px-3 py-1.5' : 'gap-4 px-4 py-2.5'
+          }`}
+        >
           {/* Blinker & Lights Column */}
           <div className="flex flex-col items-center gap-1.5">
             <div className="flex items-center gap-2">
@@ -690,8 +719,22 @@ export function HUD({
         </div>
       </div>
 
-      {/* Bottom-Right ETS2 Route Advisor */}
-      <div className="fixed right-3 bottom-3 z-20 w-[276px] rounded-2xl border border-slate-700/85 bg-slate-950/90 shadow-2xl backdrop-blur-md">
+      {/* ETS2 Route Advisor (moves to top-right on mobile so bottom-right stays clear for pedals) */}
+      <div
+        className={`fixed z-20 rounded-2xl border border-slate-700/85 bg-slate-950/90 shadow-2xl backdrop-blur-md ${
+          mobileControlsEnabled ? 'w-[216px]' : 'right-3 bottom-3 w-[276px]'
+        }`}
+        style={
+          mobileControlsEnabled
+            ? {
+                top: mirrorsEnabled
+                  ? 'calc(180px + env(safe-area-inset-top, 0px))'
+                  : 'calc(50px + env(safe-area-inset-top, 0px))',
+                right: 'max(12px, env(safe-area-inset-right, 0px))',
+              }
+            : undefined
+        }
+      >
         {/* Advisor Tabs */}
         <div className="grid grid-cols-4 border-b border-slate-800 text-[11px] font-semibold">
           {(
@@ -911,12 +954,15 @@ export function HUD({
       {/* Settings Modal */}
       {activeModal === 'settings' && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
             <div className="flex items-center justify-between">
-              <h2 className="flex items-center gap-2 text-lg font-bold text-white">
-                <Gauge className="h-5 w-5 text-amber-400" />
-                模拟与性能设置
-              </h2>
+              <div>
+                <h2 className="flex items-center gap-2 text-lg font-bold text-white">
+                  <Gauge className="h-5 w-5 text-amber-400" />
+                  模拟与性能设置
+                </h2>
+                <p className="mt-0.5 text-[11px] text-sky-300">硬件识别: {detectedDeviceLabel}</p>
+              </div>
               <button
                 type="button"
                 onClick={() => setActiveModal('none')}
@@ -926,22 +972,25 @@ export function HUD({
               </button>
             </div>
 
-            <div className="mt-5 space-y-4 text-xs">
+            <div className="mt-4 space-y-4 text-xs">
               <div>
-                <div className="mb-2 font-semibold text-slate-300">图形画质预设</div>
-                <div className="grid grid-cols-3 gap-2">
-                  {(['low', 'medium', 'high'] as QualityPreset[]).map((q) => (
+                <div className="mb-2 font-semibold text-slate-300">4 档画质预设 (热切换)</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['mobile_fast', 'mobile_balanced', 'high', 'ultra'] as QualityPreset[]).map((q) => (
                     <button
                       key={q}
                       type="button"
                       onClick={() => setQualityPreset(q)}
-                      className={`rounded-lg border py-2 font-semibold ${
+                      className={`rounded-lg border px-2.5 py-2 text-left ${
                         qualityPreset === q
-                          ? 'border-amber-400 bg-amber-500/20 text-amber-300'
+                          ? 'border-amber-400 bg-amber-500/20 text-amber-200'
                           : 'border-slate-700 bg-slate-800 text-slate-300'
                       }`}
                     >
-                      {q === 'low' ? '低/省电' : q === 'medium' ? '中/平衡' : '高/精致'}
+                      <div className="font-semibold">{QUALITY_SPECS[q].label}</div>
+                      <div className="mt-0.5 text-[10px] opacity-80">
+                        {QUALITY_SPECS[q].shortDesc}
+                      </div>
                     </button>
                   ))}
                 </div>
@@ -972,6 +1021,46 @@ export function HUD({
                   {mirrorsEnabled ? '已开启' : '已关闭'}
                 </button>
               </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">移动端触控 HUD</span>
+                <button
+                  type="button"
+                  onClick={() => setMobileControlsEnabled(!mobileControlsEnabled)}
+                  className={`rounded-lg px-3 py-1 font-semibold ${
+                    mobileControlsEnabled ? 'bg-sky-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  {mobileControlsEnabled ? '已开启' : '已关闭'}
+                </button>
+              </div>
+
+              {mobileControlsEnabled && (
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-300">触控转向模式</span>
+                  <div className="flex gap-1.5">
+                    {(
+                      [
+                        ['wheel', '虚拟方向盘'],
+                        ['buttons', '左右大按键'],
+                      ] as [MobileSteeringStyle, string][]
+                    ).map(([style, label]) => (
+                      <button
+                        key={style}
+                        type="button"
+                        onClick={() => setMobileSteeringStyle(style)}
+                        className={`rounded-lg px-2.5 py-1 font-semibold ${
+                          mobileSteeringStyle === style
+                            ? 'bg-amber-500 text-slate-950'
+                            : 'bg-slate-800 text-slate-300'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <div className="mb-1.5 flex items-center justify-between">

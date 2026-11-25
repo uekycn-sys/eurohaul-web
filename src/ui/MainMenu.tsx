@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import {
   ENGINE_TIERS,
+  QUALITY_SPECS,
   QualityPreset,
   useGameStore,
 } from '../store/useGameStore';
@@ -21,6 +22,8 @@ import { MapRegistry } from '../map/MapRegistry';
 interface MainMenuProps {
   onSelectMap: (mapId: string) => void;
 }
+
+const PRESET_ORDER: QualityPreset[] = ['mobile_fast', 'mobile_balanced', 'high', 'ultra'];
 
 export function MainMenu({ onSelectMap }: MainMenuProps) {
   const maps = MapRegistry.getAllMaps();
@@ -40,14 +43,17 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
   const setMirrorsEnabled = useGameStore((s) => s.setMirrorsEnabled);
   const audioEnabled = useGameStore((s) => s.audioEnabled);
   const setAudioEnabled = useGameStore((s) => s.setAudioEnabled);
+  const mobileControlsEnabled = useGameStore((s) => s.mobileControlsEnabled);
+  const setMobileControlsEnabled = useGameStore((s) => s.setMobileControlsEnabled);
+  const detectedDeviceLabel = useGameStore((s) => s.detectedDeviceLabel);
   const resetCareer = useGameStore((s) => s.resetCareer);
 
   const activeMap = MapRegistry.getMapById(selectedMapId);
   const engineSpec = ENGINE_TIERS[engineTier] ?? ENGINE_TIERS[0]!;
 
   return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-gradient-to-br from-slate-950/85 via-slate-900/65 to-slate-950/85 p-4 backdrop-blur-[2px]">
-      <div className="grid w-full max-w-5xl grid-cols-1 gap-5 rounded-3xl border border-amber-500/25 bg-slate-900/90 p-6 shadow-2xl lg:grid-cols-12 lg:p-8">
+    <div className="safe-area-inset absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-gradient-to-br from-slate-950/85 via-slate-900/65 to-slate-950/85 p-3 backdrop-blur-[2px] sm:p-4">
+      <div className="my-auto grid max-h-[94vh] w-full max-w-5xl grid-cols-1 gap-5 overflow-y-auto rounded-3xl border border-amber-500/25 bg-slate-900/90 p-5 shadow-2xl lg:grid-cols-12 lg:p-8">
         {/* Left Column: Branding + Career Overview + Launch */}
         <div className="flex flex-col justify-between lg:col-span-5">
           <div>
@@ -184,60 +190,76 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
 
           {/* Hardware & Audio Settings */}
           <div className="rounded-2xl border border-slate-700/70 bg-slate-800/50 p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-white">
-              <Settings2 className="h-4 w-4 text-sky-400" />
-              画质预设与硬件适配 (低配核显 60FPS 优化)
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Settings2 className="h-4 w-4 text-sky-400" />
+                画质分级与多端硬件适配
+              </div>
+              <span className="rounded-full bg-sky-500/15 px-2.5 py-0.5 text-[11px] font-medium text-sky-300">
+                已识别: {detectedDeviceLabel}
+              </span>
             </div>
 
-            <div className="mt-3 grid grid-cols-3 gap-2.5">
-              {(
-                [
-                  { id: 'low', label: '低 / 省电模式', desc: '关闭阴影 · 1.0x DPR' },
-                  { id: 'medium', label: '中 / 平衡推荐', desc: '柔光阴影 · 1.25x DPR' },
-                  { id: 'high', label: '高 / 精致画质', desc: '高清阴影 · 1.5x DPR' },
-                ] as { id: QualityPreset; label: string; desc: string }[]
-              ).map((preset) => (
-                <button
-                  key={preset.id}
-                  type="button"
-                  onClick={() => setQualityPreset(preset.id)}
-                  className={`rounded-xl border px-3 py-2.5 text-left transition ${
-                    qualityPreset === preset.id
-                      ? 'border-sky-400 bg-sky-500/15 text-white'
-                      : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:border-slate-600'
-                  }`}
-                >
-                  <div className="text-xs font-semibold">{preset.label}</div>
-                  <div className="mt-0.5 text-[11px] text-slate-400">{preset.desc}</div>
-                </button>
-              ))}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {PRESET_ORDER.map((presetId) => {
+                const preset = QUALITY_SPECS[presetId];
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => setQualityPreset(preset.id)}
+                    className={`rounded-xl border px-3 py-2 text-left transition ${
+                      qualityPreset === preset.id
+                        ? 'border-sky-400 bg-sky-500/15 text-white'
+                        : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:border-slate-600'
+                    }`}
+                  >
+                    <div className="text-xs font-semibold">{preset.label}</div>
+                    <div className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                      {preset.shortDesc}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-3">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setMirrorsEnabled(!mirrorsEnabled)}
-                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
                   mirrorsEnabled
                     ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
                     : 'border-slate-700 bg-slate-900/60 text-slate-400'
                 }`}
               >
                 <Eye className="h-3.5 w-3.5" />
-                实时双侧电子后视镜: {mirrorsEnabled ? '开启' : '关闭'}
+                电子后视镜: {mirrorsEnabled ? '开启' : '关闭'}
               </button>
 
               <button
                 type="button"
                 onClick={() => setAudioEnabled(!audioEnabled)}
-                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
                   audioEnabled
                     ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
                     : 'border-slate-700 bg-slate-900/60 text-slate-400'
                 }`}
               >
                 {audioEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
-                Web Audio 引擎声浪: {audioEnabled ? '开启' : '静音'}
+                声浪: {audioEnabled ? '开启' : '静音'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMobileControlsEnabled(!mobileControlsEnabled)}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+                  mobileControlsEnabled
+                    ? 'border-sky-500/50 bg-sky-500/15 text-sky-300'
+                    : 'border-slate-700 bg-slate-900/60 text-slate-400'
+                }`}
+              >
+                触控 HUD: {mobileControlsEnabled ? '开启' : '关闭'}
               </button>
             </div>
           </div>
