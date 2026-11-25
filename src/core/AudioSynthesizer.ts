@@ -24,6 +24,8 @@ export class AudioSynthesizer {
   private volume = 0.6;
   private prevBlinkerLit = false;
   private prevParkingBrake = true;
+  private prevGear = 1;
+  private reverseBeepClock = 0;
 
   public unlock(): void {
     if (!this.ctx) {
@@ -121,6 +123,9 @@ export class AudioSynthesizer {
     horn: boolean;
     blinkerLit: boolean;
     parkingBrake: boolean;
+    gear?: number;
+    retarderActive?: boolean;
+    dtSec?: number;
   }): void {
     if (!this.ctx || !this.engineOsc1 || !this.engineOsc2 || !this.engineFilter || !this.engineGain || !this.turboOsc || !this.turboGain || !this.hornGain) {
       return;
@@ -134,17 +139,29 @@ export class AudioSynthesizer {
       return;
     }
 
-    // Diesel engine pitch & harmonic warmth
+    // Diesel engine pitch & harmonic warmth (plus subtle hydraulic retarder pitch)
     const rpmRatio = Math.max(0, Math.min(1, (opts.rpm - 600) / 1700));
     const baseFreq = 26 + rpmRatio * 68;
     this.engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.05);
     this.engineOsc2.frequency.setTargetAtTime(baseFreq * 2.02, now, 0.05);
-    this.engineFilter.frequency.setTargetAtTime(140 + rpmRatio * 290 + opts.throttle * 140, now, 0.06);
-    this.engineGain.gain.setTargetAtTime(0.11 + opts.throttle * 0.14 + rpmRatio * 0.06, now, 0.06);
+    this.engineFilter.frequency.setTargetAtTime(
+      140 + rpmRatio * 290 + opts.throttle * 140 + (opts.retarderActive ? 160 : 0),
+      now,
+      0.06
+    );
+    this.engineGain.gain.setTargetAtTime(
+      0.11 + opts.throttle * 0.14 + rpmRatio * 0.06 + (opts.retarderActive ? 0.05 : 0),
+      now,
+      0.06
+    );
 
-    // Turbo spool
-    const turboBoost = Math.max(0, rpmRatio - 0.32) * opts.throttle;
-    this.turboOsc.frequency.setTargetAtTime(1250 + rpmRatio * 2100, now, 0.08);
+    // Turbo spool / hydraulic retarder whine
+    const turboBoost = opts.retarderActive ? 0.55 : Math.max(0, rpmRatio - 0.32) * opts.throttle;
+    this.turboOsc.frequency.setTargetAtTime(
+      opts.retarderActive ? 680 + rpmRatio * 520 : 1250 + rpmRatio * 2100,
+      now,
+      0.08
+    );
     this.turboGain.gain.setTargetAtTime(turboBoost * 0.032, now, 0.08);
 
     // Air horn
@@ -161,6 +178,57 @@ export class AudioSynthesizer {
       this.prevParkingBrake = opts.parkingBrake;
       this.playAirBrake();
     }
+
+    // Pneumatic gearshift click & European reverse warning beep
+    if (opts.gear !== undefined) {
+      if (opts.gear !== this.prevGear) {
+        this.prevGear = opts.gear;
+        this.playGearShift();
+      }
+      if (opts.gear < 0 && !opts.parkingBrake) {
+        this.reverseBeepClock += opts.dtSec ?? 0.016;
+        if (this.reverseBeepClock >= 0.72) {
+          this.reverseBeepClock = 0;
+          this.playReverseBeep();
+        }
+      } else {
+        this.reverseBeepClock = 0.65;
+      }
+    }
+  }
+
+  public playGearShift(): void {
+    if (!this.ctx || !this.masterGain || !this.noiseBuffer || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1650;
+    filter.Q.value = 2.0;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.055, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.075);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.masterGain);
+    src.start(now);
+    src.stop(now + 0.08);
+  }
+
+  public playReverseBeep(): void {
+    if (!this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 1080;
+    g.gain.setValueAtTime(0.05, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.2);
   }
 
   public playBlinkerTick(high: boolean): void {

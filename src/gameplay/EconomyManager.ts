@@ -107,13 +107,16 @@ export class EconomyManager {
     if (cities.length < 2) return [];
 
     const jobs: FreightJob[] = [];
-    const originCities = originCityId
+    const primaryOrigins = originCityId
       ? cities.filter((c) => c.id === originCityId)
       : cities;
 
-    const sourceList = originCities.length > 0 ? originCities : cities;
+    const orderedOrigins = [
+      ...primaryOrigins,
+      ...cities.filter((c) => c.id !== originCityId),
+    ];
 
-    for (const origCity of sourceList) {
+    for (const origCity of orderedOrigins) {
       const otherCities = cities.filter((c) => c.id !== origCity.id);
       for (const destCity of otherCities) {
         const origDepot = origCity.depots[jobs.length % origCity.depots.length]!;
@@ -127,7 +130,7 @@ export class EconomyManager {
           destDepot.parkingBayPosition[0],
           destDepot.parkingBayPosition[2]
         );
-        // Scale to realistic Euro Truck display kilometers (1.8 km/game-km feel -> ~1:8 compressed EU scale)
+        // Scale to realistic Euro Truck display kilometers
         const distanceKm = Math.max(1.2, Number((route.totalDistanceMeters / 1000).toFixed(1)));
         const basePayEur = Math.round(
           (950 + distanceKm * 780) * cargo.rateMultiplier * (1 + cargo.weightTons * 0.012)
@@ -156,10 +159,11 @@ export class EconomyManager {
           timeLimitMin,
           trailerColor: cargo.containerColor,
         });
+        if (jobs.length >= 8) return jobs;
       }
     }
 
-    return jobs.slice(0, 8);
+    return jobs;
   }
 
   public detectCurrentCity(x: number, z: number): CityDefinition | null {
@@ -208,8 +212,8 @@ export class EconomyManager {
             label: st.name,
             sublabel:
               st.kind === 'fuel'
-                ? '按 Enter 加满柴油 (€1.65/L)'
-                : '按 Enter 进行加油与全面整修',
+                ? '按 Enter 加满柴油 (€1.65/L) · 按 R 休息 8 小时'
+                : '按 Enter 加油与整修 · 按 R 休息 8 小时',
             cityId: city.id,
           };
         }

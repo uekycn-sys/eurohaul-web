@@ -97,7 +97,10 @@ const SKY_VERTEX_SHADER = /* glsl */ `
   varying vec3 vWorldDir;
   void main() {
     vWorldDir = normalize(position);
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    mat4 rotView = viewMatrix;
+    rotView[3] = vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 clipPos = projectionMatrix * rotView * vec4(position, 1.0);
+    gl_Position = clipPos.xyww;
   }
 `;
 
@@ -249,13 +252,15 @@ export class EnvironmentSystem {
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    // Procedural Sky Dome
-    this.skyGeo = new THREE.SphereGeometry(1850, 28, 16);
+    // Procedural Infinite Sky Dome (pinned to NDC far plane z=w so it never clips)
+    this.skyGeo = new THREE.SphereGeometry(500, 32, 18);
     this.skyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERTEX_SHADER,
       fragmentShader: SKY_FRAGMENT_SHADER,
       side: THREE.BackSide,
+      depthTest: true,
       depthWrite: false,
+      depthFunc: THREE.LessEqualDepth,
       fog: false,
       uniforms: {
         uZenithColor: { value: this.zenithColor },

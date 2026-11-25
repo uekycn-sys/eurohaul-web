@@ -180,6 +180,11 @@ export class GameEngine {
       onShiftUp: () => this.physics.shiftUp(useGameStore.getState().transmissionMode),
       onShiftDown: () => this.physics.shiftDown(useGameStore.getState().transmissionMode),
       onCameraMode: (mode) => useGameStore.getState().setCameraMode(mode),
+      onCycleCamera: () => {
+        const s = useGameStore.getState();
+        s.setCameraMode(((s.cameraMode % 4) + 1) as 1 | 2 | 3 | 4);
+      },
+      onRest: () => this.handleStationRest(),
       onToggleMap: () => {
         const s = useGameStore.getState();
         if (s.gamePhase !== 'playing') return;
@@ -350,6 +355,21 @@ export class GameEngine {
     }
   }
 
+  public handleStationRest(): void {
+    const s = useGameStore.getState();
+    const inter = s.nearbyInteraction;
+    if (!inter || (inter.kind !== 'fuel' && inter.kind !== 'repair' && inter.kind !== 'service_hub')) {
+      return;
+    }
+    if (Math.abs(this.physics.speedMs) > 1.2) {
+      s.pushNotification('warning', '请先刹停车辆', '服务区停车后方可休息 8 小时');
+      return;
+    }
+    this.env.timeOfDayHours = (this.env.timeOfDayHours + 8) % 24;
+    this.audio.playAirBrake();
+    s.pushNotification('info', '服务区休息完成 (+8 小时)', '精力已恢复，注意随时关注昼夜灯光变化');
+  }
+
   public loadMap(mapId: string): void {
     const manifest = MapRegistry.getMapById(mapId);
     const preset = useGameStore.getState().qualityPreset;
@@ -479,6 +499,12 @@ export class GameEngine {
       horn: this.input.horn,
       blinkerLit: this.physics.blinkerLit,
       parkingBrake: this.physics.parkingBrake,
+      gear: this.physics.gear,
+      retarderActive:
+        this.physics.retarderLevel > 0 &&
+        Math.abs(this.physics.speedMs) > 2 &&
+        this.input.throttle < 0.05,
+      dtSec: frameDtSec,
     });
 
     this.telemetryAccumSec += frameDtSec;
@@ -573,6 +599,21 @@ export class GameEngine {
     if (currentJobId !== this.trackedJobId) {
       this.trackedJobId = currentJobId;
       if (store.activeJob) {
+        const origin = this.economy.findDepotById(store.activeJob.job.originDepotId);
+        if (origin) {
+          const distFromOrigin = Math.hypot(
+            this.physics.x - origin.depot.officePosition[0],
+            this.physics.z - origin.depot.officePosition[2]
+          );
+          // If player accepted a contract originating in another city, relocate tractor+trailer cleanly to that city hub
+          if (distFromOrigin > 260) {
+            const dx = origin.city.position[0] - origin.depot.officePosition[0];
+            const dz = origin.city.position[2] - origin.depot.officePosition[2];
+            const heading = Math.hypot(dx, dz) > 1 ? Math.atan2(dx, dz) : origin.depot.headingRad;
+            this.physics.resetToSpawn(origin.depot.officePosition, heading);
+            this.physics.parkingBrake = true;
+          }
+        }
         const dest = this.economy.findDepotById(store.activeJob.job.destinationDepotId);
         if (dest) {
           this.activeRoute = this.nav.computeRoute(
@@ -619,7 +660,8 @@ export class GameEngine {
         this.physics.y,
         this.physics.z,
         this.physics.trailerX,
-        this.physics.trailerZ
+        this.physics.trailerZ,
+        this.env.nightFactor
       );
 
       const impact = this.physics.lastCollision ?? trafficCollision;
@@ -661,7 +703,8 @@ export class GameEngine {
         this.physics.y,
         this.physics.z,
         this.physics.trailerX,
-        this.physics.trailerZ
+        this.physics.trailerZ,
+        this.env.nightFactor
       );
     }
 
@@ -713,7 +756,7 @@ export class GameEngine {
     );
     store.setParkingGuide(parkingGuide);
 
-    // Update 3D cockpit instrument cluster CanvasTexture cleanly when in 1st-person view
+    // Update 3D cockpit instrument cluster & SatNav CanvasTexture cleanly when in 1st-person view
     if (store.cameraMode === 1 && store.gamePhase === 'playing') {
       const maxFuel = getMaxFuelLiters(store.tankTier);
       this.textures.updateDynamicDashboard({
@@ -724,6 +767,13 @@ export class GameEngine {
         parkingBrake: this.physics.parkingBrake,
         leftBlinker: this.physics.blinkerLit && (this.physics.leftBlinker || this.physics.hazardLights),
         rightBlinker: this.physics.blinkerLit && (this.physics.rightBlinker || this.physics.hazardLights),
+      });
+      this.textures.updateDynamicCabGps({
+        speedKmh: Math.round(kmh),
+        speedLimitKmh: this.physics.speedLimitKmh,
+        distanceMeters: guidance.distanceMeters,
+        hasActiveJob: Boolean(store.activeJob),
+        instruction: guidance.instruction,
       });
     }
 

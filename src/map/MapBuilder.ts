@@ -249,7 +249,7 @@ export class MapBuilder {
     const bounds = manifest.worldBounds;
     const spanX = bounds.maxX - bounds.minX;
     const spanZ = bounds.maxZ - bounds.minZ;
-    const gridN = 156;
+    const gridN = 200;
     const heightGrid = new Float32Array((gridN + 1) * (gridN + 1));
 
     // Extract mountain_peak attractors to sculpt natural connected mountain massifs instead of cone primitives
@@ -286,9 +286,9 @@ export class MapBuilder {
         }
       }
 
-      // Smoothly isolate road corridors (0 elevation offset within 28m of centerline)
+      // Smoothly isolate road corridors (0 elevation offset within 32m of centerline)
       const rollFactor =
-        THREE.MathUtils.clamp((nearest.dist - 28) / 105, 0, 1) * apronClearance;
+        THREE.MathUtils.clamp((nearest.dist - 32) / 105, 0, 1) * apronClearance;
 
       const broadNoise = fbmNoise2D(vx * 0.0022 + 12.3, vz * 0.0022 + 7.1, 4);
       const ridgeNoise = 1 - Math.abs(valueNoise2D(vx * 0.0048 + 3.1, vz * 0.0048 - 5.4) * 2 - 1);
@@ -318,7 +318,7 @@ export class MapBuilder {
             (22 + ridgeNoise * 55)
           : 0;
 
-      const finalY = baseH - 0.14 + (rollingHills + mountainMassif + alpineZone) * rollFactor;
+      const finalY = baseH - 0.34 + (rollingHills + mountainMassif + alpineZone) * rollFactor;
       posAttr.setY(i, finalY);
       heightGrid[i] = finalY;
     }
@@ -480,10 +480,10 @@ export class MapBuilder {
 
         const vBase = i * 6;
         positions[vBase] = lx;
-        positions[vBase + 1] = s.y + 0.03;
+        positions[vBase + 1] = s.y + 0.06;
         positions[vBase + 2] = lz;
         positions[vBase + 3] = rpx;
-        positions[vBase + 4] = s.y + 0.03;
+        positions[vBase + 4] = s.y + 0.06;
         positions[vBase + 5] = rpz;
 
         normals[vBase] = 0;
@@ -504,10 +504,10 @@ export class MapBuilder {
         const sb = i * 18;
         // Left: edge (0), gravel shoulder (1), toe (2)
         skirtPos[sb] = lx;
-        skirtPos[sb + 1] = s.y + 0.02;
+        skirtPos[sb + 1] = s.y + 0.05;
         skirtPos[sb + 2] = lz;
         skirtPos[sb + 3] = lx - rx * 1.6;
-        skirtPos[sb + 4] = s.y - 0.1;
+        skirtPos[sb + 4] = s.y - 0.12;
         skirtPos[sb + 5] = lz - rz * 1.6;
         skirtPos[sb + 6] = lx - rx * 4.2;
         skirtPos[sb + 7] = s.y - 4.0;
@@ -515,10 +515,10 @@ export class MapBuilder {
 
         // Right: edge (3), gravel shoulder (4), toe (5)
         skirtPos[sb + 9] = rpx;
-        skirtPos[sb + 10] = s.y + 0.02;
+        skirtPos[sb + 10] = s.y + 0.05;
         skirtPos[sb + 11] = rpz;
         skirtPos[sb + 12] = rpx + rx * 1.6;
-        skirtPos[sb + 13] = s.y - 0.1;
+        skirtPos[sb + 13] = s.y - 0.12;
         skirtPos[sb + 14] = rpz + rz * 1.6;
         skirtPos[sb + 15] = rpx + rx * 4.2;
         skirtPos[sb + 16] = s.y - 4.0;
@@ -529,15 +529,16 @@ export class MapBuilder {
           const b = a + 1;
           const c = a + 2;
           const d = a + 3;
-          indices.push(a, c, b, b, c, d);
+          // Counter-clockwise +Y upward-facing triangle winding
+          indices.push(a, b, c, b, d, c);
 
           const sa = i * 6;
-          // Left shoulder + embankment
-          skirtIndices.push(sa, sa + 1, sa + 6, sa + 1, sa + 7, sa + 6);
-          skirtIndices.push(sa + 1, sa + 2, sa + 7, sa + 2, sa + 8, sa + 7);
-          // Right shoulder + embankment
-          skirtIndices.push(sa + 3, sa + 9, sa + 4, sa + 4, sa + 9, sa + 10);
-          skirtIndices.push(sa + 4, sa + 10, sa + 5, sa + 5, sa + 10, sa + 11);
+          // Left shoulder + embankment (+Y outward winding)
+          skirtIndices.push(sa, sa + 6, sa + 1, sa + 1, sa + 6, sa + 7);
+          skirtIndices.push(sa + 1, sa + 7, sa + 2, sa + 2, sa + 7, sa + 8);
+          // Right shoulder + embankment (+Y outward winding)
+          skirtIndices.push(sa + 3, sa + 4, sa + 9, sa + 4, sa + 10, sa + 9);
+          skirtIndices.push(sa + 4, sa + 5, sa + 10, sa + 5, sa + 11, sa + 10);
         }
       }
 
@@ -645,11 +646,11 @@ export class MapBuilder {
       }
     }
 
-    // Guardrails
+    // Continuous Guardrails (12m step -> 12.6m rail beams so zero floating gaps)
     if (railTransforms.length > 0) {
       const guardrailPostGeo = new THREE.BoxGeometry(0.14, 0.78, 0.14);
       const guardrailPostMat = new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.65, roughness: 0.4 });
-      const guardrailRailGeo = new THREE.BoxGeometry(0.12, 0.24, 6.2);
+      const guardrailRailGeo = new THREE.BoxGeometry(0.12, 0.26, 12.6);
       const guardrailRailMat = new THREE.MeshStandardMaterial({ color: '#cbd5e1', metalness: 0.72, roughness: 0.34 });
       disposables.push(guardrailPostGeo, guardrailPostMat, guardrailRailGeo, guardrailRailMat);
 
@@ -709,10 +710,10 @@ export class MapBuilder {
       root.add(delinPostInst, delinReflectInst);
     }
 
-    // Acoustic Noise Barriers
+    // Continuous Acoustic Noise Barriers (12m step -> 12.4m panels)
     let noiseBarrierInst: THREE.InstancedMesh | null = null;
     if (noiseBarrierTransforms.length > 0) {
-      const nbGeo = new THREE.BoxGeometry(0.24, 3.2, 6.1);
+      const nbGeo = new THREE.BoxGeometry(0.24, 3.2, 12.4);
       const nbMat = new THREE.MeshStandardMaterial({ color: '#475a52', roughness: 0.8 });
       disposables.push(nbGeo, nbMat);
       noiseBarrierInst = new THREE.InstancedMesh(nbGeo, nbMat, noiseBarrierTransforms.length);
@@ -877,6 +878,7 @@ export class MapBuilder {
     // 6. Cities, Numbered Dock Warehouses, Yard Containers/Pallets (Instanced), & Service Stations
     const colliders: BoxCollider[] = [];
     const parkingBayMeshes = new Map<string, THREE.Mesh>();
+    const parkingBeaconMeshes = new Map<string, THREE.Mesh>();
 
     const yardPbr = this.textures.getYardConcreteTextures();
     const yardApronMat = new THREE.MeshStandardMaterial({
@@ -910,6 +912,7 @@ export class MapBuilder {
         bayTexture,
         lampHeadMat,
         parkingBayMeshes,
+        parkingBeaconMeshes,
         colliders,
         yardContainerSpots,
         yardPalletSpots,
@@ -1066,7 +1069,7 @@ export class MapBuilder {
         out.nearestSegmentId = bestSeg.def.id;
         out.roadDist = dist;
 
-        if (bestSeg.def.hasGuardrails && dist > halfW + 0.65 && dist < halfW + 3.2) {
+        if (bestSeg.def.hasGuardrails && dist > halfW + 0.35 && dist < halfW + 4.8) {
           const dx = p0.x - x;
           const dz = p0.z - z;
           const len = Math.hypot(dx, dz) || 1;
@@ -1129,12 +1132,15 @@ export class MapBuilder {
     const highlightDestinationDepot = (depotId: string | null): void => {
       for (const [id, mesh] of parkingBayMeshes.entries()) {
         const mat = mesh.material as THREE.MeshBasicMaterial;
+        const beacon = parkingBeaconMeshes.get(id);
         if (id === depotId) {
           mat.opacity = 0.95;
           mat.color.set('#34d399');
+          if (beacon) beacon.visible = true;
         } else {
           mat.opacity = 0.24;
           mat.color.set('#64748b');
+          if (beacon) beacon.visible = false;
         }
       }
     };
@@ -1156,6 +1162,13 @@ export class MapBuilder {
         const mat = mesh.material as THREE.MeshBasicMaterial;
         if (mat.opacity > 0.5) {
           mat.opacity = 0.72 + Math.sin(elapsedSec * 4.2) * 0.22;
+        }
+      }
+      for (const beacon of parkingBeaconMeshes.values()) {
+        if (beacon.visible) {
+          beacon.rotation.y += dtSec * 1.4;
+          const pulse = 1 + Math.sin(elapsedSec * 3.5) * 0.08;
+          beacon.scale.set(pulse, 1, pulse);
         }
       }
     };
@@ -1191,6 +1204,7 @@ export class MapBuilder {
     bayTexture: THREE.CanvasTexture,
     _lampHeadMat: THREE.MeshStandardMaterial,
     parkingBayMeshes: Map<string, THREE.Mesh>,
+    parkingBeaconMeshes: Map<string, THREE.Mesh>,
     colliders: BoxCollider[],
     yardContainerSpots: { x: number; y: number; z: number; rotY: number; color: string }[],
     yardPalletSpots: { x: number; y: number; z: number; rotY: number }[],
@@ -1220,6 +1234,7 @@ export class MapBuilder {
         root,
         bayTexture,
         parkingBayMeshes,
+        parkingBeaconMeshes,
         colliders,
         yardContainerSpots,
         yardPalletSpots,
@@ -1244,6 +1259,7 @@ export class MapBuilder {
     root: THREE.Group,
     bayTexture: THREE.CanvasTexture,
     parkingBayMeshes: Map<string, THREE.Mesh>,
+    parkingBeaconMeshes: Map<string, THREE.Mesh>,
     colliders: BoxCollider[],
     yardContainerSpots: { x: number; y: number; z: number; rotY: number; color: string }[],
     yardPalletSpots: { x: number; y: number; z: number; rotY: number }[],
@@ -1266,6 +1282,23 @@ export class MapBuilder {
     root.add(bayMesh);
     parkingBayMeshes.set(depot.id, bayMesh);
     disposables.push(bayGeo, bayMat);
+
+    // Animated vertical emerald guide beacon visible from across the yard when delivering
+    const beaconGeo = new THREE.CylinderGeometry(2.4, 2.8, 22, 16, 1, true);
+    const beaconMat = new THREE.MeshBasicMaterial({
+      color: '#10b981',
+      transparent: true,
+      opacity: 0.24,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const beaconMesh = new THREE.Mesh(beaconGeo, beaconMat);
+    beaconMesh.position.set(bx, by + 11.1, bz);
+    beaconMesh.visible = false;
+    root.add(beaconMesh);
+    parkingBeaconMeshes.set(depot.id, beaconMesh);
+    disposables.push(beaconGeo, beaconMat);
 
     // Modern steel dock warehouse with numbered DOCK 1..4 bays positioned clear of the parking bay
     const cosH = Math.cos(depot.parkingBayHeadingRad);

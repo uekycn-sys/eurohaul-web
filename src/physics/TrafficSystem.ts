@@ -30,6 +30,10 @@ export class TrafficSystem {
   private readonly bodyInst: THREE.InstancedMesh;
   private readonly cabinInst: THREE.InstancedMesh;
   private readonly wheelInst: THREE.InstancedMesh;
+  private readonly headlightInst: THREE.InstancedMesh;
+  private readonly taillightInst: THREE.InstancedMesh;
+  private readonly headlightMat: THREE.MeshBasicMaterial;
+  private readonly taillightMat: THREE.MeshBasicMaterial;
   private readonly maxCapacity: number;
   private activeCount: number;
   private readonly dummy = new THREE.Object3D();
@@ -54,25 +58,40 @@ export class TrafficSystem {
       }
     }
 
-    // Create 3 InstancedMeshes for all AI vehicles (minimal Draw Calls)
+    // Create batched InstancedMeshes for all AI vehicles + night headlights/taillights
     const bodyGeo = new THREE.BoxGeometry(2.1, 1.05, 4.6);
-    const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.35 });
+    const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.38 });
     const cabinGeo = new THREE.BoxGeometry(1.85, 0.72, 2.3);
     const cabinMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.3, metalness: 0.25 });
     const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 2.18, 10);
     wheelGeo.rotateZ(Math.PI / 2);
     const wheelMat = new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.9 });
+    const lampGeo = new THREE.BoxGeometry(0.34, 0.16, 0.08);
+    this.headlightMat = new THREE.MeshBasicMaterial({ color: '#fef9c3' });
+    this.taillightMat = new THREE.MeshBasicMaterial({ color: '#ef4444' });
 
-    this.disposables.push(bodyGeo, bodyMat, cabinGeo, cabinMat, wheelGeo, wheelMat);
+    this.disposables.push(
+      bodyGeo,
+      bodyMat,
+      cabinGeo,
+      cabinMat,
+      wheelGeo,
+      wheelMat,
+      lampGeo,
+      this.headlightMat,
+      this.taillightMat
+    );
 
     this.bodyInst = new THREE.InstancedMesh(bodyGeo, bodyMat, this.maxCapacity);
     this.bodyInst.castShadow = true;
     this.cabinInst = new THREE.InstancedMesh(cabinGeo, cabinMat, this.maxCapacity);
     this.wheelInst = new THREE.InstancedMesh(wheelGeo, wheelMat, this.maxCapacity * 2);
+    this.headlightInst = new THREE.InstancedMesh(lampGeo, this.headlightMat, this.maxCapacity * 2);
+    this.taillightInst = new THREE.InstancedMesh(lampGeo, this.taillightMat, this.maxCapacity * 2);
 
     this.spawnAgents(this.maxCapacity);
     this.setActiveCount(this.activeCount);
-    builtMap.root.add(this.bodyInst, this.cabinInst, this.wheelInst);
+    builtMap.root.add(this.bodyInst, this.cabinInst, this.wheelInst, this.headlightInst, this.taillightInst);
   }
 
   public setActiveCount(count: number): void {
@@ -80,18 +99,26 @@ export class TrafficSystem {
     this.bodyInst.count = this.activeCount;
     this.cabinInst.count = this.activeCount;
     this.wheelInst.count = this.activeCount * 2;
+    this.headlightInst.count = this.activeCount * 2;
+    this.taillightInst.count = this.activeCount * 2;
   }
 
   private spawnAgents(count: number): void {
-    // Prefer highway & national segments so city yards stay clear
+    // Include highway/national segments, weighting Munich-facing corridors slightly so traffic is immediately visible
     const candidates = this.builtMap.segments.filter((s) => s.def.roadClass !== 'urban');
     const pool = candidates.length > 0 ? candidates : this.builtMap.segments;
+    const prioritySegs = pool.filter(
+      (s) => s.def.id === 'seg_a9_south' || s.def.id === 'seg_bavaria_express' || s.def.id === 'seg_mid_west'
+    );
     const tmpColor = new THREE.Color();
 
     for (let i = 0; i < count; i++) {
-      const seg = pool[i % pool.length]!;
+      const seg =
+        i < 6 && prioritySegs.length > 0
+          ? prioritySegs[i % prioritySegs.length]!
+          : pool[i % pool.length]!;
       const dir: 1 | -1 = i % 2 === 0 || seg.def.oneWay ? 1 : -1;
-      const sMeters = ((i * 137) % Math.max(40, Math.floor(seg.lengthMeters - 20))) + 10;
+      const sMeters = ((i * 119 + 45) % Math.max(40, Math.floor(seg.lengthMeters - 20))) + 10;
       const isTruck = i % 4 === 0;
       const baseSpeedKmh = seg.def.speedLimitKmh * (isTruck ? 0.78 : 0.9);
       const colorHex = CAR_COLORS[i % CAR_COLORS.length]!;
@@ -168,8 +195,11 @@ export class TrafficSystem {
     playerY: number,
     playerZ: number,
     trailerX: number,
-    trailerZ: number
+    trailerZ: number,
+    nightFactor = 0
   ): CollisionEvent | null {
+    this.headlightMat.color.setHex(nightFactor > 0.25 ? 0xfffbeb : 0xe2e8f0);
+    this.taillightMat.color.setHex(nightFactor > 0.25 ? 0xff2d2d : 0xb91c1c);
     let collision: CollisionEvent | null = null;
     if (this.collisionCooldownSec > 0) {
       this.collisionCooldownSec = Math.max(0, this.collisionCooldownSec - dtSec);
@@ -256,11 +286,41 @@ export class TrafficSystem {
       this.dummy.position.set(a.x - fwdX * axleOffset, a.y + 0.36, a.z - fwdZ * axleOffset);
       this.dummy.updateMatrix();
       this.wheelInst.setMatrixAt(i * 2 + 1, this.dummy.matrix);
+
+      // Front headlights & rear taillights
+      const rightX = -fwdZ;
+      const rightZ = fwdX;
+      const frontLen = a.isTruck ? 3.55 : 2.25;
+      const rearLen = a.isTruck ? 3.55 : 2.25;
+      for (const [idxOffset, side] of [
+        [0, -0.74],
+        [1, 0.74],
+      ] as const) {
+        this.dummy.position.set(
+          a.x + fwdX * frontLen + rightX * side,
+          a.y + 0.65,
+          a.z + fwdZ * frontLen + rightZ * side
+        );
+        this.dummy.rotation.set(0, a.yaw, 0);
+        this.dummy.scale.set(1, 1, 1);
+        this.dummy.updateMatrix();
+        this.headlightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
+
+        this.dummy.position.set(
+          a.x - fwdX * rearLen + rightX * side,
+          a.y + 0.68,
+          a.z - fwdZ * rearLen + rightZ * side
+        );
+        this.dummy.updateMatrix();
+        this.taillightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
+      }
     }
 
     this.bodyInst.instanceMatrix.needsUpdate = true;
     this.cabinInst.instanceMatrix.needsUpdate = true;
     this.wheelInst.instanceMatrix.needsUpdate = true;
+    this.headlightInst.instanceMatrix.needsUpdate = true;
+    this.taillightInst.instanceMatrix.needsUpdate = true;
     return collision;
   }
 
@@ -268,6 +328,8 @@ export class TrafficSystem {
     this.bodyInst.dispose();
     this.cabinInst.dispose();
     this.wheelInst.dispose();
+    this.headlightInst.dispose();
+    this.taillightInst.dispose();
     for (const d of this.disposables) {
       d.dispose();
     }

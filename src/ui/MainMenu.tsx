@@ -48,7 +48,6 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
   const detectedDeviceLabel = useGameStore((s) => s.detectedDeviceLabel);
   const resetCareer = useGameStore((s) => s.resetCareer);
 
-  const activeMap = MapRegistry.getMapById(selectedMapId);
   const engineSpec = ENGINE_TIERS[engineTier] ?? ENGINE_TIERS[0]!;
 
   return (
@@ -180,7 +179,7 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
                     </div>
                     <div className="mt-1 text-xs text-amber-200/80">{m.subtitle}</div>
                     <p className="mt-1.5 text-xs leading-relaxed text-slate-300">
-                      {activeMap.description}
+                      {m.description}
                     </p>
                   </button>
                 );

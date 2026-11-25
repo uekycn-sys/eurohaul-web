@@ -17,6 +17,14 @@ export interface DashboardDrawState {
   rightBlinker: boolean;
 }
 
+export interface CabGpsDrawState {
+  speedKmh: number;
+  speedLimitKmh: number;
+  distanceMeters: number;
+  hasActiveJob: boolean;
+  instruction: string;
+}
+
 /**
  * Procedural CanvasTexture PBR factory producing Albedo, Roughness, and Bump maps
  * with zero external asset URLs, tier-adaptive resolution, and clean disposal.
@@ -30,6 +38,11 @@ export class ProceduralTextures {
   private dashCtx: CanvasRenderingContext2D | null = null;
   private dashTexture: THREE.CanvasTexture | null = null;
   private lastDashKey = '';
+
+  private gpsCanvas: HTMLCanvasElement | null = null;
+  private gpsCtx: CanvasRenderingContext2D | null = null;
+  private gpsTexture: THREE.CanvasTexture | null = null;
+  private lastGpsKey = '';
 
   public configureQuality(preset: QualityPreset): void {
     this.anisotropy =
@@ -571,6 +584,176 @@ export class ProceduralTextures {
     return { map, roughnessMap, bumpMap };
   }
 
+  public getContainerRoofTexture(baseHex: string): THREE.CanvasTexture {
+    const key = `container_roof_${baseHex}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = baseHex === '#f8fafc' ? '#f1f5f9' : '#e2e8f0';
+    ctx.fillRect(0, 0, 256, 512);
+
+    // Longitudinal roof ribs & side edge rails
+    for (let y = 0; y < 512; y += 24) {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.08)';
+      ctx.fillRect(14, y, 228, 6);
+    }
+    ctx.fillStyle = baseHex;
+    ctx.fillRect(0, 0, 14, 512);
+    ctx.fillRect(242, 0, 14, 512);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getContainerRearDoorTexture(baseHex: string): THREE.CanvasTexture {
+    const key = `container_rear_${baseHex}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = baseHex;
+    ctx.fillRect(0, 0, 256, 256);
+
+    // Double door recessed frame & center seam
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.72)';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(10, 10, 236, 236);
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(128, 10);
+    ctx.lineTo(128, 246);
+    ctx.stroke();
+
+    // 4 stainless vertical locking bars
+    ctx.fillStyle = '#cbd5e1';
+    for (const bx of [54, 102, 150, 198]) {
+      ctx.fillRect(bx - 3, 18, 6, 220);
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(bx - 6, 148, 12, 16);
+      ctx.fillStyle = '#cbd5e1';
+    }
+
+    // Blue TIR plate & amber/red ECE rear marker plates
+    ctx.fillStyle = '#1e3a8a';
+    ctx.fillRect(26, 28, 52, 28);
+    ctx.strokeStyle = '#f8fafc';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(26, 28, 52, 28);
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'bold 17px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('TIR', 52, 43);
+
+    // Yellow reflective ECE70 heavy-trailer chevrons
+    for (const mx of [24, 168]) {
+      ctx.fillStyle = '#dc2626';
+      ctx.fillRect(mx, 206, 64, 22);
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(mx + 10, 210, 44, 14);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getDynamicCabGpsTexture(): THREE.CanvasTexture {
+    if (this.gpsTexture) return this.gpsTexture;
+
+    this.gpsCanvas = document.createElement('canvas');
+    this.gpsCanvas.width = 256;
+    this.gpsCanvas.height = 160;
+    this.gpsCtx = this.gpsCanvas.getContext('2d')!;
+    this.gpsTexture = new THREE.CanvasTexture(this.gpsCanvas);
+    this.gpsTexture.colorSpace = THREE.SRGBColorSpace;
+    this.updateDynamicCabGps({
+      speedKmh: 0,
+      speedLimitKmh: 50,
+      distanceMeters: 0,
+      hasActiveJob: false,
+      instruction: '自由漫游模式',
+    });
+    return this.gpsTexture;
+  }
+
+  public updateDynamicCabGps(state: CabGpsDrawState): void {
+    if (!this.gpsCtx || !this.gpsTexture) return;
+    const distBucket = Math.round(state.distanceMeters / 50);
+    const key = `${state.speedKmh}_${state.speedLimitKmh}_${distBucket}_${state.hasActiveJob}_${state.instruction}`;
+    if (key === this.lastGpsKey) return;
+    this.lastGpsKey = key;
+
+    const ctx = this.gpsCtx;
+    ctx.fillStyle = '#09111f';
+    ctx.fillRect(0, 0, 256, 160);
+
+    // Stylized GPS road ribbon
+    ctx.strokeStyle = state.hasActiveJob ? '#a855f7' : '#38bdf8';
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(128, 152);
+    ctx.quadraticCurveTo(128, 92, state.instruction.includes('左') ? 82 : state.instruction.includes('右') ? 174 : 128, 28);
+    ctx.stroke();
+
+    // Player chevron
+    ctx.fillStyle = '#f59e0b';
+    ctx.beginPath();
+    ctx.moveTo(128, 112);
+    ctx.lineTo(140, 136);
+    ctx.lineTo(128, 130);
+    ctx.lineTo(116, 136);
+    ctx.closePath();
+    ctx.fill();
+
+    // Speed limit circle
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(220, 34, 22, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#dc2626';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 17px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(state.speedLimitKmh), 220, 35);
+
+    // Bottom bar distance + guidance
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.fillRect(0, 124, 256, 36);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(state.instruction.slice(0, 13), 10, 142);
+
+    ctx.fillStyle = state.hasActiveJob ? '#34d399' : '#94a3b8';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(
+      state.hasActiveJob ? `${(state.distanceMeters / 1000).toFixed(1)}km` : 'SATNAV',
+      246,
+      142
+    );
+
+    this.gpsTexture.needsUpdate = true;
+  }
+
   public getHighwayGantryTexture(
     routeCode: string,
     destinationLabel: string,
@@ -949,5 +1132,7 @@ export class ProceduralTextures {
     this.cache.clear();
     this.dashTexture?.dispose();
     this.dashTexture = null;
+    this.gpsTexture?.dispose();
+    this.gpsTexture = null;
   }
 }

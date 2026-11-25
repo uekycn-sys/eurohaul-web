@@ -25,6 +25,7 @@ import {
   MobileSteeringStyle,
   QUALITY_SPECS,
   QualityPreset,
+  getDriverRankTitle,
   getMaxFuelLiters,
   useGameStore,
 } from '../store/useGameStore';
@@ -211,6 +212,12 @@ export function HUD({
           ctx.fill();
         }
       }
+
+      for (const st of city.stations) {
+        const [sx, sy] = toMini(st.position[0], st.position[2]);
+        ctx.fillStyle = st.kind === 'fuel' ? '#f59e0b' : '#38bdf8';
+        ctx.fillRect(sx - 3, sy - 3, 6, 6);
+      }
     }
 
     // Player truck arrow at origin (0, 0) pointing UP
@@ -307,7 +314,7 @@ export function HUD({
       ctx.stroke();
     }
 
-    // Cities & depots
+    // Cities, service stations & depots
     for (const city of mapManifest.cities) {
       const [cx, cy] = toMap(city.position[0], city.position[2]);
       ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
@@ -318,16 +325,31 @@ export function HUD({
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = '#f8fafc';
-      ctx.font = 'bold 13px Inter, sans-serif';
-      ctx.fillText(`${city.name} (${city.country})`, cx + 14, cy + 4);
-
       for (const depot of city.depots) {
         const [dx, dy] = toMap(depot.parkingBayPosition[0], depot.parkingBayPosition[2]);
         const isDest = activeJob?.job.destinationDepotId === depot.id;
         ctx.fillStyle = isDest ? '#10b981' : '#94a3b8';
         ctx.fillRect(dx - 3, dy - 3, 6, 6);
       }
+
+      for (const st of city.stations) {
+        const [sx, sy] = toMap(st.position[0], st.position[2]);
+        ctx.fillStyle = st.kind === 'fuel' ? '#f59e0b' : '#0ea5e9';
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Draw crisp pill backdrop behind city label so roads never intersect text
+      const labelText = `${city.name} (${city.country})`;
+      ctx.font = 'bold 12px Inter, sans-serif';
+      const textW = ctx.measureText(labelText).width;
+      const lx = cx + 13;
+      const ly = cy - 11;
+      ctx.fillStyle = 'rgba(9, 16, 29, 0.86)';
+      ctx.fillRect(lx - 4, ly - 2, textW + 8, 18);
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(labelText, lx, ly + 11);
     }
 
     // Player Truck marker
@@ -370,27 +392,30 @@ export function HUD({
           paddingRight: 'max(0.75rem, env(safe-area-inset-right, 0px))',
         }}
       >
-        <div className="pointer-events-auto flex flex-wrap items-center gap-2.5">
-          <div className="rounded-xl border border-slate-700/80 bg-slate-900/85 px-3 py-1.5 text-xs backdrop-blur-md">
+        <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+          <div className="flex items-center whitespace-nowrap rounded-xl border border-slate-700/80 bg-slate-900/85 px-2.5 py-1.5 text-xs backdrop-blur-md sm:px-3">
             <span className="font-mono font-bold text-emerald-400">€{moneyEur.toLocaleString()}</span>
-            <span className="mx-2 text-slate-600">|</span>
-            <span className="font-semibold text-amber-300">Lv.{level}</span>
-            <span className="mx-2 text-slate-600">|</span>
-            <span className="text-slate-200">{telemetry.currentCityName}</span>
-            <span className="mx-2 text-slate-600">|</span>
-            <span className="font-mono text-sky-300">{formatClock(telemetry.timeOfDayHours)}</span>
+            <span className="mx-1.5 text-slate-600">|</span>
+            <span className="font-semibold text-amber-300" title={getDriverRankTitle(level)}>
+              Lv.{level}
+            </span>
+            <span className="hidden text-[11px] text-slate-400 xl:inline">&nbsp;· {getDriverRankTitle(level)}</span>
+            <span className="mx-1.5 hidden text-slate-600 sm:inline">|</span>
+            <span className="hidden truncate text-slate-200 sm:inline">{telemetry.currentCityName}</span>
+            <span className="mx-1.5 hidden text-slate-600 md:inline">|</span>
+            <span className="hidden font-mono text-sky-300 md:inline">{formatClock(telemetry.timeOfDayHours)}</span>
+            {showFps && (
+              <>
+                <span className="mx-1.5 hidden text-slate-600 sm:inline">|</span>
+                <span className="hidden font-mono text-slate-300 sm:inline">{telemetry.fps} FPS</span>
+              </>
+            )}
           </div>
-
-          {showFps && (
-            <div className="rounded-lg border border-slate-700/70 bg-slate-900/80 px-2.5 py-1.5 font-mono text-xs text-slate-300 backdrop-blur-md">
-              {telemetry.fps} FPS
-            </div>
-          )}
         </div>
 
         {/* Quick Camera + Modal Triggers */}
-        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
-          <div className="hidden items-center rounded-xl border border-slate-700/80 bg-slate-900/85 p-0.5 text-[11px] backdrop-blur-md md:flex">
+        <div className="pointer-events-auto flex shrink-0 items-center gap-1.5">
+          <div className="hidden items-center rounded-xl border border-slate-700/80 bg-slate-900/85 p-0.5 text-[11px] backdrop-blur-md xl:flex">
             {(
               [
                 [1, '1 驾驶室'],
@@ -416,32 +441,43 @@ export function HUD({
 
           <button
             type="button"
+            onClick={() => setCameraMode(((cameraMode % 4) + 1) as CameraMode)}
+            className="hidden shrink-0 items-center gap-1 whitespace-nowrap rounded-xl border border-slate-700/80 bg-slate-900/85 px-2.5 py-1.5 text-xs font-medium text-amber-300 backdrop-blur-md hover:bg-slate-800 sm:inline-flex xl:hidden"
+            title="切换视角 [1-4 / V]"
+          >
+            视角 {cameraMode}
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               onRefreshJobs();
               setActiveModal('jobs');
             }}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-slate-900/85 px-3 py-1.5 text-xs font-semibold text-amber-300 backdrop-blur-md hover:bg-amber-500/20"
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-amber-300 backdrop-blur-md hover:bg-amber-500/20 sm:px-3"
           >
-            <Package className="h-3.5 w-3.5" />
-            货运市场
+            <Package className="h-3.5 w-3.5 shrink-0" />
+            <span className="hidden sm:inline">货运市场</span>
+            <span className="sm:hidden">货源</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveModal('garage')}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-sky-500/40 bg-slate-900/85 px-3 py-1.5 text-xs font-semibold text-sky-300 backdrop-blur-md hover:bg-sky-500/20"
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-sky-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-sky-300 backdrop-blur-md hover:bg-sky-500/20 sm:px-3"
           >
-            <Wrench className="h-3.5 w-3.5" />
-            车库改装
+            <Wrench className="h-3.5 w-3.5 shrink-0" />
+            <span className="hidden sm:inline">车库改装</span>
+            <span className="sm:hidden">车库</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveModal('map')}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/85 px-2.5 py-1.5 text-xs font-medium text-slate-200 backdrop-blur-md hover:bg-slate-800"
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-slate-700/80 bg-slate-900/85 px-2.5 py-1.5 text-xs font-medium text-slate-200 backdrop-blur-md hover:bg-slate-800"
           >
-            <MapIcon className="h-3.5 w-3.5" />
-            地图
+            <MapIcon className="h-3.5 w-3.5 shrink-0" />
+            <span className="hidden sm:inline">地图</span>
           </button>
 
           <button
@@ -520,6 +556,17 @@ export function HUD({
                   : '快速停靠'
                 : '交互 [Enter]'}
             </button>
+            {(nearbyInteraction.kind === 'fuel' ||
+              nearbyInteraction.kind === 'repair' ||
+              nearbyInteraction.kind === 'service_hub') && (
+              <button
+                type="button"
+                onClick={() => onSetTimeOfDay((telemetry.timeOfDayHours + 8) % 24)}
+                className="shrink-0 rounded-lg border border-sky-400/50 bg-sky-500/20 px-2.5 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/35"
+              >
+                休息 8h [R]
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -569,7 +616,7 @@ export function HUD({
         className={`pointer-events-none fixed z-20 ${
           mobileControlsEnabled
             ? 'left-1/2 -translate-x-1/2'
-            : 'bottom-3 left-3 sm:left-1/2 sm:-translate-x-1/2'
+            : 'bottom-3 left-1/2 -translate-x-1/2 sm:left-3 sm:translate-x-0 lg:left-1/2 lg:-translate-x-1/2'
         }`}
         style={
           mobileControlsEnabled
@@ -721,10 +768,12 @@ export function HUD({
         </div>
       </div>
 
-      {/* ETS2 Route Advisor (moves to top-right on mobile so bottom-right stays clear for pedals) */}
+      {/* ETS2 Route Advisor (moves cleanly on narrow/mobile viewports so it never collides with dashboard) */}
       <div
         className={`fixed z-20 rounded-2xl border border-slate-700/85 bg-slate-950/90 shadow-2xl backdrop-blur-md ${
-          mobileControlsEnabled ? 'w-[216px]' : 'right-3 bottom-3 w-[276px]'
+          mobileControlsEnabled
+            ? 'w-[210px]'
+            : 'top-14 right-2.5 w-[204px] sm:top-auto sm:right-3 sm:bottom-3 sm:w-[248px] lg:w-[276px]'
         }`}
         style={
           mobileControlsEnabled
@@ -904,9 +953,9 @@ export function HUD({
               <span><b className="text-amber-300">L / F</b> 大灯 / 双闪</span>
               <span><b className="text-amber-300">C / B</b> 巡航 / 缓速器</span>
               <span><b className="text-amber-300">T / H</b> 摘挂 / 气喇叭</span>
-              <span><b className="text-amber-300">1 - 4</b> 切换视角</span>
+              <span><b className="text-amber-300">1 - 4 / V</b> 切换视角</span>
               <span><b className="text-amber-300">Shift/Ctrl</b> 升降档</span>
-              <span><b className="text-amber-300">Enter</b> 货场/加油交互</span>
+              <span><b className="text-amber-300">Enter / R</b> 交互 / 休息</span>
             </div>
           )}
         </div>

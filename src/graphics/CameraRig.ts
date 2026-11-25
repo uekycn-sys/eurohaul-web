@@ -93,21 +93,21 @@ export class CameraRig {
 
     if (mode === 1) {
       // First-person LHD driver eye inside cab suspension group:
-      // sees lower windshield cowl/wipers, rotating steering wheel, live gauges, and open highway
+      // frames upper rim of steering wheel, dynamic gauges, GPS satnav, wipers, and highway horizon
       visuals.tractorRoot.updateMatrixWorld(true);
-      this.tempVec.set(0.58, 2.66, 1.72);
+      this.tempVec.set(0.58, 2.58, 1.72);
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredPos.copy(this.tempVec);
 
       const lookOffsetSide = physics.steerAngleRad * 6.0;
-      this.tempVec.set(0.58 + lookOffsetSide, 2.18, 22);
+      this.tempVec.set(0.58 + lookOffsetSide, 2.34, 22);
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredLook.copy(this.tempVec);
 
       this.currentPos.copy(this.desiredPos);
       this.currentLook.copy(this.desiredLook);
       this.initialized = true;
-      this.camera.fov += (66 - this.camera.fov) * Math.min(1, dtSec * 8);
+      this.camera.fov += (68 - this.camera.fov) * Math.min(1, dtSec * 8);
       this.camera.updateProjectionMatrix();
       this.camera.position.copy(this.currentPos);
       this.camera.lookAt(this.currentLook);

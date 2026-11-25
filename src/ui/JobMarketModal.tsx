@@ -18,27 +18,32 @@ export function JobMarketModal({ onRefreshJobs }: JobMarketModalProps) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
       <div className="flex max-h-[88vh] w-full max-w-4xl flex-col rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
-          <div className="flex items-center gap-2.5">
-            <Package className="h-5 w-5 text-amber-400" />
-            <div>
-              <h2 className="text-lg font-bold text-white">欧洲货运市场 (Freight Market)</h2>
-              <p className="text-xs text-slate-400">选择最适合你当前引擎吨位与路线的货运订单</p>
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3.5 sm:px-6 sm:py-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Package className="h-5 w-5 shrink-0 text-amber-400" />
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="truncate text-base font-bold text-white sm:text-lg">欧洲货运市场 (Freight Market)</h2>
+                <span className="shrink-0 whitespace-nowrap rounded bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-300">
+                  驾驶已暂停
+                </span>
+              </div>
+              <p className="truncate text-xs text-slate-400">选择最适合你当前引擎吨位与路线的货运订单 (跨城订单将自动调拨至起点)</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               onClick={onRefreshJobs}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
             >
-              <RefreshCw className="h-3.5 w-3.5" />
+              <RefreshCw className="h-3.5 w-3.5 shrink-0" />
               刷新货源
             </button>
             <button
               type="button"
               onClick={() => setActiveModal('none')}
-              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+              className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
             >
               <X className="h-5 w-5" />
             </button>

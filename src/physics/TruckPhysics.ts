@@ -599,7 +599,7 @@ export class TruckPhysics {
     this.trailerPitch += (trTargetPitch - this.trailerPitch) * Math.min(1, dtSec * 8);
 
     // Collisions with guardrails & static building colliders
-    this.resolveCollisions(map, dtSec);
+    this.resolveCollisions(map);
 
     // Keep inside world bounds
     const b = map.manifest.worldBounds;
@@ -630,16 +630,19 @@ export class TruckPhysics {
     this.trailerZ = hitchZ - Math.cos(this.trailerYaw) * KINGPIN_LOCAL_Z;
   }
 
-  private resolveCollisions(map: BuiltMap, dtSec: number): void {
-    // Guardrail soft lateral pushback (without killing longitudinal velocity per frame)
+  private resolveCollisions(map: BuiltMap): void {
+    // Guardrail firm lateral barrier deflection (prevents clipping past guardrail posts!)
     map.querySurface(this.x, this.z, this.surfaceMain);
-    if (this.surfaceMain.guardrailHit) {
+    if (this.surfaceMain.guardrailHit && this.surfaceMain.nearestSegmentId) {
+      const seg = map.segmentMap.get(this.surfaceMain.nearestSegmentId);
+      const maxLateral = seg ? seg.def.width * 0.5 + 0.35 : this.surfaceMain.roadDist;
+      const overshoot = Math.max(0.18, this.surfaceMain.roadDist - maxLateral);
       const impactKmh = Math.abs(this.speedMs) * 3.6;
-      this.x += this.surfaceMain.guardrailPushX * Math.max(0.1, Math.abs(this.speedMs) * dtSec * 0.8);
-      this.z += this.surfaceMain.guardrailPushZ * Math.max(0.1, Math.abs(this.speedMs) * dtSec * 0.8);
-      this.speedMs *= 0.985;
-      if (impactKmh > 22 && this.collisionCooldownSec <= 0) {
-        this.lastCollision = { impactSpeedKmh: impactKmh, label: '护栏刮擦' };
+      this.x += this.surfaceMain.guardrailPushX * overshoot;
+      this.z += this.surfaceMain.guardrailPushZ * overshoot;
+      this.speedMs *= 0.94;
+      if (impactKmh > 18 && this.collisionCooldownSec <= 0) {
+        this.lastCollision = { impactSpeedKmh: impactKmh, label: '公路防撞护栏' };
         this.collisionCooldownSec = 1.4;
       }
     }

@@ -10,9 +10,11 @@ export interface InputActions {
   onShiftUp?: () => void;
   onShiftDown?: () => void;
   onCameraMode?: (mode: 1 | 2 | 3 | 4) => void;
+  onCycleCamera?: () => void;
   onToggleMap?: () => void;
   onCycleAdvisorTab?: () => void;
   onInteract?: () => void;
+  onRest?: () => void;
   onEscape?: () => void;
 }
 
@@ -195,6 +197,12 @@ export class InputManager {
         break;
       case 'Digit4':
         this.actions.onCameraMode?.(4);
+        break;
+      case 'KeyV':
+        this.actions.onCycleCamera?.();
+        break;
+      case 'KeyR':
+        this.actions.onRest?.();
         break;
       case 'Tab':
         this.actions.onCycleAdvisorTab?.();

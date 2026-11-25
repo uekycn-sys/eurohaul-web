@@ -90,6 +90,16 @@ export interface DetectedHardwareProfile {
   deviceLabel: string;
 }
 
+function formatShortGpuName(raw: string): string {
+  if (!raw) return '';
+  const angleMatch = raw.match(/ANGLE \([^,]+,\s*([^,(]+)/i);
+  const cleaned = (angleMatch ? angleMatch[1]! : raw)
+    .replace(/Direct3D.*|OpenGL.*|\(R\)|\(TM\)|Graphics/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > 26 ? `${cleaned.slice(0, 24).trim()}…` : cleaned;
+}
+
 export function detectHardwareProfile(): DetectedHardwareProfile {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return {
@@ -119,11 +129,13 @@ export function detectHardwareProfile(): DetectedHardwareProfile {
     gpuRenderer = '';
   }
 
+  const shortGpu = formatShortGpuName(gpuRenderer);
+
   if (isIOS) {
     return {
       isTouchDevice: true,
       recommendedPreset: 'mobile_balanced',
-      deviceLabel: `iOS 移动设备${gpuRenderer ? ` (${gpuRenderer.slice(0, 24)})` : ''}`,
+      deviceLabel: `iOS 移动设备${shortGpu ? ` (${shortGpu})` : ''}`,
     };
   }
 
@@ -141,8 +153,8 @@ export function detectHardwareProfile(): DetectedHardwareProfile {
     isTouchDevice: false,
     recommendedPreset: 'high',
     deviceLabel: isDiscreteGpu
-      ? `高性能独显 (${gpuRenderer.slice(0, 28)})`
-      : `PC 桌面端${gpuRenderer ? ` (${gpuRenderer.slice(0, 24)})` : ''}`,
+      ? `高性能独显${shortGpu ? ` (${shortGpu})` : ''}`
+      : `PC 桌面端${shortGpu ? ` (${shortGpu})` : ''}`,
   };
 }
 
@@ -445,6 +457,14 @@ export function computeLevelFromXp(xp: number): number {
   return Math.max(1, Math.floor(Math.sqrt(xp / 250)) + 1);
 }
 
+export function getDriverRankTitle(level: number): string {
+  if (level >= 8) return '欧陆传奇车队长';
+  if (level >= 5) return '阿尔卑斯重卡王牌';
+  if (level >= 3) return '欧陆干线专员';
+  if (level >= 2) return '认证半挂驾驶员';
+  return '见习货运司机';
+}
+
 function migrateQualityPreset(val: unknown): QualityPreset {
   if (val === 'mobile_fast' || val === 'mobile_balanced' || val === 'high' || val === 'ultra') {
     return val;
@@ -660,28 +680,38 @@ export const useGameStore = create<GameStoreState>()(
         const totalEarnedEur = Math.max(250, basePayEur + parkingBonusEur - damagePenaltyEur);
         const xpEarned = job.xpReward + (manualParking ? Math.round(job.xpReward * 0.35) : 0);
         const nextXp = s.xp + xpEarned;
+        const nextLevel = computeLevelFromXp(nextXp);
+        const leveledUp = nextLevel > s.level;
+        const levelUpBonusEur = leveledUp ? 2500 : 0;
 
         const result: DeliveryResult = {
           job,
           basePayEur,
           parkingBonusEur,
           damagePenaltyEur,
-          totalEarnedEur,
+          totalEarnedEur: totalEarnedEur + levelUpBonusEur,
           xpEarned,
           manualParking,
           cargoHealth,
         };
 
         set({
-          moneyEur: s.moneyEur + totalEarnedEur,
+          moneyEur: s.moneyEur + totalEarnedEur + levelUpBonusEur,
           xp: nextXp,
-          level: computeLevelFromXp(nextXp),
+          level: nextLevel,
           completedJobs: s.completedJobs + 1,
           activeJob: null,
           lastDeliveryResult: result,
           activeModal: 'delivery_summary',
           parkingGuide: DEFAULT_PARKING_GUIDE,
         });
+        if (leveledUp) {
+          get().pushNotification(
+            'success',
+            `驾驶等级提升至 Lv.${nextLevel} (${getDriverRankTitle(nextLevel)})！`,
+            `获得晋升奖金 +€${levelUpBonusEur.toLocaleString()}`
+          );
+        }
         return result;
       },
 

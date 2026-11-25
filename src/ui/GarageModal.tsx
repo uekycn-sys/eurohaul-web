@@ -109,6 +109,7 @@ export function GarageModal() {
               {ENGINE_TIERS.map((eng) => {
                 const owned = eng.tier <= engineTier;
                 const active = eng.tier === engineTier;
+                const canAfford = moneyEur >= eng.priceEur;
                 return (
                   <div
                     key={eng.tier}
@@ -124,9 +125,9 @@ export function GarageModal() {
                     </div>
                     <button
                       type="button"
-                      disabled={owned}
+                      disabled={owned || !canAfford}
                       onClick={() => upgradeEngine(eng.tier)}
-                      className="mt-3 flex w-full items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-300"
+                      className="mt-3 flex w-full items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                     >
                       {active ? (
                         <>
@@ -134,8 +135,10 @@ export function GarageModal() {
                         </>
                       ) : owned ? (
                         '已解锁'
-                      ) : (
+                      ) : canAfford ? (
                         `升级 €${eng.priceEur.toLocaleString()}`
+                      ) : (
+                        `余额不足 (€${eng.priceEur.toLocaleString()})`
                       )}
                     </button>
                   </div>
@@ -154,6 +157,7 @@ export function GarageModal() {
               {TANK_TIERS.map((tank) => {
                 const owned = tank.tier <= tankTier;
                 const active = tank.tier === tankTier;
+                const canAfford = moneyEur >= tank.priceEur;
                 return (
                   <div
                     key={tank.tier}
@@ -169,11 +173,17 @@ export function GarageModal() {
                     </div>
                     <button
                       type="button"
-                      disabled={owned}
+                      disabled={owned || !canAfford}
                       onClick={() => upgradeTank(tank.tier)}
-                      className="mt-3 w-full rounded-lg bg-emerald-500 py-1.5 text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:bg-slate-700 disabled:text-slate-300"
+                      className="mt-3 w-full rounded-lg bg-emerald-500 py-1.5 text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                     >
-                      {active ? '当前装配' : owned ? '已解锁' : `改装 €${tank.priceEur.toLocaleString()}`}
+                      {active
+                        ? '当前装配'
+                        : owned
+                        ? '已解锁'
+                        : canAfford
+                        ? `改装 €${tank.priceEur.toLocaleString()}`
+                        : `余额不足 (€${tank.priceEur.toLocaleString()})`}
                     </button>
                   </div>
                 );

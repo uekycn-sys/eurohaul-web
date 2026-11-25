@@ -295,9 +295,10 @@ export class TruckMeshBuilder {
     glowR.position.set(-0.9, 0.72, 3.16);
     tractorRoot.add(glowL, glowR);
 
-    const beamGeo = new THREE.ConeGeometry(2.6, 18, 14, 1, true);
+    const beamGeo = new THREE.ConeGeometry(2.4, 18, 14, 1, true);
     beamGeo.translate(0, -9, 0);
-    beamGeo.rotateX(Math.PI / 2);
+    // Negative X rotation maps -Y cone axis forward onto +Z truck nose!
+    beamGeo.rotateX(-Math.PI / 2);
     const beamMat = new THREE.MeshBasicMaterial({
       color: '#fef3c7',
       transparent: true,
@@ -308,8 +309,10 @@ export class TruckMeshBuilder {
     });
     const beamL = new THREE.Mesh(beamGeo, beamMat);
     beamL.position.set(0.9, 0.74, 3.16);
+    beamL.rotation.x = 0.06;
     const beamR = new THREE.Mesh(beamGeo, beamMat);
     beamR.position.set(-0.9, 0.74, 3.16);
+    beamR.rotation.x = 0.06;
     tractorRoot.add(beamL, beamR);
 
     const spotLight = new THREE.SpotLight('#fffbeb', 0, 80, Math.PI / 4.2, 0.48, 1.35);
@@ -489,23 +492,24 @@ export class TruckMeshBuilder {
     cowl.position.set(0, 2.18, 2.72);
     cabSuspensionGroup.add(cowl);
 
-    // Dynamic glowing instrument cluster
+    // Dynamic glowing instrument cluster (raised slightly so it sits clearly above bottom HUD)
     const clusterGeo = new THREE.PlaneGeometry(0.72, 0.25);
     const clusterMat = new THREE.MeshBasicMaterial({ map: dashTex });
     const cluster = new THREE.Mesh(clusterGeo, clusterMat);
-    cluster.position.set(0.58, 2.17, 2.31);
+    cluster.position.set(0.58, 2.27, 2.33);
     cluster.rotation.y = Math.PI;
-    cluster.rotation.x = 0.26;
+    cluster.rotation.x = 0.22;
     cabSuspensionGroup.add(cluster);
 
-    // Center GPS unit & mount bracket
-    const gpsBezelGeo = new THREE.BoxGeometry(0.34, 0.22, 0.04);
+    // Live Center SatNav GPS unit & mount bracket
+    const gpsTex = this.textures.getDynamicCabGpsTexture();
+    const gpsBezelGeo = new THREE.BoxGeometry(0.36, 0.23, 0.04);
     const gpsBezel = new THREE.Mesh(gpsBezelGeo, trimMat);
-    gpsBezel.position.set(0.06, 2.16, 2.34);
-    const gpsGeo = new THREE.PlaneGeometry(0.3, 0.18);
-    const gpsMat = new THREE.MeshBasicMaterial({ color: '#38bdf8' });
+    gpsBezel.position.set(0.06, 2.27, 2.36);
+    const gpsGeo = new THREE.PlaneGeometry(0.32, 0.19);
+    const gpsMat = new THREE.MeshBasicMaterial({ map: gpsTex });
     const gpsMesh = new THREE.Mesh(gpsGeo, gpsMat);
-    gpsMesh.position.set(0.06, 2.16, 2.315);
+    gpsMesh.position.set(0.06, 2.27, 2.335);
     gpsMesh.rotation.y = Math.PI;
     cabSuspensionGroup.add(gpsBezel, gpsMesh);
 
@@ -519,14 +523,14 @@ export class TruckMeshBuilder {
 
     // 4-Spoke European Multi-Function Steering Wheel (LHD on +X = 0.58)
     const steeringColumnGeo = new THREE.CylinderGeometry(0.055, 0.065, 0.28, 10);
-    steeringColumnGeo.rotateX(Math.PI / 2 - 0.42);
+    steeringColumnGeo.rotateX(Math.PI / 2 - 0.36);
     const steeringColumn = new THREE.Mesh(steeringColumnGeo, cabCharcoalMat);
-    steeringColumn.position.set(0.58, 2.08, 2.26);
+    steeringColumn.position.set(0.58, 2.17, 2.27);
     cabSuspensionGroup.add(steeringColumn);
 
     const steeringWheel = new THREE.Group();
-    steeringWheel.position.set(0.58, 2.16, 2.15);
-    steeringWheel.rotation.x = -0.42;
+    steeringWheel.position.set(0.58, 2.26, 2.17);
+    steeringWheel.rotation.x = -0.36;
     const rimTorusGeo = new THREE.TorusGeometry(0.21, 0.026, 8, 24);
     const steeringRim = new THREE.Mesh(rimTorusGeo, cabLeatherMat);
     const spokeGeo = new THREE.BoxGeometry(0.39, 0.042, 0.022);
@@ -601,7 +605,7 @@ export class TruckMeshBuilder {
       }
     }
 
-    // Container with Albedo + Roughness + Bump PBR maps
+    // Container with dedicated 6-face materials: corrugated sides, clean ribbed roof, and TIR rear double-doors
     let currentContainerPbr: PbrTextureSet = this.textures.getContainerTextures('#e2e8f0', 'EUROHAUL');
     let pbrDetailEnabled = true;
 
@@ -613,8 +617,30 @@ export class TruckMeshBuilder {
       roughness: 0.48,
       metalness: 0.24,
     });
+    const containerRoofMat = new THREE.MeshStandardMaterial({
+      map: this.textures.getContainerRoofTexture('#e2e8f0'),
+      roughness: 0.52,
+      metalness: 0.18,
+    });
+    const containerFrontEndMat = new THREE.MeshStandardMaterial({
+      color: '#e2e8f0',
+      roughness: 0.5,
+      metalness: 0.24,
+    });
+    const containerRearDoorMat = new THREE.MeshStandardMaterial({
+      map: this.textures.getContainerRearDoorTexture('#e2e8f0'),
+      roughness: 0.45,
+      metalness: 0.28,
+    });
     const containerGeo = new THREE.BoxGeometry(2.5, 2.75, 13.4);
-    const trailerContainerMesh = new THREE.Mesh(containerGeo, containerMat);
+    const trailerContainerMesh = new THREE.Mesh(containerGeo, [
+      containerMat, // +X
+      containerMat, // -X
+      containerRoofMat, // +Y roof (upright, no logo text!)
+      darkChassisMat, // -Y floor underside
+      containerFrontEndMat, // +Z front bulkhead
+      containerRearDoorMat, // -Z TIR double rear doors
+    ]);
     trailerContainerMesh.position.set(0, 2.58, 0);
     trailerContainerMesh.castShadow = true;
     trailerContainerMesh.receiveShadow = true;
@@ -781,6 +807,9 @@ export class TruckMeshBuilder {
       trailerFrameGeo,
       sideGuardGeo,
       containerMat,
+      containerRoofMat,
+      containerFrontEndMat,
+      containerRearDoorMat,
       containerGeo,
       reeferBodyGeo,
       reeferMat,
@@ -807,6 +836,11 @@ export class TruckMeshBuilder {
 
     const setTrailerCargoVisual = (colorHex: string, label: string): void => {
       currentContainerPbr = this.textures.getContainerTextures(colorHex, label);
+      containerRoofMat.map = this.textures.getContainerRoofTexture(colorHex);
+      containerRoofMat.needsUpdate = true;
+      containerFrontEndMat.color.set(colorHex);
+      containerRearDoorMat.map = this.textures.getContainerRearDoorTexture(colorHex);
+      containerRearDoorMat.needsUpdate = true;
       applyContainerPbr();
     };
 
