@@ -32,6 +32,7 @@ export class TrafficSystem {
   private readonly wheelInst: THREE.InstancedMesh;
   private readonly headlightInst: THREE.InstancedMesh;
   private readonly taillightInst: THREE.InstancedMesh;
+  private readonly shadowInst: THREE.InstancedMesh | null = null;
   private readonly headlightMat: THREE.MeshBasicMaterial;
   private readonly taillightMat: THREE.MeshBasicMaterial;
   private readonly maxCapacity: number;
@@ -41,7 +42,12 @@ export class TrafficSystem {
 
   private collisionCooldownSec = 0;
 
-  constructor(builtMap: BuiltMap, vehicleCount = 20, maxCapacity = 28) {
+  constructor(
+    builtMap: BuiltMap,
+    vehicleCount = 20,
+    maxCapacity = 28,
+    shadowTexture?: THREE.CanvasTexture
+  ) {
     this.builtMap = builtMap;
     this.maxCapacity = Math.max(maxCapacity, vehicleCount);
     this.activeCount = Math.min(this.maxCapacity, vehicleCount);
@@ -89,6 +95,23 @@ export class TrafficSystem {
     this.headlightInst = new THREE.InstancedMesh(lampGeo, this.headlightMat, this.maxCapacity * 2);
     this.taillightInst = new THREE.InstancedMesh(lampGeo, this.taillightMat, this.maxCapacity * 2);
 
+    if (shadowTexture) {
+      const shadowGeo = new THREE.PlaneGeometry(2.9, 5.8);
+      shadowGeo.rotateX(-Math.PI / 2);
+      const shadowMat = new THREE.MeshBasicMaterial({
+        map: shadowTexture,
+        transparent: true,
+        opacity: 0.58,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
+      this.shadowInst = new THREE.InstancedMesh(shadowGeo, shadowMat, this.maxCapacity);
+      this.disposables.push(shadowGeo, shadowMat);
+      builtMap.root.add(this.shadowInst);
+    }
+
     this.spawnAgents(this.maxCapacity);
     this.setActiveCount(this.activeCount);
     builtMap.root.add(this.bodyInst, this.cabinInst, this.wheelInst, this.headlightInst, this.taillightInst);
@@ -101,6 +124,9 @@ export class TrafficSystem {
     this.wheelInst.count = this.activeCount * 2;
     this.headlightInst.count = this.activeCount * 2;
     this.taillightInst.count = this.activeCount * 2;
+    if (this.shadowInst) {
+      this.shadowInst.count = this.activeCount;
+    }
   }
 
   private spawnAgents(count: number): void {
@@ -324,6 +350,14 @@ export class TrafficSystem {
         this.dummy.updateMatrix();
         this.taillightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
       }
+
+      if (this.shadowInst) {
+        this.dummy.position.set(a.x, a.y + 0.032, a.z);
+        this.dummy.rotation.set(0, a.yaw, 0);
+        this.dummy.scale.set(1, 1, a.isTruck ? 1.48 : 0.96);
+        this.dummy.updateMatrix();
+        this.shadowInst.setMatrixAt(i, this.dummy.matrix);
+      }
     }
 
     this.bodyInst.instanceMatrix.needsUpdate = true;
@@ -331,6 +365,9 @@ export class TrafficSystem {
     this.wheelInst.instanceMatrix.needsUpdate = true;
     this.headlightInst.instanceMatrix.needsUpdate = true;
     this.taillightInst.instanceMatrix.needsUpdate = true;
+    if (this.shadowInst) {
+      this.shadowInst.instanceMatrix.needsUpdate = true;
+    }
     return collision;
   }
 
@@ -340,6 +377,7 @@ export class TrafficSystem {
     this.wheelInst.dispose();
     this.headlightInst.dispose();
     this.taillightInst.dispose();
+    this.shadowInst?.dispose();
     for (const d of this.disposables) {
       d.dispose();
     }

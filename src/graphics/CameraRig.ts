@@ -28,6 +28,12 @@ export class CameraRig {
   private lastPointerY = 0;
   private initialized = false;
 
+  // Air-suspension driver seat spring-damper state (heave & micro road rumble)
+  private seatHeaveY = 0;
+  private seatHeaveVel = 0;
+  private prevTruckSpeedMs = 0;
+  private rumbleClockSec = 0;
+
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
     this.camera = camera;
     this.domElement = domElement;
@@ -109,10 +115,34 @@ export class CameraRig {
     }
 
     if (mode === 1) {
-      // First-person LHD driver eye inside cab suspension group with mouse-drag head look:
-      // frames upper rim of steering wheel, dynamic gauges, A-pillar SatNav, wipers, and road
+      // First-person LHD driver eye inside air-suspended cab with spring-damper heave & shoulder micro-vibration:
+      // frames steering wheel, dynamic gauges, A-pillar SatNav, wipers, and wide windshield view
+      const safeDt = Math.min(0.05, Math.max(0.001, dtSec));
+      const longAccel = (physics.speedMs - this.prevTruckSpeedMs) / safeDt;
+      this.prevTruckSpeedMs = physics.speedMs;
+
+      this.rumbleClockSec += safeDt * (1 + Math.min(2.5, absKmh / 45));
+      const speedNorm = THREE.MathUtils.clamp(absKmh / 80, 0, 1);
+      const shoulderRumble =
+        !physics.onRoad && absKmh > 3
+          ? (Math.sin(this.rumbleClockSec * 29) * 0.016 + Math.cos(this.rumbleClockSec * 43) * 0.01) *
+            Math.min(1, absKmh / 25)
+          : Math.sin(this.rumbleClockSec * 8.5) * 0.004 * speedNorm;
+      const targetHeave = THREE.MathUtils.clamp(
+        longAccel * 0.0045 + shoulderRumble,
+        -0.045,
+        0.045
+      );
+      this.seatHeaveVel +=
+        ((targetHeave - this.seatHeaveY) * 52 - this.seatHeaveVel * 9.5) * safeDt;
+      this.seatHeaveY = THREE.MathUtils.clamp(
+        this.seatHeaveY + this.seatHeaveVel * safeDt,
+        -0.05,
+        0.05
+      );
+
       visuals.tractorRoot.updateMatrixWorld(true);
-      this.tempVec.set(0.58, 2.58, 1.72);
+      this.tempVec.set(0.58, 2.58 + this.seatHeaveY, 1.72);
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredPos.copy(this.tempVec);
 
@@ -121,16 +151,22 @@ export class CameraRig {
       const headYawCos = Math.cos(this.cabLookYaw);
       this.tempVec.set(
         0.58 + lookOffsetSide * headYawCos + headYawSin * 20,
-        2.34 + this.cabLookPitch * 14,
+        2.35 + this.seatHeaveY * 0.45 + this.cabLookPitch * 14,
         1.72 + headYawCos * 20.3
       );
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredLook.copy(this.tempVec);
 
-      this.currentPos.copy(this.desiredPos);
-      this.currentLook.copy(this.desiredLook);
-      this.initialized = true;
-      this.camera.fov += (68 - this.camera.fov) * Math.min(1, dtSec * 8);
+      if (!this.initialized) {
+        this.currentPos.copy(this.desiredPos);
+        this.currentLook.copy(this.desiredLook);
+        this.initialized = true;
+      } else {
+        const eyeFollow = Math.min(1, safeDt * 24);
+        this.currentPos.lerp(this.desiredPos, eyeFollow);
+        this.currentLook.lerp(this.desiredLook, eyeFollow);
+      }
+      this.camera.fov += (68 - this.camera.fov) * Math.min(1, safeDt * 8);
       this.camera.updateProjectionMatrix();
       this.camera.position.copy(this.currentPos);
       this.camera.lookAt(this.currentLook);

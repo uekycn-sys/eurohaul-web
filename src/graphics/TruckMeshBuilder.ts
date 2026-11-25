@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { PbrTextureSet, ProceduralTextures } from '../graphics/ProceduralTextures';
 import { GeometryBatcher } from './GeometryBatcher';
-import { HeadlightMode, WipersMode } from '../store/useGameStore';
+import { HeadlightMode, TrailerCargoType, WipersMode } from '../store/useGameStore';
 
 export interface TruckVisualRefs {
   tractorRoot: THREE.Group;
@@ -14,7 +14,7 @@ export interface TruckVisualRefs {
   trailerLandingGear: THREE.Group;
   trailerContainerMesh: THREE.Mesh;
   setPaintColor: (hex: string) => void;
-  setTrailerCargoVisual: (colorHex: string, label: string) => void;
+  setTrailerCargoVisual: (colorHex: string, label: string, cargoType?: TrailerCargoType) => void;
   setBlobShadowVisible: (visible: boolean) => void;
   setPbrDetailEnabled: (enabled: boolean) => void;
   updateWipers: (elapsedSec: number, mode: WipersMode) => void;
@@ -22,6 +22,7 @@ export interface TruckVisualRefs {
   updateLights: (opts: {
     headlightMode: HeadlightMode;
     nightFactor: number;
+    rainIntensity?: number;
     braking: boolean;
     reversing: boolean;
     leftBlinkerLit: boolean;
@@ -139,6 +140,11 @@ export class TruckMeshBuilder {
       emissive: '#f59e0b',
       emissiveIntensity: 0.0,
     });
+    const sideMarkerMat = new THREE.MeshStandardMaterial({
+      color: '#d97706',
+      emissive: '#f59e0b',
+      emissiveIntensity: 0.35,
+    });
 
     disposables.push(
       paintMat,
@@ -155,7 +161,8 @@ export class TruckMeshBuilder {
       brakeMat,
       reverseMat,
       leftSignalMat,
-      rightSignalMat
+      rightSignalMat,
+      sideMarkerMat
     );
 
     // 1. Chassis Frame, Fifth Wheel, Aluminum Fuel Tanks, Air Tanks & Catwalk (batched per material)
@@ -231,6 +238,8 @@ export class TruckMeshBuilder {
     }
 
     const mudguardGeo = new THREE.BoxGeometry(0.65, 0.2, 2.75);
+    const flapGeo = new THREE.BoxGeometry(0.62, 0.42, 0.04);
+    const sideMarkGeo = new THREE.BoxGeometry(0.05, 0.06, 0.16);
     for (const mx of [-0.94, 0.94]) {
       tractorBatcher.add(darkChassisMat, mudguardGeo, {
         x: mx,
@@ -238,6 +247,17 @@ export class TruckMeshBuilder {
         z: -1.72,
         colorHex: '#1e2736',
       });
+      tractorBatcher.add(darkChassisMat, flapGeo, {
+        x: mx,
+        y: 0.52,
+        z: -3.02,
+        colorHex: '#18202c',
+      });
+    }
+    for (const sx of [-1.18, 1.18]) {
+      for (const sz of [-0.95, 0.45]) {
+        tractorBatcher.add(sideMarkerMat, sideMarkGeo, { x: sx, y: 0.72, z: sz });
+      }
     }
 
     const rearBarGeo = new THREE.BoxGeometry(2.38, 0.24, 0.18);
@@ -264,7 +284,7 @@ export class TruckMeshBuilder {
     tractorBatcher.add(leftSignalMat, lampSmallGeo, { x: 1.15, y: 0.72, z: 3.07 });
     tractorBatcher.add(rightSignalMat, lampSmallGeo, { x: -1.15, y: 0.72, z: 3.07 });
 
-    // Lightweight additive headlight glow flares (replaces heavy Bloom!)
+    // Lightweight additive headlight glow flares + ground light pool (replaces heavy Bloom!)
     const glowTex = this.textures.getHeadlightGlowTexture();
     const glowMat = new THREE.MeshBasicMaterial({
       map: glowTex,
@@ -303,6 +323,23 @@ export class TruckMeshBuilder {
     beamR.rotation.x = 0.06;
     beamR.layers.set(1);
     tractorRoot.add(beamL, beamR);
+
+    const groundPoolGeo = new THREE.PlaneGeometry(7.2, 22);
+    groundPoolGeo.rotateX(-Math.PI / 2);
+    const groundPoolMat = new THREE.MeshBasicMaterial({
+      map: glowTex,
+      color: '#fff4d4',
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+    });
+    const groundPool = new THREE.Mesh(groundPoolGeo, groundPoolMat);
+    groundPool.position.set(0, 0.045, 13.8);
+    groundPool.layers.set(1);
+    tractorRoot.add(groundPool);
 
     const spotLight = new THREE.SpotLight('#fffbeb', 0, 80, Math.PI / 4.2, 0.48, 1.35);
     spotLight.position.set(0, 1.05, 3.12);
@@ -369,6 +406,16 @@ export class TruckMeshBuilder {
     const cabBackGeo = new THREE.BoxGeometry(2.44, 1.45, 0.82);
     cabBatcher.add(paintMat, cabBackGeo, { x: 0, y: 2.58, z: 1.0, castShadow: true });
 
+    const sideDeflectorGeo = new THREE.BoxGeometry(0.11, 1.38, 0.42);
+    for (const side of [-1, 1]) {
+      cabBatcher.add(paintMat, sideDeflectorGeo, {
+        x: side * 1.24,
+        y: 2.58,
+        z: 0.56,
+        rotY: side * 0.14,
+      });
+    }
+
     const cabBackInnerGeo = new THREE.PlaneGeometry(2.18, 1.32);
     cabBatcher.add(cabInteriorMat, cabBackInnerGeo, {
       x: 0,
@@ -380,6 +427,7 @@ export class TruckMeshBuilder {
 
     const stackGeo = new THREE.CylinderGeometry(0.085, 0.095, 2.35, 10);
     const stackTipGeo = new THREE.CylinderGeometry(0.105, 0.085, 0.28, 10);
+    const heatShieldGeo = new THREE.CylinderGeometry(0.118, 0.118, 0.85, 10);
     for (const sx of [-1.06, 1.06]) {
       cabBatcher.add(metalMat, stackGeo, {
         x: sx,
@@ -394,6 +442,12 @@ export class TruckMeshBuilder {
         z: 0.48,
         rotX: -0.25,
         colorHex: '#e2e8f0',
+      });
+      cabBatcher.add(darkChassisMat, heatShieldGeo, {
+        x: sx,
+        y: 2.05,
+        z: 0.52,
+        colorHex: '#334155',
       });
     }
 
@@ -413,41 +467,44 @@ export class TruckMeshBuilder {
     const spoilerGeo = new THREE.BoxGeometry(2.36, 0.44, 0.96);
     cabBatcher.add(paintMat, spoilerGeo, { x: 0, y: 3.56, z: 1.08, rotX: 0.22 });
 
-    const lightboxGeo = new THREE.BoxGeometry(1.42, 0.24, 0.14);
+    const lightboxGeo = new THREE.BoxGeometry(1.42, 0.22, 0.14);
     const lightboxMat = new THREE.MeshStandardMaterial({
       color: '#f8fafc',
       emissive: '#fef3c7',
       emissiveIntensity: 0.72,
     });
-    cabBatcher.add(lightboxMat, lightboxGeo, { x: 0, y: 3.46, z: 2.74 });
+    cabBatcher.add(lightboxMat, lightboxGeo, { x: 0, y: 3.47, z: 2.74 });
 
-    const visorGeo = new THREE.BoxGeometry(2.42, 0.16, 0.34);
+    // Slimmer, higher external sunvisor for open upper windshield sightline
+    const visorGeo = new THREE.BoxGeometry(2.42, 0.075, 0.26);
     cabBatcher.add(darkChassisMat, visorGeo, {
       x: 0,
-      y: 3.17,
-      z: 2.95,
-      rotX: 0.22,
+      y: 3.25,
+      z: 2.94,
+      rotX: 0.16,
       colorHex: '#1e2736',
     });
 
-    const markerGeo = new THREE.BoxGeometry(0.16, 0.075, 0.08);
+    const markerGeo = new THREE.BoxGeometry(0.16, 0.065, 0.08);
     const markerMat = new THREE.MeshStandardMaterial({
       color: '#fbbf24',
       emissive: '#f59e0b',
       emissiveIntensity: 1.0,
     });
     for (const mx of [-0.82, -0.41, 0, 0.41, 0.82]) {
-      cabBatcher.add(markerMat, markerGeo, { x: mx, y: 3.24, z: 3.08 });
+      cabBatcher.add(markerMat, markerGeo, { x: mx, y: 3.28, z: 3.06 });
     }
 
-    const pillarGeo = new THREE.BoxGeometry(0.08, 1.24, 0.11);
-    for (const px of [-1.17, 1.17]) {
+    // Slim matte-charcoal A-pillars with beveled outer angle to minimize corner blindspots
+    const pillarGeo = new THREE.BoxGeometry(0.052, 1.24, 0.082);
+    for (const side of [-1, 1]) {
       cabBatcher.add(darkChassisMat, pillarGeo, {
-        x: px,
+        x: side * 1.19,
         y: 2.6,
         z: 2.86,
         rotX: -0.08,
-        colorHex: '#1e2736',
+        rotY: side * 0.25,
+        colorHex: '#283242',
       });
     }
 
@@ -456,9 +513,9 @@ export class TruckMeshBuilder {
       cabBatcher.add(paintMat, sideLowerDoorGeo, { x: sx, y: 2.08, z: 2.12 });
     }
 
-    const windshieldGeo = new THREE.PlaneGeometry(2.24, 1.18);
+    const windshieldGeo = new THREE.PlaneGeometry(2.28, 1.22);
     const windshield = new THREE.Mesh(windshieldGeo, glassMat);
-    windshield.position.set(0, 2.6, 2.89);
+    windshield.position.set(0, 2.62, 2.89);
     windshield.rotation.x = -0.08;
     windshield.layers.set(1);
     cabSuspensionGroup.add(windshield);
@@ -477,20 +534,21 @@ export class TruckMeshBuilder {
       wiperPivots.push(pivot);
     }
 
-    const mirrorArmGeo = new THREE.BoxGeometry(0.26, 0.055, 0.055);
-    const mirrorHousingGeo = new THREE.BoxGeometry(0.16, 0.48, 0.2);
+    // Compact aerodynamic mirror arms & housings positioned to keep diagonal A-pillar view open
+    const mirrorArmGeo = new THREE.BoxGeometry(0.19, 0.036, 0.04);
+    const mirrorHousingGeo = new THREE.BoxGeometry(0.11, 0.36, 0.14);
     for (const side of [-1, 1]) {
       cabBatcher.add(darkChassisMat, mirrorArmGeo, {
-        x: side * 1.34,
-        y: 2.62,
-        z: 2.74,
-        colorHex: '#1e2736',
+        x: side * 1.31,
+        y: 2.48,
+        z: 2.68,
+        colorHex: '#252f3f',
       });
       cabBatcher.add(darkChassisMat, mirrorHousingGeo, {
-        x: side * 1.46,
-        y: 2.52,
-        z: 2.74,
-        colorHex: '#1e2736',
+        x: side * 1.43,
+        y: 2.44,
+        z: 2.66,
+        colorHex: '#252f3f',
       });
     }
 
@@ -648,6 +706,30 @@ export class TruckMeshBuilder {
       }
     }
 
+    // Amber LED side outline markers along trailer chassis rails
+    for (const sx of [-1.22, 1.22]) {
+      for (const sz of [-5.1, -1.8, 1.5, 4.8]) {
+        trailerBatcher.add(sideMarkerMat, sideMarkGeo, { x: sx, y: 1.07, z: sz });
+      }
+    }
+
+    const remapBoxAtlasUvs = (geo: THREE.BoxGeometry): void => {
+      const uvAttr = geo.attributes.uv as THREE.BufferAttribute;
+      for (let v = 0; v < 8; v++) {
+        uvAttr.setY(v, uvAttr.getY(v) * 0.5 + 0.5);
+      }
+      for (let v = 8; v < 12; v++) {
+        uvAttr.setXY(v, uvAttr.getX(v) * 0.5, uvAttr.getY(v) * 0.5);
+      }
+      for (let v = 12; v < 20; v++) {
+        uvAttr.setXY(v, 0.54 + uvAttr.getX(v) * 0.04, 0.05 + uvAttr.getY(v) * 0.04);
+      }
+      for (let v = 20; v < 24; v++) {
+        uvAttr.setXY(v, uvAttr.getX(v) * 0.5 + 0.5, uvAttr.getY(v) * 0.5);
+      }
+      uvAttr.needsUpdate = true;
+    };
+
     let currentContainerPbr: PbrTextureSet = this.textures.getContainerAtlasTextures('#e2e8f0', 'EUROHAUL');
     let pbrDetailEnabled = true;
 
@@ -660,43 +742,202 @@ export class TruckMeshBuilder {
       metalness: 0.24,
     });
     const containerGeo = new THREE.BoxGeometry(2.5, 2.75, 13.4);
-    // Remap 6 faces into the single 2-band Atlas Texture (1 Draw Call instead of 6!)
-    const uvAttr = containerGeo.attributes.uv as THREE.BufferAttribute;
-    for (let v = 0; v < 8; v++) {
-      // +X, -X side walls -> top half [v: 0.5..1.0]
-      uvAttr.setY(v, uvAttr.getY(v) * 0.5 + 0.5);
-    }
-    for (let v = 8; v < 12; v++) {
-      // +Y roof -> bottom-left [u: 0..0.5, v: 0..0.5]
-      uvAttr.setXY(v, uvAttr.getX(v) * 0.5, uvAttr.getY(v) * 0.5);
-    }
-    for (let v = 12; v < 20; v++) {
-      // -Y floor & +Z front bulkhead -> clean edge swatch
-      uvAttr.setXY(v, 0.54 + uvAttr.getX(v) * 0.04, 0.05 + uvAttr.getY(v) * 0.04);
-    }
-    for (let v = 20; v < 24; v++) {
-      // -Z TIR double rear doors -> bottom-right [u: 0.5..1.0, v: 0..0.5]
-      uvAttr.setXY(v, uvAttr.getX(v) * 0.5 + 0.5, uvAttr.getY(v) * 0.5);
-    }
-    uvAttr.needsUpdate = true;
+    remapBoxAtlasUvs(containerGeo);
 
+    // Variant 1: Standard Reefer / Insulated Eurobox Trailer (visible by default)
+    const reeferGroup = new THREE.Group();
     const trailerContainerMesh = new THREE.Mesh(containerGeo, containerMat);
     trailerContainerMesh.position.set(0, 2.58, 0);
     trailerContainerMesh.castShadow = true;
     trailerContainerMesh.receiveShadow = true;
-    trailerRoot.add(trailerContainerMesh);
+    reeferGroup.add(trailerContainerMesh);
 
-    // Front Reefer refrigeration unit mounted above kingpin bulkhead (batched)
     const reeferBodyGeo = new THREE.BoxGeometry(1.75, 1.18, 0.56);
     const reeferMat = new THREE.MeshStandardMaterial({ color: '#f1f5f9', roughness: 0.42 });
-    trailerBatcher.add(reeferMat, reeferBodyGeo, { x: 0, y: 3.05, z: 6.95, castShadow: true });
     const reeferGrilleGeo = new THREE.BoxGeometry(1.18, 0.66, 0.6);
-    trailerBatcher.add(darkChassisMat, reeferGrilleGeo, {
+    const reeferBatcher = new GeometryBatcher();
+    reeferBatcher.add(reeferMat, reeferBodyGeo, { x: 0, y: 3.05, z: 6.95, castShadow: true });
+    reeferBatcher.add(darkChassisMat, reeferGrilleGeo, {
       x: 0,
       y: 3.05,
       z: 6.96,
       colorHex: '#1e2736',
     });
+    reeferBatcher.flush(reeferGroup, disposables);
+    trailerRoot.add(reeferGroup);
+
+    // Variant 2: Maritime ISO Container on Skeletal Twistlock Chassis
+    const containerGroup = new THREE.Group();
+    containerGroup.visible = false;
+    const isoContainerGeo = new THREE.BoxGeometry(2.44, 2.58, 12.2);
+    remapBoxAtlasUvs(isoContainerGeo);
+    const isoContainerMesh = new THREE.Mesh(isoContainerGeo, containerMat);
+    isoContainerMesh.position.set(0, 2.5, -0.2);
+    isoContainerMesh.castShadow = true;
+    isoContainerMesh.receiveShadow = true;
+    containerGroup.add(isoContainerMesh);
+
+    const cargoSolidMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.62,
+      metalness: 0.24,
+    });
+    const containerChassisBatcher = new GeometryBatcher();
+    const bolsterGeo = new THREE.BoxGeometry(2.48, 0.16, 0.34);
+    const lockGeo = new THREE.BoxGeometry(0.18, 0.14, 0.18);
+    const gooseneckDeckGeo = new THREE.BoxGeometry(2.26, 0.14, 1.15);
+    containerChassisBatcher.add(cargoSolidMat, gooseneckDeckGeo, {
+      x: 0,
+      y: 1.18,
+      z: 6.22,
+      colorHex: '#1e293b',
+    });
+    for (const bz of [-6.25, -0.2, 5.85]) {
+      containerChassisBatcher.add(cargoSolidMat, bolsterGeo, {
+        x: 0,
+        y: 1.2,
+        z: bz,
+        colorHex: '#334155',
+      });
+      if (bz !== -0.2) {
+        for (const lx of [-1.14, 1.14]) {
+          containerChassisBatcher.add(cargoSolidMat, lockGeo, {
+            x: lx,
+            y: 1.28,
+            z: bz,
+            colorHex: '#f59e0b',
+          });
+        }
+      }
+    }
+    containerChassisBatcher.flush(containerGroup, disposables);
+    trailerRoot.add(containerGroup);
+
+    // Variant 3: Timber / Pine Logs Flatbed Carrier (1 batched Draw Call)
+    const logsGroup = new THREE.Group();
+    logsGroup.visible = false;
+    const flatDeckGeo = new THREE.BoxGeometry(2.48, 0.16, 13.2);
+    const headboardGeo = new THREE.BoxGeometry(2.48, 1.55, 0.14);
+    const stakeGeo = new THREE.BoxGeometry(0.11, 1.48, 0.12);
+    const logGeo = new THREE.CylinderGeometry(0.27, 0.29, 11.8, 8);
+    logGeo.rotateX(Math.PI / 2);
+    const strapBandGeo = new THREE.BoxGeometry(2.38, 1.38, 0.12);
+    const logsBatcher = new GeometryBatcher();
+    logsBatcher.add(cargoSolidMat, flatDeckGeo, {
+      x: 0,
+      y: 1.26,
+      z: 0,
+      colorHex: '#6b4c35',
+      receiveShadow: true,
+    });
+    logsBatcher.add(cargoSolidMat, headboardGeo, {
+      x: 0,
+      y: 2.08,
+      z: 6.52,
+      colorHex: '#1e293b',
+      castShadow: true,
+    });
+    for (const sx of [-1.18, 1.18]) {
+      for (const sz of [-5.2, -2.6, 0, 2.6, 5.2]) {
+        logsBatcher.add(cargoSolidMat, stakeGeo, {
+          x: sx,
+          y: 2.04,
+          z: sz,
+          colorHex: '#b91c1c',
+          castShadow: true,
+        });
+      }
+    }
+    const logColors = ['#92400e', '#a16207', '#78350f', '#b45309'];
+    let logIdx = 0;
+    for (const [tierY, cols] of [
+      [1.62, [-0.82, -0.28, 0.28, 0.82]],
+      [2.1, [-0.82, -0.28, 0.28, 0.82]],
+      [2.56, [-0.55, 0, 0.55]],
+    ] as [number, number[]][]) {
+      for (const lx of cols) {
+        logsBatcher.add(cargoSolidMat, logGeo, {
+          x: lx,
+          y: tierY,
+          z: -0.25,
+          colorHex: logColors[logIdx % logColors.length]!,
+          castShadow: true,
+        });
+        logIdx += 1;
+      }
+    }
+    for (const bz of [-4.2, -1.4, 1.4, 4.2]) {
+      logsBatcher.add(cargoSolidMat, strapBandGeo, {
+        x: 0,
+        y: 2.08,
+        z: bz,
+        colorHex: '#f59e0b',
+      });
+    }
+    logsBatcher.flush(logsGroup, disposables);
+    trailerRoot.add(logsGroup);
+
+    // Variant 4: Heavy Industrial CNC / Wind Equipment Flatbed (1 batched Draw Call)
+    const machineryGroup = new THREE.Group();
+    machineryGroup.visible = false;
+    const skidGeo = new THREE.BoxGeometry(2.15, 0.18, 11.4);
+    const machineUnitGeo = new THREE.BoxGeometry(2.05, 1.65, 4.4);
+    const cabinetGeo = new THREE.BoxGeometry(1.75, 1.25, 2.4);
+    const spindleHoodGeo = new THREE.CylinderGeometry(0.56, 0.62, 1.9, 10);
+    spindleHoodGeo.rotateX(Math.PI / 2);
+    const hazardBarGeo = new THREE.BoxGeometry(2.1, 0.14, 0.14);
+    const machineryBatcher = new GeometryBatcher();
+    machineryBatcher.add(cargoSolidMat, flatDeckGeo, {
+      x: 0,
+      y: 1.26,
+      z: 0,
+      colorHex: '#334155',
+      receiveShadow: true,
+    });
+    machineryBatcher.add(cargoSolidMat, headboardGeo, {
+      x: 0,
+      y: 2.08,
+      z: 6.52,
+      colorHex: '#1e293b',
+      castShadow: true,
+    });
+    machineryBatcher.add(cargoSolidMat, skidGeo, {
+      x: 0,
+      y: 1.42,
+      z: -0.2,
+      colorHex: '#78350f',
+    });
+    machineryBatcher.add(cargoSolidMat, machineUnitGeo, {
+      x: 0,
+      y: 2.34,
+      z: 2.2,
+      colorHex: '#1d4ed8',
+      castShadow: true,
+    });
+    machineryBatcher.add(cargoSolidMat, cabinetGeo, {
+      x: 0,
+      y: 2.14,
+      z: -2.2,
+      colorHex: '#0f766e',
+      castShadow: true,
+    });
+    machineryBatcher.add(cargoSolidMat, spindleHoodGeo, {
+      x: 0,
+      y: 2.55,
+      z: -4.4,
+      colorHex: '#cbd5e1',
+      castShadow: true,
+    });
+    for (const hz of [4.42, -5.45]) {
+      machineryBatcher.add(cargoSolidMat, hazardBarGeo, {
+        x: 0,
+        y: 1.56,
+        z: hz,
+        colorHex: '#facc15',
+      });
+    }
+    machineryBatcher.flush(machineryGroup, disposables);
+    trailerRoot.add(machineryGroup);
 
     const kingpinGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.34, 10);
     trailerBatcher.add(metalMat, kingpinGeo, {
@@ -762,26 +1003,27 @@ export class TruckMeshBuilder {
       }
     }
 
-    // 6. Fake Blob Shadows (used on mobile_fast when real-time shadowMap is off)
+    // 6. Zero-cost Contact AO (always enabled at y=0.032; opacity boosts when directional shadowMap is off)
     const blobTex = this.textures.getBlobShadowTexture();
     const blobMat = new THREE.MeshBasicMaterial({
       map: blobTex,
       transparent: true,
       depthWrite: false,
-      opacity: 0.75,
+      opacity: 0.48,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
     });
-    const tractorBlobGeo = new THREE.PlaneGeometry(3.6, 7.6);
+    const tractorBlobGeo = new THREE.PlaneGeometry(3.5, 7.6);
     const tractorBlob = new THREE.Mesh(tractorBlobGeo, blobMat);
     tractorBlob.rotation.x = -Math.PI / 2;
-    tractorBlob.position.set(0, 0.06, -0.1);
-    tractorBlob.visible = false;
+    tractorBlob.position.set(0, 0.032, -0.1);
     tractorRoot.add(tractorBlob);
 
-    const trailerBlobGeo = new THREE.PlaneGeometry(3.6, 14.6);
+    const trailerBlobGeo = new THREE.PlaneGeometry(3.5, 14.6);
     const trailerBlob = new THREE.Mesh(trailerBlobGeo, blobMat);
     trailerBlob.rotation.x = -Math.PI / 2;
-    trailerBlob.position.set(0, 0.06, 0);
-    trailerBlob.visible = false;
+    trailerBlob.position.set(0, 0.032, 0);
     trailerRoot.add(trailerBlob);
 
     disposables.push(
@@ -798,6 +1040,8 @@ export class TruckMeshBuilder {
       bumperLipGeo,
       fogGeo,
       mudguardGeo,
+      flapGeo,
+      sideMarkGeo,
       rearBarGeo,
       lampSmallGeo,
       headLampGeo,
@@ -806,6 +1050,8 @@ export class TruckMeshBuilder {
       glowGeo,
       beamGeo,
       beamMat,
+      groundPoolGeo,
+      groundPoolMat,
       cabLowerGeo,
       grilleUpperGeo,
       grilleLowerGeo,
@@ -814,9 +1060,11 @@ export class TruckMeshBuilder {
       handleGeo,
       stepGeo,
       cabBackGeo,
+      sideDeflectorGeo,
       cabBackInnerGeo,
       stackGeo,
       stackTipGeo,
+      heatShieldGeo,
       cabRoofGeo,
       headlinerGeo,
       spoilerGeo,
@@ -851,6 +1099,21 @@ export class TruckMeshBuilder {
       sideGuardGeo,
       containerMat,
       containerGeo,
+      isoContainerGeo,
+      cargoSolidMat,
+      bolsterGeo,
+      lockGeo,
+      gooseneckDeckGeo,
+      flatDeckGeo,
+      headboardGeo,
+      stakeGeo,
+      logGeo,
+      strapBandGeo,
+      skidGeo,
+      machineUnitGeo,
+      cabinetGeo,
+      spindleHoodGeo,
+      hazardBarGeo,
       reeferBodyGeo,
       reeferMat,
       reeferGrilleGeo,
@@ -874,14 +1137,25 @@ export class TruckMeshBuilder {
       paintMat.color.set(hex);
     };
 
-    const setTrailerCargoVisual = (colorHex: string, label: string): void => {
-      currentContainerPbr = this.textures.getContainerAtlasTextures(colorHex, label);
-      applyContainerPbr();
+    const setTrailerCargoVisual = (
+      colorHex: string,
+      label: string,
+      cargoType: TrailerCargoType = 'reefer'
+    ): void => {
+      if (cargoType === 'reefer' || cargoType === 'container') {
+        currentContainerPbr = this.textures.getContainerAtlasTextures(colorHex, label);
+        applyContainerPbr();
+      }
+      reeferGroup.visible = cargoType === 'reefer';
+      containerGroup.visible = cargoType === 'container';
+      logsGroup.visible = cargoType === 'logs';
+      machineryGroup.visible = cargoType === 'machinery';
     };
 
-    const setBlobShadowVisible = (visible: boolean): void => {
-      tractorBlob.visible = visible;
-      trailerBlob.visible = visible;
+    const setBlobShadowVisible = (shadowsDisabled: boolean): void => {
+      tractorBlob.visible = true;
+      trailerBlob.visible = true;
+      blobMat.opacity = shadowsDisabled ? 0.78 : 0.48;
     };
 
     const setPbrDetailEnabled = (enabled: boolean): void => {
@@ -918,24 +1192,32 @@ export class TruckMeshBuilder {
     const updateLights = (opts: {
       headlightMode: HeadlightMode;
       nightFactor: number;
+      rainIntensity?: number;
       braking: boolean;
       reversing: boolean;
       leftBlinkerLit: boolean;
       rightBlinkerLit: boolean;
     }): void => {
       const mode = opts.headlightMode;
+      const weatherLit = Math.max(opts.nightFactor, (opts.rainIntensity ?? 0) * 0.85);
       drlMat.emissiveIntensity = mode === 0 ? 0.85 : 1.55;
       headlightEmissiveMat.emissiveIntensity = mode === 0 ? 0.12 : mode === 1 ? 1.65 : 2.8;
-      fogLampMat.emissiveIntensity = mode === 2 ? 1.4 : mode === 1 ? 0.55 : 0.1;
-      glowMat.opacity = mode === 0 ? 0 : (mode === 1 ? 0.35 : 0.62) * (0.4 + opts.nightFactor * 0.6);
-      spotLight.intensity = mode === 0 ? 0 : mode === 1 ? 38 + opts.nightFactor * 48 : 75 + opts.nightFactor * 95;
-      spotLight.distance = mode === 2 ? 120 : 80;
-      beamMat.opacity = mode === 0 ? 0 : (mode === 1 ? 0.06 : 0.12) * (0.35 + opts.nightFactor * 0.85);
+      fogLampMat.emissiveIntensity = mode === 2 ? 1.4 : mode === 1 ? 0.6 : 0.12;
+      glowMat.opacity =
+        mode === 0 ? 0 : (mode === 1 ? 0.38 : 0.65) * (0.42 + weatherLit * 0.58);
+      spotLight.intensity =
+        mode === 0 ? 0 : mode === 1 ? 42 + weatherLit * 52 : 82 + weatherLit * 102;
+      spotLight.distance = mode === 2 ? 125 : 85;
+      beamMat.opacity =
+        mode === 0 ? 0 : (mode === 1 ? 0.065 : 0.13) * (0.35 + weatherLit * 0.85);
+      groundPoolMat.opacity =
+        mode === 0 ? 0 : (mode === 1 ? 0.18 : 0.3) * (0.3 + weatherLit * 0.7);
+      sideMarkerMat.emissiveIntensity = mode > 0 || weatherLit > 0.2 ? 1.95 : 0.25;
 
-      brakeMat.emissiveIntensity = opts.braking ? 2.4 : mode > 0 ? 0.6 : 0.14;
-      reverseMat.emissiveIntensity = opts.reversing ? 2.0 : 0.0;
-      leftSignalMat.emissiveIntensity = opts.leftBlinkerLit ? 2.6 : 0.0;
-      rightSignalMat.emissiveIntensity = opts.rightBlinkerLit ? 2.6 : 0.0;
+      brakeMat.emissiveIntensity = opts.braking ? 2.5 : mode > 0 || weatherLit > 0.2 ? 0.72 : 0.15;
+      reverseMat.emissiveIntensity = opts.reversing ? 2.1 : 0.0;
+      leftSignalMat.emissiveIntensity = opts.leftBlinkerLit ? 2.7 : 0.0;
+      rightSignalMat.emissiveIntensity = opts.rightBlinkerLit ? 2.7 : 0.0;
     };
 
     const dispose = (): void => {

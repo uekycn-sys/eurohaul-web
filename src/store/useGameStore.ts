@@ -12,6 +12,7 @@ export type AdvisorTab = 'nav' | 'cargo' | 'truck' | 'controls';
 export type WeatherSetting = 'auto' | 'clear' | 'rain';
 export type WipersMode = 0 | 1 | 2;
 export type SignalState = 'green' | 'amber' | 'red';
+export type TrailerCargoType = 'reefer' | 'container' | 'logs' | 'machinery';
 
 export interface QualitySpec {
   id: QualityPreset;
@@ -234,6 +235,7 @@ export interface FreightJob {
   xpReward: number;
   timeLimitMin: number;
   trailerColor: string;
+  trailerType?: TrailerCargoType;
 }
 
 export interface ActiveJobState {

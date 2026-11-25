@@ -181,7 +181,7 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-type IblPeriodBucket = 'night' | 'dawn' | 'day' | 'golden';
+type IblPeriodBucket = `${'night' | 'dawn' | 'day' | 'golden'}_${'clear' | 'rain'}`;
 
 /**
  * Manages the dynamic day-night cycle, procedural sky-dome ShaderMaterial,
@@ -289,12 +289,15 @@ export class EnvironmentSystem {
     this.skyMesh.renderOrder = -10;
     this.scene.add(this.skyMesh);
 
-    // Lightweight procedural rain streaks around player vehicle
+    // Lightweight procedural rain streaks around player vehicle (kept outside cab envelope)
     this.rainPositions = new Float32Array(this.maxRainDrops * 6);
     for (let i = 0; i < this.maxRainDrops; i++) {
-      const rx = (Math.random() - 0.5) * 44;
+      let rx = (Math.random() - 0.5) * 44;
       const ry = Math.random() * 24;
-      const rz = (Math.random() - 0.5) * 44;
+      const rz = (Math.random() - 0.5) * 44 + 4;
+      if (Math.abs(rx) < 2.8 && Math.abs(rz) < 4.5) {
+        rx = rx >= 0 ? 3.2 + Math.random() * 6 : -3.2 - Math.random() * 6;
+      }
       const b = i * 6;
       this.rainPositions[b] = rx;
       this.rainPositions[b + 1] = ry;
@@ -407,11 +410,16 @@ export class EnvironmentSystem {
       const b = i * 6;
       let y = pos[b + 1]! - fallSpeed * dtSec;
       let x = pos[b]! - 2.6 * dtSec;
+      const z = pos[b + 2]!;
       if (y < -1) {
         y = 21 + (i % 5);
         x = ((i * 73) % 44) - 22;
       }
       if (x < -22) x += 44;
+      // Keep raindrops outside the tractor cab & windshield interior volume
+      if (Math.abs(x) < 2.8 && Math.abs(z) < 4.5) {
+        x = x >= 0 ? 3.15 : -3.15;
+      }
       pos[b] = x;
       pos[b + 1] = y;
       pos[b + 3] = x - 0.16;
@@ -422,10 +430,15 @@ export class EnvironmentSystem {
 
   private getCurrentIblBucket(): IblPeriodBucket {
     const h = this.timeOfDayHours;
-    if (h >= 19.5 || h < 5.2) return 'night';
-    if (h >= 5.2 && h < 7.5) return 'dawn';
-    if (h >= 16.8 && h < 19.5) return 'golden';
-    return 'day';
+    const period: 'night' | 'dawn' | 'day' | 'golden' =
+      h >= 19.5 || h < 5.2
+        ? 'night'
+        : h >= 5.2 && h < 7.5
+        ? 'dawn'
+        : h >= 16.8 && h < 19.5
+        ? 'golden'
+        : 'day';
+    return `${period}_${this.rainIntensity > 0.35 ? 'rain' : 'clear'}`;
   }
 
   private refreshIblIfNeeded(force: boolean): void {
@@ -486,7 +499,8 @@ export class EnvironmentSystem {
     this.envTarget?.dispose();
     this.envTarget = nextTarget;
     this.scene.environment = this.envTarget.texture;
-    this.scene.environmentIntensity = this.iblIntensity;
+    this.scene.environmentIntensity =
+      this.iblIntensity * (this.rainIntensity > 0.35 ? 0.8 : 1.0);
   }
 
   private applyAtmosphere(focusX: number, focusZ: number): void {

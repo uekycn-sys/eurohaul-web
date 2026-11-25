@@ -80,6 +80,7 @@ export class GameEngine {
   private trackedJobId: string | null = null;
   private manualParkHoldSec = 0;
   private wipersMode: WipersMode = 0;
+  private wipersManualOverride = false;
   private redLightCooldownByNode = new Map<string, number>();
   private upcomingSignal: SignalState | null = null;
   private upcomingSignalDistMeters: number | null = null;
@@ -117,7 +118,7 @@ export class GameEngine {
     this.renderer.info.autoReset = false;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.width = '100%';
@@ -175,7 +176,12 @@ export class GameEngine {
     this.physics.resetToSpawn(manifest.defaultSpawnPosition, manifest.defaultSpawnHeadingRad);
 
     const initialSpec = QUALITY_SPECS[store.qualityPreset];
-    this.traffic = new TrafficSystem(this.builtMap, initialSpec.maxTraffic, 28);
+    this.traffic = new TrafficSystem(
+      this.builtMap,
+      initialSpec.maxTraffic,
+      28,
+      this.textures.getBlobShadowTexture()
+    );
     this.nav = new NavigationSystem(this.builtMap);
     this.economy = new EconomyManager(this.builtMap, this.nav);
 
@@ -397,8 +403,9 @@ export class GameEngine {
 
   public cycleWipers(): void {
     this.wipersMode = ((this.wipersMode + 1) % 3) as WipersMode;
+    this.wipersManualOverride = true;
     const label = this.wipersMode === 0 ? '关闭' : this.wipersMode === 1 ? '标准间歇' : '高速强扫';
-    useGameStore.getState().pushNotification('info', `雨刮器: ${label}`, '按 K 键循环切换雨刷档位');
+    useGameStore.getState().pushNotification('info', `雨刮器: ${label}`, '按 P 键循环切换雨刷档位');
   }
 
   public loadMap(mapId: string): void {
@@ -414,7 +421,12 @@ export class GameEngine {
     this.builtMap.setPbrDetailEnabled(preset !== 'mobile_fast');
     this.scene.add(this.builtMap.root);
 
-    this.traffic = new TrafficSystem(this.builtMap, spec.maxTraffic, 28);
+    this.traffic = new TrafficSystem(
+      this.builtMap,
+      spec.maxTraffic,
+      28,
+      this.textures.getBlobShadowTexture()
+    );
     this.nav = new NavigationSystem(this.builtMap);
     this.economy = new EconomyManager(this.builtMap, this.nav);
     this.physics.resetToSpawn(manifest.defaultSpawnPosition, manifest.defaultSpawnHeadingRad);
@@ -522,7 +534,12 @@ export class GameEngine {
     }
 
     const store = useGameStore.getState();
-    this.physics.syncVisuals(this.truckVisuals, this.input, this.env.nightFactor);
+    this.physics.syncVisuals(
+      this.truckVisuals,
+      this.input,
+      this.env.nightFactor,
+      this.env.rainIntensity
+    );
     this.truckVisuals.updateWipers(this.elapsedSec, this.wipersMode);
     this.cameraRig.update(
       frameDtSec,
@@ -723,7 +740,8 @@ export class GameEngine {
         }
         this.truckVisuals.setTrailerCargoVisual(
           store.activeJob.job.trailerColor,
-          store.activeJob.job.cargoCategory
+          store.activeJob.job.cargoCategory,
+          store.activeJob.job.trailerType ?? 'reefer'
         );
         if (!this.physics.trailerAttached) {
           this.physics.trailerAttached = true;
@@ -731,7 +749,7 @@ export class GameEngine {
       } else {
         this.activeRoute = null;
         this.builtMap.highlightDestinationDepot(null);
-        this.truckVisuals.setTrailerCargoVisual('#e2e8f0', 'EUROHAUL');
+        this.truckVisuals.setTrailerCargoVisual('#e2e8f0', 'EUROHAUL', 'reefer');
       }
     }
 
@@ -814,6 +832,18 @@ export class GameEngine {
     this.builtMap.update(dtSec, this.elapsedSec);
     this.env.update(dtSec, this.physics.x, this.physics.z, this.physics.y);
     this.builtMap.setRainWetness(this.env.rainIntensity);
+
+    // Rain-sensing automatic wipers (yields to manual P-key override until rain clears)
+    if (this.env.rainIntensity > 0.25) {
+      if (!this.wipersManualOverride) {
+        this.wipersMode = this.env.rainIntensity > 0.65 ? 2 : 1;
+      }
+    } else if (this.env.rainIntensity < 0.08) {
+      if (!this.wipersManualOverride && this.wipersMode !== 0) {
+        this.wipersMode = 0;
+      }
+      this.wipersManualOverride = false;
+    }
   }
 
   private evaluateTrafficSignals(speedKmh: number, nowMs: number): void {

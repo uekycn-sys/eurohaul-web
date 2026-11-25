@@ -860,36 +860,51 @@ export class ProceduralTextures {
     ctx.closePath();
     ctx.fill();
 
-    // Speed limit circle
+    // Speed limit circle (inset safely from right edge)
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.arc(220, 34, 22, 0, Math.PI * 2);
+    ctx.arc(216, 36, 20, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#dc2626';
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 4.5;
     ctx.stroke();
     ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 17px monospace';
+    ctx.font = 'bold 15px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(state.speedLimitKmh), 220, 35);
+    ctx.fillText(String(state.speedLimitKmh), 216, 37);
 
-    // Bottom bar distance + guidance
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-    ctx.fillRect(0, 124, 256, 36);
-    ctx.fillStyle = '#e2e8f0';
-    ctx.font = 'bold 13px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(state.instruction.slice(0, 13), 10, 142);
+    // Bottom bar distance + guidance (measured & ellipsized so text never overflows right edge)
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+    ctx.fillRect(0, 120, 256, 40);
 
+    const distText = state.hasActiveJob
+      ? `${(state.distanceMeters / 1000).toFixed(1)}km`
+      : 'SATNAV';
+    ctx.font = 'bold 12px monospace';
+    const distWidth = ctx.measureText(distText).width;
+    const badgeW = Math.ceil(distWidth) + 12;
+    const badgeX = 256 - badgeW - 8;
+
+    ctx.fillStyle = state.hasActiveJob ? 'rgba(16, 185, 129, 0.16)' : 'rgba(148, 163, 184, 0.14)';
+    ctx.fillRect(badgeX, 128, badgeW, 24);
     ctx.fillStyle = state.hasActiveJob ? '#34d399' : '#94a3b8';
-    ctx.font = 'bold 14px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(
-      state.hasActiveJob ? `${(state.distanceMeters / 1000).toFixed(1)}km` : 'SATNAV',
-      246,
-      142
-    );
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(distText, badgeX + badgeW / 2, 140);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = 'bold 11.5px sans-serif';
+    ctx.textAlign = 'left';
+    const maxInstrWidth = Math.max(40, badgeX - 18);
+    let instr = state.instruction.trim();
+    if (ctx.measureText(instr).width > maxInstrWidth) {
+      while (instr.length > 1 && ctx.measureText(`${instr}…`).width > maxInstrWidth) {
+        instr = instr.slice(0, -1);
+      }
+      instr = `${instr}…`;
+    }
+    ctx.fillText(instr, 10, 140);
 
     this.gpsTexture.needsUpdate = true;
   }

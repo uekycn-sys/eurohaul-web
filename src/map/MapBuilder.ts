@@ -1331,10 +1331,17 @@ export class MapBuilder {
 
     const setRainWetness = (wet01: number): void => {
       const w = THREE.MathUtils.clamp(wet01, 0, 1);
-      const rough = THREE.MathUtils.lerp(0.85, 0.34, w);
+      const rough = THREE.MathUtils.lerp(0.85, 0.26, w);
+      const metal = THREE.MathUtils.lerp(0.04, 0.24, w);
+      const envInt = THREE.MathUtils.lerp(0.55, 1.38, w);
       for (let i = 0; i < roadMaterials.length; i++) {
-        roadMaterials[i]!.roughness = rough;
+        const m = roadMaterials[i]!;
+        m.roughness = rough;
+        m.metalness = metal;
+        m.envMapIntensity = envInt;
       }
+      yardApronMat.roughness = THREE.MathUtils.lerp(0.86, 0.34, w);
+      yardApronMat.envMapIntensity = THREE.MathUtils.lerp(0.55, 1.2, w);
     };
 
     const update = (dtSec: number, elapsedSec: number): void => {

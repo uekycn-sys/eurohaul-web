@@ -205,6 +205,7 @@ export class InputManager {
       case 'KeyR':
         this.actions.onRest?.();
         break;
+      case 'KeyP':
       case 'KeyK':
         this.actions.onCycleWipers?.();
         break;

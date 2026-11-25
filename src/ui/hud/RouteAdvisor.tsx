@@ -405,7 +405,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
               <b className="text-amber-300">Shift/Ctrl</b> 升降档
             </span>
             <span>
-              <b className="text-amber-300">K / 拖拽</b> 雨刷 / 环视
+              <b className="text-amber-300">P / 拖拽</b> 雨刷 / 环视
             </span>
             <span>
               <b className="text-amber-300">Enter / R</b> 交互 / 休息

@@ -1,6 +1,6 @@
 import { BuiltMap } from '../map/MapBuilder';
 import { CityDefinition, CityDepot } from '../map/types';
-import { FreightJob, NearbyInteraction } from '../store/useGameStore';
+import { FreightJob, NearbyInteraction, TrailerCargoType } from '../store/useGameStore';
 import { NavigationSystem } from './NavigationSystem';
 
 interface CargoTemplate {
@@ -11,6 +11,7 @@ interface CargoTemplate {
   urgent: boolean;
   rateMultiplier: number;
   containerColor: string;
+  trailerType: TrailerCargoType;
 }
 
 const CARGO_POOL: CargoTemplate[] = [
@@ -22,6 +23,7 @@ const CARGO_POOL: CargoTemplate[] = [
     urgent: false,
     rateMultiplier: 1.32,
     containerColor: '#1e40af',
+    trailerType: 'machinery',
   },
   {
     name: '医用冷链疫苗制剂',
@@ -31,6 +33,7 @@ const CARGO_POOL: CargoTemplate[] = [
     urgent: true,
     rateMultiplier: 1.48,
     containerColor: '#f8fafc',
+    trailerType: 'reefer',
   },
   {
     name: '巴伐利亚汽车动力总成',
@@ -40,6 +43,7 @@ const CARGO_POOL: CargoTemplate[] = [
     urgent: false,
     rateMultiplier: 1.15,
     containerColor: '#b91c1c',
+    trailerType: 'reefer',
   },
   {
     name: '风力发电机复合叶片',
@@ -49,6 +53,7 @@ const CARGO_POOL: CargoTemplate[] = [
     urgent: true,
     rateMultiplier: 1.55,
     containerColor: '#047857',
+    trailerType: 'machinery',
   },
   {
     name: '北海远洋标准集装箱',
@@ -58,6 +63,7 @@ const CARGO_POOL: CargoTemplate[] = [
     urgent: false,
     rateMultiplier: 1.18,
     containerColor: '#c2410c',
+    trailerType: 'container',
   },
   {
     name: '蒂罗尔松木板材',
@@ -67,6 +73,7 @@ const CARGO_POOL: CargoTemplate[] = [
     urgent: false,
     rateMultiplier: 1.12,
     containerColor: '#78350f',
+    trailerType: 'logs',
   },
   {
     name: '高纯度半导体晶圆设备',
@@ -76,6 +83,7 @@ const CARGO_POOL: CargoTemplate[] = [
     urgent: true,
     rateMultiplier: 1.52,
     containerColor: '#334155',
+    trailerType: 'reefer',
   },
   {
     name: '黑森林有机谷物饲料',
@@ -85,6 +93,7 @@ const CARGO_POOL: CargoTemplate[] = [
     urgent: false,
     rateMultiplier: 1.0,
     containerColor: '#65a30d',
+    trailerType: 'reefer',
   },
 ];
 
@@ -158,6 +167,7 @@ export class EconomyManager {
           xpReward,
           timeLimitMin,
           trailerColor: cargo.containerColor,
+          trailerType: cargo.trailerType,
         });
         if (jobs.length >= 8) return jobs;
       }

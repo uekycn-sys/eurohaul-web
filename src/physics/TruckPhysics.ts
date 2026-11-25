@@ -5,11 +5,11 @@ import { TruckVisualRefs } from '../graphics/TruckMeshBuilder';
 import { InputManager } from '../core/InputManager';
 
 // Realistic 12-speed European heavy-truck gearbox ratios (12th is 0.78 overdrive)
-const GEAR_RATIOS = [11.73, 9.21, 7.09, 5.57, 4.35, 3.41, 2.70, 2.12, 1.63, 1.28, 1.00, 0.78] as const;
+const GEAR_RATIOS = [12.20, 9.52, 7.42, 5.78, 4.50, 3.51, 2.74, 2.14, 1.67, 1.30, 1.00, 0.78] as const;
 // 2 reverse gears: R1 (-10.78) and R2 (-3.50)
 const REVERSE_RATIOS = [-10.78, -3.50] as const;
 
-const FINAL_DRIVE = 3.08;
+const FINAL_DRIVE = 3.36;
 const WHEEL_RADIUS = 0.50;
 const DRIVETRAIN_EFFICIENCY = 0.88;
 
@@ -443,33 +443,48 @@ export class TruckPhysics {
       !this.parkingBrake
     ) {
       if (this.gear >= 1) {
-        const uphillBias = this.pitch < -0.02 ? 120 : 0;
-        const upshiftRpm = THREE.MathUtils.lerp(1350, 1740, effectiveThrottle) + uphillBias;
+        const isClimbing = this.pitch < -0.015;
+        const uphillBias = isClimbing ? Math.min(160, -this.pitch * 2600) : 0;
+        const baseUpshiftRpm =
+          effectiveThrottle <= 0.5
+            ? THREE.MathUtils.lerp(1480, 1650, effectiveThrottle / 0.5)
+            : THREE.MathUtils.lerp(1650, 1940, (effectiveThrottle - 0.5) / 0.5);
+        const upshiftRpm = Math.min(2020, baseUpshiftRpm + uphillBias);
+        const minPostShiftRpm =
+          THREE.MathUtils.lerp(1130, 1340, effectiveThrottle) + (isClimbing ? 110 : 0);
         const nearSpeedLimiter = this.speedMs >= maxForwardSpeedMs - 3.5 / 3.6;
 
         if (this.gear < 12 && throttleCmd > 0.12 && brakeCmd < 0.05) {
           const nextRatio = GEAR_RATIOS[this.gear]!;
           const predictedNextRpm = wheelRpm * nextRatio * FINAL_DRIVE;
           const canCruiseOverdrive =
-            nearSpeedLimiter && predictedNextRpm >= 1100 && this.pitch >= -0.015;
+            this.gear >= 10 &&
+            this.speedMs >= 72 / 3.6 &&
+            effectiveThrottle < 0.55 &&
+            !isClimbing &&
+            predictedNextRpm >= 1140 &&
+            (nearSpeedLimiter || mechanicalRpm >= 1450);
           const normalUpshift =
-            mechanicalRpm >= upshiftRpm && predictedNextRpm >= 1090 && this.filteredAccelMs2 > 0.03;
+            mechanicalRpm >= upshiftRpm &&
+            predictedNextRpm >= minPostShiftRpm &&
+            this.filteredAccelMs2 > 0.02;
 
           if (normalUpshift || canCruiseOverdrive) {
             this.gear += 1;
             this.shiftTimerSec = 0.18;
-            this.shiftCooldownSec = 0.65;
+            this.shiftCooldownSec = 0.72;
           }
         }
 
         if (this.shiftCooldownSec <= 0 && this.gear > 1) {
-          const lowRpmDownshift = mechanicalRpm < 1050;
+          const downshiftFloor = isClimbing ? 1160 : 1050;
+          const lowRpmDownshift = mechanicalRpm < downshiftFloor;
           const kickdownTrigger =
-            effectiveThrottle > 0.7 && this.filteredAccelMs2 < 0.22 && mechanicalRpm < 1380;
+            effectiveThrottle > 0.72 && this.filteredAccelMs2 < 0.25 && mechanicalRpm < 1420;
 
           if (lowRpmDownshift || kickdownTrigger) {
             const dropTwo =
-              this.gear > 3 && effectiveThrottle > 0.7 && mechanicalRpm < 1060;
+              this.gear > 3 && effectiveThrottle > 0.78 && mechanicalRpm < 1120;
             this.gear = Math.max(1, this.gear - (dropTwo ? 2 : 1));
             this.shiftTimerSec = 0.18;
             this.shiftCooldownSec = 0.65;
@@ -674,7 +689,12 @@ export class TruckPhysics {
     }
   }
 
-  public syncVisuals(visuals: TruckVisualRefs, input: InputManager, nightFactor: number): void {
+  public syncVisuals(
+    visuals: TruckVisualRefs,
+    input: InputManager,
+    nightFactor: number,
+    rainIntensity = 0
+  ): void {
     visuals.tractorRoot.position.set(this.x, this.y, this.z);
     visuals.tractorRoot.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
 
@@ -703,6 +723,7 @@ export class TruckPhysics {
     visuals.updateLights({
       headlightMode: this.headlightMode,
       nightFactor,
+      rainIntensity,
       braking,
       reversing: this.gear < 0,
       leftBlinkerLit: this.blinkerLit && (this.leftBlinker || this.hazardLights),

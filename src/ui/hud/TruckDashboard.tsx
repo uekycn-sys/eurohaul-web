@@ -6,6 +6,7 @@ export const TruckDashboard = memo(function TruckDashboard() {
   const tankTier = useGameStore((s) => s.tankTier);
   const fuelLiters = useGameStore((s) => s.fuelLiters);
   const truckHealth = useGameStore((s) => s.truckHealth);
+  const cameraMode = useGameStore((s) => s.cameraMode);
   const mobileControlsEnabled = useGameStore((s) => s.mobileControlsEnabled);
   const transmissionMode = useGameStore((s) => s.transmissionMode);
   const toggleTransmissionMode = useGameStore((s) => s.toggleTransmissionMode);
@@ -28,6 +29,72 @@ export const TruckDashboard = memo(function TruckDashboard() {
   const maxFuel = getMaxFuelLiters(tankTier);
   const fuelPct = Math.round((fuelLiters / maxFuel) * 100);
   const rpmPct = Math.min(100, Math.max(0, ((rpm - 600) / 1750) * 100));
+
+  // In 1st-person Cab View, hide the large centered 2D speed/gear bar so the 3D wheel & gauges remain unobstructed
+  if (cameraMode === 1 && !mobileControlsEnabled) {
+    return (
+      <div className="pointer-events-none fixed bottom-3 left-3 z-20">
+        <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-slate-700/75 bg-slate-950/78 px-2.5 py-1.5 text-[10px] font-bold shadow-lg backdrop-blur-md">
+          <div className="flex items-center gap-1">
+            <span
+              className={
+                blinkerLit && (leftBlinker || hazardLights) ? 'text-emerald-400' : 'text-slate-600'
+              }
+            >
+              ◄
+            </span>
+            <span
+              className={
+                blinkerLit && (rightBlinker || hazardLights) ? 'text-emerald-400' : 'text-slate-600'
+              }
+            >
+              ►
+            </span>
+          </div>
+          <span
+            className={`rounded px-1.5 py-0.5 ${
+              headlightMode === 2
+                ? 'bg-sky-500 text-slate-950'
+                : headlightMode === 1
+                ? 'bg-emerald-500/25 text-emerald-300'
+                : 'bg-slate-800 text-slate-500'
+            }`}
+          >
+            {headlightMode === 2 ? '远光' : headlightMode === 1 ? '近光' : '关灯'}
+          </span>
+          <span
+            className={`rounded px-1.5 py-0.5 ${
+              parkingBrake ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-500'
+            }`}
+          >
+            P
+          </span>
+          <span
+            className={`rounded px-1.5 py-0.5 ${
+              cruiseControlKmh !== null
+                ? 'bg-emerald-500/25 text-emerald-300'
+                : 'bg-slate-800 text-slate-500'
+            }`}
+          >
+            CC {cruiseControlKmh ?? '--'}
+          </span>
+          {retarderLevel > 0 && (
+            <span className="rounded bg-amber-500/25 px-1.5 py-0.5 text-amber-300">
+              R{retarderLevel}
+            </span>
+          )}
+          {wipersMode > 0 && (
+            <span className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-300">
+              刷{wipersMode}
+            </span>
+          )}
+          <span className={`font-mono ${fuelPct < 18 ? 'text-rose-400' : 'text-amber-300'}`}>
+            油{fuelPct}%
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
