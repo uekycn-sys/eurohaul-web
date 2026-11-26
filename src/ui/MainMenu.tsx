@@ -13,6 +13,9 @@ import {
   Maximize2,
   Minimize2,
   Info,
+  GraduationCap,
+  CheckCircle2,
+  Star,
 } from 'lucide-react';
 import {
   ENGINE_TIERS,
@@ -21,23 +24,28 @@ import {
   useGameStore,
 } from '../store/useGameStore';
 import { MapRegistry } from '../map/MapRegistry';
+import { A2_EXAM_LEVELS } from '../exam/A2ExamCatalog';
+import { A2ExamLevelId } from '../exam/types';
 import { toggleDocumentFullscreen, useIsFullscreen } from '../utils/fullscreen';
 
 interface MainMenuProps {
   onSelectMap: (mapId: string) => void;
+  onStartCareer: () => void;
+  onEnterA2Exam: (levelId: A2ExamLevelId) => void;
 }
 
 const PRESET_ORDER: QualityPreset[] = ['mobile_fast', 'mobile_balanced', 'pc_igpu', 'high', 'ultra'];
 
-export function MainMenu({ onSelectMap }: MainMenuProps) {
+export function MainMenu({ onSelectMap, onStartCareer, onEnterA2Exam }: MainMenuProps) {
   const maps = MapRegistry.getAllMaps();
+  const [menuTab, setMenuTab] = useState<'career' | 'a2_exam'>('career');
+  const [selectedExamId, setSelectedExamId] = useState<A2ExamLevelId>('reverse_bay');
   const [confirmReset, setConfirmReset] = useState(false);
   const [showGpuGuide, setShowGpuGuide] = useState(false);
   const isFullscreen = useIsFullscreen();
 
   const selectedMapId = useGameStore((s) => s.selectedMapId);
   const setSelectedMapId = useGameStore((s) => s.setSelectedMapId);
-  const setGamePhase = useGameStore((s) => s.setGamePhase);
   const moneyEur = useGameStore((s) => s.moneyEur);
   const level = useGameStore((s) => s.level);
   const completedJobs = useGameStore((s) => s.completedJobs);
@@ -52,9 +60,12 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
   const mobileControlsEnabled = useGameStore((s) => s.mobileControlsEnabled);
   const setMobileControlsEnabled = useGameStore((s) => s.setMobileControlsEnabled);
   const detectedDeviceLabel = useGameStore((s) => s.detectedDeviceLabel);
+  const a2ExamProgress = useGameStore((s) => s.a2ExamProgress);
   const resetCareer = useGameStore((s) => s.resetCareer);
 
   const engineSpec = ENGINE_TIERS[engineTier] ?? ENGINE_TIERS[0]!;
+  const passedCount = A2_EXAM_LEVELS.filter((l) => a2ExamProgress[l.id]?.passed).length;
+  const allA2Passed = passedCount === A2_EXAM_LEVELS.length;
   const isIntegratedHint =
     /核显|Intel|UHD|Iris|桌面端/i.test(detectedDeviceLabel) &&
     !/高性能独显/i.test(detectedDeviceLabel);
@@ -114,18 +125,38 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
                   {totalDistanceKm.toFixed(1)} km
                 </span>
               </div>
+              <div className="col-span-2 flex items-center justify-between border-t border-slate-700/70 pt-2 text-xs">
+                <span className="flex items-center gap-1.5 text-slate-300">
+                  <GraduationCap className="h-3.5 w-3.5 text-sky-400" />
+                  中国 A2 重卡驾考认证
+                </span>
+                <span className={`font-mono font-bold ${allA2Passed ? 'text-emerald-400' : 'text-sky-300'}`}>
+                  {allA2Passed ? 'A2 驾照已核发 ✓' : `${passedCount} / ${A2_EXAM_LEVELS.length} 项通过`}
+                </span>
+              </div>
             </div>
           </div>
 
           <div className="mt-6 space-y-2.5">
-            <button
-              type="button"
-              onClick={() => setGamePhase('playing')}
-              className="flex w-full items-center justify-center gap-2.5 rounded-xl bg-amber-500 px-6 py-3.5 text-base font-bold text-slate-950 shadow-lg shadow-amber-500/25 transition hover:bg-amber-400 active:scale-[0.99]"
-            >
-              <Play className="h-5 w-5 fill-current" />
-              {completedJobs > 0 || totalDistanceKm > 0.2 ? '继续驾驶生涯' : '开始货运生涯'}
-            </button>
+            {menuTab === 'career' ? (
+              <button
+                type="button"
+                onClick={onStartCareer}
+                className="flex w-full items-center justify-center gap-2.5 rounded-xl bg-amber-500 px-6 py-3.5 text-base font-bold text-slate-950 shadow-lg shadow-amber-500/25 transition hover:bg-amber-400 active:scale-[0.99]"
+              >
+                <Play className="h-5 w-5 fill-current" />
+                {completedJobs > 0 || totalDistanceKm > 0.2 ? '继续欧陆货运生涯' : '开始欧陆货运生涯'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onEnterA2Exam(selectedExamId)}
+                className="flex w-full items-center justify-center gap-2.5 rounded-xl bg-sky-500 px-6 py-3.5 text-base font-bold text-slate-950 shadow-lg shadow-sky-500/25 transition hover:bg-sky-400 active:scale-[0.99]"
+              >
+                <GraduationCap className="h-5 w-5" />
+                进入 A2 考场 ({A2_EXAM_LEVELS.find((l) => l.id === selectedExamId)?.title})
+              </button>
+            )}
 
             <div className="flex items-center justify-between pt-1">
               {!confirmReset ? (
@@ -164,46 +195,124 @@ export function MainMenu({ onSelectMap }: MainMenuProps) {
           </div>
         </div>
 
-        {/* Right Column: Map Selection & Graphics/Audio Settings */}
-        <div className="flex flex-col justify-between space-y-5 lg:col-span-7">
-          {/* Map Selector */}
-          <div className="rounded-2xl border border-slate-700/70 bg-slate-800/50 p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-white">
-              <MapPin className="h-4 w-4 text-amber-400" />
-              选择货运版图
-            </div>
-            <div className="mt-3 space-y-2">
-              {maps.map((m) => {
-                const selected = m.id === selectedMapId;
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedMapId(m.id);
-                      onSelectMap(m.id);
-                    }}
-                    className={`w-full rounded-xl border p-3.5 text-left transition ${
-                      selected
-                        ? 'border-amber-400 bg-amber-500/12'
-                        : 'border-slate-700 bg-slate-900/50 hover:border-slate-600'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold text-white">{m.name}</span>
-                      <span className="rounded-full bg-slate-700/80 px-2.5 py-0.5 text-[11px] text-amber-300">
-                        {m.cities.length} 座城市 · 约 {m.recommendedDurationMin} 分钟环线
-                      </span>
-                    </div>
-                    <div className="mt-1 text-xs text-amber-200/80">{m.subtitle}</div>
-                    <p className="mt-1.5 text-xs leading-relaxed text-slate-300">
-                      {m.description}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
+        {/* Right Column: Mode Tabs (Career / China A2 Exam) + Graphics/Audio Settings */}
+        <div className="flex flex-col justify-between space-y-4 lg:col-span-7">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-700/70 bg-slate-800/60 p-1.5">
+            <button
+              type="button"
+              onClick={() => setMenuTab('career')}
+              className={`flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold transition ${
+                menuTab === 'career'
+                  ? 'bg-amber-500 text-slate-950 shadow'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <Truck className="h-4 w-4" />
+              欧陆货运生涯
+            </button>
+            <button
+              type="button"
+              onClick={() => setMenuTab('a2_exam')}
+              className={`flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold transition ${
+                menuTab === 'a2_exam'
+                  ? 'bg-sky-500 text-slate-950 shadow'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <GraduationCap className="h-4 w-4" />
+              中国 A2 驾照考场模拟 ({passedCount}/{A2_EXAM_LEVELS.length})
+            </button>
           </div>
+
+          {menuTab === 'career' ? (
+            <div className="rounded-2xl border border-slate-700/70 bg-slate-800/50 p-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <MapPin className="h-4 w-4 text-amber-400" />
+                选择货运版图
+              </div>
+              <div className="mt-3 space-y-2">
+                {maps.map((m) => {
+                  const selected = m.id === selectedMapId;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedMapId(m.id);
+                        onSelectMap(m.id);
+                      }}
+                      className={`w-full rounded-xl border p-3.5 text-left transition ${
+                        selected
+                          ? 'border-amber-400 bg-amber-500/12'
+                          : 'border-slate-700 bg-slate-900/50 hover:border-slate-600'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-white">{m.name}</span>
+                        <span className="rounded-full bg-slate-700/80 px-2.5 py-0.5 text-[11px] text-amber-300">
+                          {m.cities.length} 座城市 · 约 {m.recommendedDurationMin} 分钟环线
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-amber-200/80">{m.subtitle}</div>
+                      <p className="mt-1.5 text-xs leading-relaxed text-slate-300">
+                        {m.description}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-sky-500/35 bg-slate-800/55 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <GraduationCap className="h-4 w-4 text-sky-400" />
+                  A2 重型牵引挂车驾考关卡 (GA/T 1028 · 90分合格)
+                </div>
+                <span className="text-[11px] text-sky-300">双击关卡直接开考</span>
+              </div>
+              <div className="mt-3 grid max-h-60 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+                {A2_EXAM_LEVELS.map((lvl) => {
+                  const selected = selectedExamId === lvl.id;
+                  const rec = a2ExamProgress[lvl.id];
+                  return (
+                    <button
+                      key={lvl.id}
+                      type="button"
+                      onClick={() => setSelectedExamId(lvl.id)}
+                      onDoubleClick={() => onEnterA2Exam(lvl.id)}
+                      className={`rounded-xl border p-2.5 text-left transition ${
+                        selected
+                          ? 'border-sky-400 bg-sky-500/15'
+                          : 'border-slate-700 bg-slate-900/55 hover:border-slate-600'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="rounded bg-slate-700/90 px-1.5 py-0.5 font-bold text-amber-300">
+                          {lvl.subjectLabel}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          {rec?.passed ? (
+                            <span className="inline-flex items-center gap-0.5 font-bold text-emerald-400">
+                              <CheckCircle2 className="h-3 w-3" /> {rec.bestScore}分
+                            </span>
+                          ) : (
+                            <span className="flex text-amber-400">
+                              {Array.from({ length: lvl.difficulty }).map((_, idx) => (
+                                <Star key={idx} className="h-2.5 w-2.5 fill-current" />
+                              ))}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs font-bold text-white">{lvl.title}</div>
+                      <div className="mt-0.5 line-clamp-1 text-[10px] text-slate-400">{lvl.subtitle}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Hardware & Audio Settings */}
           <div className="rounded-2xl border border-slate-700/70 bg-slate-800/50 p-4">

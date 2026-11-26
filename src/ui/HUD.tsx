@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import { ParkingSquare } from 'lucide-react';
 import { MapManifest } from '../map/types';
 import { RoutePoint } from '../gameplay/NavigationSystem';
+import { A2ExamLevelId } from '../exam/types';
 import { useGameStore } from '../store/useGameStore';
 import { TopStatusBar } from './hud/TopStatusBar';
 import { TruckDashboard } from './hud/TruckDashboard';
 import { RouteAdvisor } from './hud/RouteAdvisor';
 import { WorldMapModal } from './hud/WorldMapModal';
 import { SettingsAndSummaryModals } from './hud/SettingsAndSummaryModals';
+import { A2ExamHUD } from './hud/A2ExamHUD';
 
 interface HUDProps {
   mapManifest: MapManifest;
@@ -15,6 +17,10 @@ interface HUDProps {
   onRefreshJobs: () => void;
   onCompleteDelivery: (manual: boolean) => void;
   onSetTimeOfDay: (hours: number) => void;
+  onBeginExam: () => void;
+  onRestartExam: () => void;
+  onSelectExamLevel: (levelId: A2ExamLevelId) => void;
+  onExitExamToCareer: () => void;
 }
 
 /**
@@ -27,9 +33,14 @@ export function HUD({
   onRefreshJobs,
   onCompleteDelivery,
   onSetTimeOfDay,
+  onBeginExam,
+  onRestartExam,
+  onSelectExamLevel,
+  onExitExamToCareer,
 }: HUDProps) {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
+  const gameMode = useGameStore((s) => s.gameMode);
   const activeModal = useGameStore((s) => s.activeModal);
   const setActiveModal = useGameStore((s) => s.setActiveModal);
   const nearbyInteraction = useGameStore((s) => s.nearbyInteraction);
@@ -54,7 +65,14 @@ export function HUD({
         <div className="pointer-events-none fixed inset-0 z-50 bg-white/65 transition-opacity" />
       )}
 
-      <TopStatusBar onRefreshJobs={onRefreshJobs} />
+      <TopStatusBar onRefreshJobs={onRefreshJobs} onRestartExam={onRestartExam} />
+
+      <A2ExamHUD
+        onBeginExam={onBeginExam}
+        onRestartExam={onRestartExam}
+        onSelectExamLevel={onSelectExamLevel}
+        onExitExamToCareer={onExitExamToCareer}
+      />
 
       {visibleNotifs.length > 0 && (
         <div className="pointer-events-none fixed top-16 left-1/2 z-30 flex w-full max-w-md -translate-x-1/2 flex-col gap-2 px-4">
@@ -165,12 +183,16 @@ export function HUD({
       )}
 
       <TruckDashboard />
-      <RouteAdvisor
-        mapManifest={mapManifest}
-        getRoutePoints={getRoutePoints}
-        onRefreshJobs={onRefreshJobs}
-      />
-      <WorldMapModal mapManifest={mapManifest} getRoutePoints={getRoutePoints} />
+      {gameMode === 'career' && (
+        <>
+          <RouteAdvisor
+            mapManifest={mapManifest}
+            getRoutePoints={getRoutePoints}
+            onRefreshJobs={onRefreshJobs}
+          />
+          <WorldMapModal mapManifest={mapManifest} getRoutePoints={getRoutePoints} />
+        </>
+      )}
       <SettingsAndSummaryModals
         onRefreshJobs={onRefreshJobs}
         onSetTimeOfDay={onSetTimeOfDay}

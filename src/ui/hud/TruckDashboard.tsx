@@ -5,7 +5,6 @@ import { getMaxFuelLiters, useGameStore } from '../../store/useGameStore';
 export const TruckDashboard = memo(function TruckDashboard() {
   const tankTier = useGameStore((s) => s.tankTier);
   const fuelLiters = useGameStore((s) => s.fuelLiters);
-  const truckHealth = useGameStore((s) => s.truckHealth);
   const cameraMode = useGameStore((s) => s.cameraMode);
   const mobileControlsEnabled = useGameStore((s) => s.mobileControlsEnabled);
   const transmissionMode = useGameStore((s) => s.transmissionMode);
@@ -25,16 +24,28 @@ export const TruckDashboard = memo(function TruckDashboard() {
   const cruiseControlKmh = useGameStore((s) => s.telemetry.cruiseControlKmh);
   const retarderLevel = useGameStore((s) => s.telemetry.retarderLevel);
   const wipersMode = useGameStore((s) => s.telemetry.wipersMode);
+  const airPressureBar = useGameStore((s) => s.telemetry.airPressureBar);
+  const lowAirWarning = useGameStore((s) => s.telemetry.lowAirWarning);
+  const emergencyBrakeLock = useGameStore((s) => s.telemetry.emergencyBrakeLock);
+  const brakeTempC = useGameStore((s) => s.telemetry.brakeTempC);
+  const engineRunning = useGameStore((s) => s.telemetry.engineRunning);
+  const engineStalled = useGameStore((s) => s.telemetry.engineStalled);
+  const exhaustBrakeActive = useGameStore((s) => s.telemetry.exhaustBrakeActive);
+  const diffLockActive = useGameStore((s) => s.telemetry.diffLockActive);
+  const clutchPedal = useGameStore((s) => s.telemetry.clutchPedal);
+  const frontWheelAngleDeg = useGameStore((s) => s.telemetry.frontWheelAngleDeg);
+  const hitchAngleDeg = useGameStore((s) => s.telemetry.hitchAngleDeg);
 
   const maxFuel = getMaxFuelLiters(tankTier);
   const fuelPct = Math.round((fuelLiters / maxFuel) * 100);
   const rpmPct = Math.min(100, Math.max(0, ((rpm - 600) / 1750) * 100));
+  const airPct = Math.min(100, Math.max(0, (airPressureBar / 8.5) * 100));
 
   // In 1st-person Cab View, hide the large centered 2D speed/gear bar so the 3D wheel & gauges remain unobstructed
   if (cameraMode === 1 && !mobileControlsEnabled) {
     return (
       <div className="pointer-events-none fixed bottom-3 left-3 z-20">
-        <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-slate-700/75 bg-slate-950/78 px-2.5 py-1.5 text-[10px] font-bold shadow-lg backdrop-blur-md">
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-700/75 bg-slate-950/82 px-2.5 py-1.5 text-[10px] font-bold shadow-lg backdrop-blur-md">
           <div className="flex items-center gap-1">
             <span
               className={
@@ -69,6 +80,41 @@ export const TruckDashboard = memo(function TruckDashboard() {
           >
             P
           </span>
+          {!engineRunning && (
+            <span className="animate-pulse rounded bg-rose-600 px-1.5 py-0.5 text-white">
+              {engineStalled ? '熄火 [I]' : '关机 [I]'}
+            </span>
+          )}
+          <span
+            className={`rounded px-1.5 py-0.5 font-mono ${
+              lowAirWarning ? 'animate-pulse bg-rose-600 text-white' : 'bg-sky-500/20 text-sky-300'
+            }`}
+          >
+            气{(airPressureBar / 10).toFixed(2)}MPa
+          </span>
+          {exhaustBrakeActive && (
+            <span className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-300">排气</span>
+          )}
+          {diffLockActive && (
+            <span className="rounded bg-amber-500/25 px-1.5 py-0.5 text-amber-300">差速</span>
+          )}
+          {retarderLevel > 0 && (
+            <span className="rounded bg-amber-500/25 px-1.5 py-0.5 text-amber-300">
+              R{retarderLevel}
+            </span>
+          )}
+          {brakeTempC > 180 && (
+            <span
+              className={`rounded px-1.5 py-0.5 font-mono ${
+                brakeTempC > 300 ? 'bg-rose-600 text-white' : 'bg-amber-500/25 text-amber-300'
+              }`}
+            >
+              闸{brakeTempC}°C
+            </span>
+          )}
+          <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-300">
+            轮{frontWheelAngleDeg > 0 ? `左${frontWheelAngleDeg}` : frontWheelAngleDeg < 0 ? `右${-frontWheelAngleDeg}` : '0'}° · 挂{hitchAngleDeg}°
+          </span>
           <span
             className={`rounded px-1.5 py-0.5 ${
               cruiseControlKmh !== null
@@ -78,11 +124,6 @@ export const TruckDashboard = memo(function TruckDashboard() {
           >
             CC {cruiseControlKmh ?? '--'}
           </span>
-          {retarderLevel > 0 && (
-            <span className="rounded bg-amber-500/25 px-1.5 py-0.5 text-amber-300">
-              R{retarderLevel}
-            </span>
-          )}
           {wipersMode > 0 && (
             <span className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-300">
               刷{wipersMode}
@@ -211,15 +252,38 @@ export const TruckDashboard = memo(function TruckDashboard() {
             >
               R{retarderLevel}
             </span>
+            {exhaustBrakeActive && (
+              <span className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-300">排气</span>
+            )}
+            {diffLockActive && (
+              <span className="rounded bg-amber-500/25 px-1.5 py-0.5 text-amber-300">差速</span>
+            )}
             {wipersMode > 0 && (
               <span className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-300">
                 刷{wipersMode}
               </span>
             )}
           </div>
+          {!engineRunning && (
+            <div className="animate-pulse rounded bg-rose-600 px-1.5 py-0.5 text-[9px] font-bold text-white">
+              {engineStalled ? '已熄火 · 按 I 启动' : '引擎关闭 · 按 I'}
+            </div>
+          )}
         </div>
 
-        <div className="hidden flex-col gap-1.5 text-[10px] sm:flex">
+        <div className="hidden flex-col gap-1 text-[10px] sm:flex">
+          <div className="flex items-center gap-1.5" title="双回路制动储气筒压力 (MPa)">
+            <span className={`w-5 font-bold ${lowAirWarning ? 'animate-pulse text-rose-400' : 'text-sky-400'}`}>
+              气压
+            </span>
+            <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-800">
+              <div
+                className={`h-full ${emergencyBrakeLock || lowAirWarning ? 'bg-rose-500' : 'bg-sky-400'}`}
+                style={{ width: `${airPct}%` }}
+              />
+            </div>
+            <span className="w-11 font-mono text-slate-300">{(airPressureBar / 10).toFixed(2)}</span>
+          </div>
           <div className="flex items-center gap-1.5">
             <Fuel
               className={`h-3.5 w-3.5 ${
@@ -232,15 +296,20 @@ export const TruckDashboard = memo(function TruckDashboard() {
                 style={{ width: `${fuelPct}%` }}
               />
             </div>
-            <span className="w-7 font-mono text-slate-300">{fuelPct}%</span>
+            <span className="w-8 font-mono text-slate-300">{fuelPct}%</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <ShieldAlert className="h-3.5 w-3.5 text-sky-400" />
-            <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-800">
-              <div className="h-full bg-sky-400" style={{ width: `${truckHealth}%` }} />
-            </div>
-            <span className="w-7 font-mono text-slate-300">{Math.round(truckHealth)}%</span>
+            <ShieldAlert className="h-3.5 w-3.5 text-emerald-400" />
+            <span className="font-mono text-[9px] text-slate-300">
+              轮{frontWheelAngleDeg > 0 ? `L${frontWheelAngleDeg}` : frontWheelAngleDeg < 0 ? `R${-frontWheelAngleDeg}` : '0'}°·挂{hitchAngleDeg}°
+              {transmissionMode === 'sequential' && clutchPedal > 0.05 ? `·离${Math.round(clutchPedal * 100)}%` : ''}
+            </span>
           </div>
+          {brakeTempC > 180 && (
+            <div className={`font-mono text-[9px] ${brakeTempC > 300 ? 'animate-pulse text-rose-400' : 'text-amber-300'}`}>
+              刹车温 {brakeTempC}°C
+            </div>
+          )}
         </div>
       </div>
     </div>

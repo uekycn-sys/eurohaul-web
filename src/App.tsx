@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { GameEngine, MobileActionType } from './core/GameEngine';
 import { useGameStore } from './store/useGameStore';
 import { MapRegistry } from './map/MapRegistry';
+import { A2ExamLevelId } from './exam/types';
 import { MainMenu } from './ui/MainMenu';
 import { HUD } from './ui/HUD';
 import { VirtualMirrors } from './ui/VirtualMirrors';
@@ -14,6 +15,7 @@ export function App() {
   const engineRef = useRef<GameEngine | null>(null);
 
   const gamePhase = useGameStore((s) => s.gamePhase);
+  const gameMode = useGameStore((s) => s.gameMode);
   const selectedMapId = useGameStore((s) => s.selectedMapId);
   const qualityPreset = useGameStore((s) => s.qualityPreset);
 
@@ -36,6 +38,29 @@ export function App() {
 
   const handleSelectMap = useCallback((mapId: string) => {
     engineRef.current?.loadMap(mapId);
+  }, []);
+
+  const handleStartCareer = useCallback(() => {
+    if (useGameStore.getState().gameMode === 'a2_exam') {
+      engineRef.current?.exitA2ExamToCareer(false);
+    }
+    useGameStore.getState().setGamePhase('playing');
+  }, []);
+
+  const handleEnterA2Exam = useCallback((levelId: A2ExamLevelId) => {
+    engineRef.current?.enterA2Exam(levelId);
+  }, []);
+
+  const handleBeginExam = useCallback(() => {
+    engineRef.current?.beginActiveExamRun();
+  }, []);
+
+  const handleRestartExam = useCallback(() => {
+    engineRef.current?.restartA2Exam();
+  }, []);
+
+  const handleExitExamToCareer = useCallback(() => {
+    engineRef.current?.exitA2ExamToCareer(true);
   }, []);
 
   const handleRefreshJobs = useCallback(() => {
@@ -81,7 +106,11 @@ export function App() {
       <div ref={mountRef} className="absolute inset-0 h-full w-full" />
 
       {gamePhase === 'menu' ? (
-        <MainMenu onSelectMap={handleSelectMap} />
+        <MainMenu
+          onSelectMap={handleSelectMap}
+          onStartCareer={handleStartCareer}
+          onEnterA2Exam={handleEnterA2Exam}
+        />
       ) : (
         <>
           <VirtualMirrors />
@@ -91,6 +120,10 @@ export function App() {
             onRefreshJobs={handleRefreshJobs}
             onCompleteDelivery={handleCompleteDelivery}
             onSetTimeOfDay={handleSetTimeOfDay}
+            onBeginExam={handleBeginExam}
+            onRestartExam={handleRestartExam}
+            onSelectExamLevel={handleEnterA2Exam}
+            onExitExamToCareer={handleExitExamToCareer}
           />
           <MobileControls
             onTouchSteer={handleTouchSteer}
@@ -99,8 +132,12 @@ export function App() {
             onTouchHorn={handleTouchHorn}
             onMobileAction={handleMobileAction}
           />
-          <JobMarketModal onRefreshJobs={handleRefreshJobs} />
-          <GarageModal />
+          {gameMode === 'career' && (
+            <>
+              <JobMarketModal onRefreshJobs={handleRefreshJobs} />
+              <GarageModal />
+            </>
+          )}
         </>
       )}
     </div>

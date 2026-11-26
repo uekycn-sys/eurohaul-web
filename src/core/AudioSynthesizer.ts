@@ -22,6 +22,9 @@ export class AudioSynthesizer {
   private rainGain: GainNode | null = null;
   private rainSource: AudioBufferSourceNode | null = null;
 
+  private exhaustBrakeOsc: OscillatorNode | null = null;
+  private exhaustBrakeGain: GainNode | null = null;
+
   private noiseBuffer: AudioBuffer | null = null;
   private enabled = true;
   private volume = 0.6;
@@ -29,6 +32,7 @@ export class AudioSynthesizer {
   private prevParkingBrake = true;
   private prevGear = 1;
   private reverseBeepClock = 0;
+  private lowAirBeepClock = 0;
 
   public unlock(): void {
     if (!this.ctx) {
@@ -124,6 +128,20 @@ export class AudioSynthesizer {
     rainFilter.connect(this.rainGain);
     this.rainGain.connect(this.masterGain);
     this.rainSource.start();
+
+    // Heavy diesel exhaust / Jake brake low-frequency pulsed rumble
+    const exhFilter = ctx.createBiquadFilter();
+    exhFilter.type = 'lowpass';
+    exhFilter.frequency.value = 175;
+    this.exhaustBrakeGain = ctx.createGain();
+    this.exhaustBrakeGain.gain.value = 0;
+    this.exhaustBrakeOsc = ctx.createOscillator();
+    this.exhaustBrakeOsc.type = 'sawtooth';
+    this.exhaustBrakeOsc.frequency.value = 24;
+    this.exhaustBrakeOsc.connect(exhFilter);
+    exhFilter.connect(this.exhaustBrakeGain);
+    this.exhaustBrakeGain.connect(this.masterGain);
+    this.exhaustBrakeOsc.start();
   }
 
   public setSettings(enabled: boolean, volume: number): void {
@@ -142,11 +160,23 @@ export class AudioSynthesizer {
     blinkerLit: boolean;
     parkingBrake: boolean;
     gear?: number;
+    engineRunning?: boolean;
     retarderActive?: boolean;
+    exhaustBrakeActive?: boolean;
+    lowAirWarning?: boolean;
     rainIntensity?: number;
     dtSec?: number;
   }): void {
-    if (!this.ctx || !this.engineOsc1 || !this.engineOsc2 || !this.engineFilter || !this.engineGain || !this.turboOsc || !this.turboGain || !this.hornGain) {
+    if (
+      !this.ctx ||
+      !this.engineOsc1 ||
+      !this.engineOsc2 ||
+      !this.engineFilter ||
+      !this.engineGain ||
+      !this.turboOsc ||
+      !this.turboGain ||
+      !this.hornGain
+    ) {
       return;
     }
 
@@ -156,6 +186,7 @@ export class AudioSynthesizer {
       this.turboGain.gain.setTargetAtTime(0, now, 0.08);
       this.hornGain.gain.setTargetAtTime(0, now, 0.04);
       this.rainGain?.gain.setTargetAtTime(0, now, 0.12);
+      this.exhaustBrakeGain?.gain.setTargetAtTime(0, now, 0.06);
       return;
     }
 
@@ -163,30 +194,45 @@ export class AudioSynthesizer {
       this.rainGain.gain.setTargetAtTime((opts.rainIntensity ?? 0) * 0.065, now, 0.2);
     }
 
-    // Diesel engine pitch & harmonic warmth (plus subtle hydraulic retarder pitch)
+    const running = opts.engineRunning ?? true;
     const rpmRatio = Math.max(0, Math.min(1, (opts.rpm - 600) / 1700));
-    const baseFreq = 26 + rpmRatio * 68;
-    this.engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.05);
-    this.engineOsc2.frequency.setTargetAtTime(baseFreq * 2.02, now, 0.05);
-    this.engineFilter.frequency.setTargetAtTime(
-      140 + rpmRatio * 290 + opts.throttle * 140 + (opts.retarderActive ? 160 : 0),
-      now,
-      0.06
-    );
-    this.engineGain.gain.setTargetAtTime(
-      0.11 + opts.throttle * 0.14 + rpmRatio * 0.06 + (opts.retarderActive ? 0.05 : 0),
-      now,
-      0.06
-    );
+    if (running) {
+      // Diesel engine pitch & harmonic warmth (plus subtle hydraulic retarder pitch)
+      const baseFreq = 26 + rpmRatio * 68;
+      this.engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.05);
+      this.engineOsc2.frequency.setTargetAtTime(baseFreq * 2.02, now, 0.05);
+      this.engineFilter.frequency.setTargetAtTime(
+        140 + rpmRatio * 290 + opts.throttle * 140 + (opts.retarderActive ? 160 : 0),
+        now,
+        0.06
+      );
+      this.engineGain.gain.setTargetAtTime(
+        0.11 + opts.throttle * 0.14 + rpmRatio * 0.06 + (opts.retarderActive ? 0.05 : 0),
+        now,
+        0.06
+      );
 
-    // Turbo spool / hydraulic retarder whine
-    const turboBoost = opts.retarderActive ? 0.55 : Math.max(0, rpmRatio - 0.32) * opts.throttle;
-    this.turboOsc.frequency.setTargetAtTime(
-      opts.retarderActive ? 680 + rpmRatio * 520 : 1250 + rpmRatio * 2100,
-      now,
-      0.08
-    );
-    this.turboGain.gain.setTargetAtTime(turboBoost * 0.032, now, 0.08);
+      // Turbo spool / hydraulic retarder whine
+      const turboBoost = opts.retarderActive ? 0.55 : Math.max(0, rpmRatio - 0.32) * opts.throttle;
+      this.turboOsc.frequency.setTargetAtTime(
+        opts.retarderActive ? 680 + rpmRatio * 520 : 1250 + rpmRatio * 2100,
+        now,
+        0.08
+      );
+      this.turboGain.gain.setTargetAtTime(turboBoost * 0.032, now, 0.08);
+    } else {
+      this.engineGain.gain.setTargetAtTime(0, now, 0.07);
+      this.turboGain.gain.setTargetAtTime(0, now, 0.06);
+    }
+
+    if (this.exhaustBrakeGain && this.exhaustBrakeOsc) {
+      if (running && opts.exhaustBrakeActive) {
+        this.exhaustBrakeOsc.frequency.setTargetAtTime(19 + rpmRatio * 22, now, 0.05);
+        this.exhaustBrakeGain.gain.setTargetAtTime(0.11 + rpmRatio * 0.07, now, 0.04);
+      } else {
+        this.exhaustBrakeGain.gain.setTargetAtTime(0, now, 0.05);
+      }
+    }
 
     // Air horn
     this.hornGain.gain.setTargetAtTime(opts.horn ? 0.22 : 0, now, 0.025);
@@ -201,6 +247,17 @@ export class AudioSynthesizer {
     if (opts.parkingBrake !== this.prevParkingBrake) {
       this.prevParkingBrake = opts.parkingBrake;
       this.playAirBrake();
+    }
+
+    // Low air pressure cab buzzer
+    if (opts.lowAirWarning) {
+      this.lowAirBeepClock += opts.dtSec ?? 0.016;
+      if (this.lowAirBeepClock >= 0.85) {
+        this.lowAirBeepClock = 0;
+        this.playLowAirBeep();
+      }
+    } else {
+      this.lowAirBeepClock = 0.7;
     }
 
     // Pneumatic gearshift click & European reverse warning beep
@@ -218,6 +275,151 @@ export class AudioSynthesizer {
       } else {
         this.reverseBeepClock = 0.65;
       }
+    }
+  }
+
+  public playEngineStart(): void {
+    if (!this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const t = now + i * 0.13;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(52, t);
+      osc.frequency.linearRampToValueAtTime(64, t + 0.09);
+      g.gain.setValueAtTime(0.08, t);
+      g.gain.exponentialRampToValueAtTime(0.005, t + 0.11);
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.12);
+    }
+    const fire = this.ctx.createOscillator();
+    const fg = this.ctx.createGain();
+    fire.type = 'triangle';
+    fire.frequency.setValueAtTime(38, now + 0.39);
+    fire.frequency.exponentialRampToValueAtTime(28, now + 0.78);
+    fg.gain.setValueAtTime(0.18, now + 0.39);
+    fg.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
+    fire.connect(fg);
+    fg.connect(this.masterGain);
+    fire.start(now + 0.39);
+    fire.stop(now + 0.82);
+  }
+
+  public playEngineStall(): void {
+    if (!this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(42, now);
+    osc.frequency.exponentialRampToValueAtTime(16, now + 0.28);
+    g.gain.setValueAtTime(0.16, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.32);
+  }
+
+  public playAirRelease(intensity = 0.7): void {
+    if (!this.ctx || !this.masterGain || !this.noiseBuffer || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 3100;
+    filter.Q.value = 1.6;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.04 + Math.min(1, intensity) * 0.08, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.masterGain);
+    src.start(now);
+    src.stop(now + 0.16);
+  }
+
+  public playAirDryerPurge(): void {
+    if (!this.ctx || !this.masterGain || !this.noiseBuffer || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 3400;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.11, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.masterGain);
+    src.start(now);
+    src.stop(now + 0.13);
+  }
+
+  private playLowAirBeep(): void {
+    if (!this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 880;
+    g.gain.setValueAtTime(0.065, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.18);
+  }
+
+  public playExamCue(kind: 'step' | 'deduct' | 'fail' | 'pass'): void {
+    if (!this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const tones =
+      kind === 'pass'
+        ? [523.25, 659.25, 783.99, 1046.5]
+        : kind === 'fail'
+        ? [440, 311.13, 220]
+        : kind === 'deduct'
+        ? [620, 440]
+        : [784, 987.77];
+
+    for (let i = 0; i < tones.length; i++) {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = kind === 'deduct' || kind === 'fail' ? 'triangle' : 'sine';
+      osc.frequency.value = tones[i]!;
+      const t = now + i * 0.11;
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.1, t + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.26);
+    }
+  }
+
+  public speakChinese(text: string, voiceEnabled: boolean): void {
+    if (!voiceEnabled || !this.enabled || typeof window === 'undefined') return;
+    try {
+      const synth = window.speechSynthesis;
+      if (!synth) return;
+      synth.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'zh-CN';
+      utter.rate = 1.08;
+      utter.volume = Math.min(1, Math.max(0.2, this.volume));
+      const voices = synth.getVoices();
+      const zhVoice = voices.find((v) => /zh[-_]?CN|Chinese/i.test(v.lang));
+      if (zhVoice) utter.voice = zhVoice;
+      synth.speak(utter);
+    } catch {
+      // Speech synthesis is optional; fail silently on restricted browsers
     }
   }
 

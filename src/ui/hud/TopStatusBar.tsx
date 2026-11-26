@@ -1,7 +1,9 @@
 import { memo } from 'react';
 import {
+  ClipboardList,
   Map as MapIcon,
   Package,
+  RotateCcw,
   Wrench,
   Settings,
   LogOut,
@@ -17,6 +19,7 @@ import { toggleDocumentFullscreen, useIsFullscreen } from '../../utils/fullscree
 
 interface TopStatusBarProps {
   onRefreshJobs: () => void;
+  onRestartExam: () => void;
 }
 
 function formatClock(hours: number): string {
@@ -26,8 +29,14 @@ function formatClock(hours: number): string {
   return `${hh}:${mm}`;
 }
 
-export const TopStatusBar = memo(function TopStatusBar({ onRefreshJobs }: TopStatusBarProps) {
+export const TopStatusBar = memo(function TopStatusBar({
+  onRefreshJobs,
+  onRestartExam,
+}: TopStatusBarProps) {
   const isFullscreen = useIsFullscreen();
+  const gameMode = useGameStore((s) => s.gameMode);
+  const examStrictCamera = useGameStore((s) => s.examStrictCamera);
+  const a2ExamPhase = useGameStore((s) => s.a2ExamState?.phase);
   const moneyEur = useGameStore((s) => s.moneyEur);
   const level = useGameStore((s) => s.level);
   const showFps = useGameStore((s) => s.showFps);
@@ -41,6 +50,7 @@ export const TopStatusBar = memo(function TopStatusBar({ onRefreshJobs }: TopSta
   const drawCalls = useGameStore((s) => s.telemetry.drawCalls);
   const currentCityName = useGameStore((s) => s.telemetry.currentCityName);
   const timeOfDayHours = useGameStore((s) => s.telemetry.timeOfDayHours);
+  const strictLock = gameMode === 'a2_exam' && examStrictCamera && a2ExamPhase === 'running';
 
   return (
     <div
@@ -88,63 +98,97 @@ export const TopStatusBar = memo(function TopStatusBar({ onRefreshJobs }: TopSta
               [2, '2 追尾'],
               [3, '3 倒车'],
               [4, '4 环绕'],
+              [5, '5 俯视'],
             ] as [CameraMode, string][]
-          ).map(([m, label]) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setCameraMode(m)}
-              className={`rounded-lg px-2 py-1 font-medium transition ${
-                cameraMode === m
-                  ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+          ).map(([m, label]) => {
+            const disabled = strictLock && (m === 4 || m === 5);
+            return (
+              <button
+                key={m}
+                type="button"
+                disabled={disabled}
+                onClick={() => setCameraMode(m)}
+                className={`rounded-lg px-2 py-1 font-medium transition ${
+                  disabled
+                    ? 'cursor-not-allowed text-slate-600'
+                    : cameraMode === m
+                    ? 'bg-amber-500 text-slate-950'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
 
         <button
           type="button"
-          onClick={() => setCameraMode(((cameraMode % 4) + 1) as CameraMode)}
+          onClick={() => {
+            const maxCam = strictLock ? 3 : 5;
+            setCameraMode(((cameraMode % maxCam) + 1) as CameraMode);
+          }}
           className="hidden shrink-0 items-center gap-1 whitespace-nowrap rounded-xl border border-slate-700/80 bg-slate-900/85 px-2.5 py-1.5 text-xs font-medium text-amber-300 backdrop-blur-md hover:bg-slate-800 sm:inline-flex xl:hidden"
-          title="切换视角 [1-4 / V]"
+          title="切换视角 [1-5 / V]"
         >
           视角 {cameraMode}
         </button>
 
-        <button
-          type="button"
-          onClick={() => {
-            onRefreshJobs();
-            setActiveModal('jobs');
-          }}
-          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-amber-300 backdrop-blur-md hover:bg-amber-500/20 sm:px-3"
-        >
-          <Package className="h-3.5 w-3.5 shrink-0" />
-          <span className="hidden sm:inline">货运市场</span>
-          <span className="sm:hidden">货源</span>
-        </button>
+        {gameMode === 'a2_exam' ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setActiveModal('exam_select')}
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-amber-300 backdrop-blur-md hover:bg-amber-500/20 sm:px-3"
+            >
+              <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+              <span>切换考项</span>
+            </button>
+            <button
+              type="button"
+              onClick={onRestartExam}
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-sky-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-sky-300 backdrop-blur-md hover:bg-sky-500/20 sm:px-3"
+              title="重新考试 [Backspace]"
+            >
+              <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+              <span>重考本关</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                onRefreshJobs();
+                setActiveModal('jobs');
+              }}
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-amber-300 backdrop-blur-md hover:bg-amber-500/20 sm:px-3"
+            >
+              <Package className="h-3.5 w-3.5 shrink-0" />
+              <span className="hidden sm:inline">货运市场</span>
+              <span className="sm:hidden">货源</span>
+            </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveModal('garage')}
-          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-sky-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-sky-300 backdrop-blur-md hover:bg-sky-500/20 sm:px-3"
-        >
-          <Wrench className="h-3.5 w-3.5 shrink-0" />
-          <span className="hidden sm:inline">车库改装</span>
-          <span className="sm:hidden">车库</span>
-        </button>
+            <button
+              type="button"
+              onClick={() => setActiveModal('garage')}
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-sky-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-sky-300 backdrop-blur-md hover:bg-sky-500/20 sm:px-3"
+            >
+              <Wrench className="h-3.5 w-3.5 shrink-0" />
+              <span className="hidden sm:inline">车库改装</span>
+              <span className="sm:hidden">车库</span>
+            </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveModal('map')}
-          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-slate-700/80 bg-slate-900/85 px-2.5 py-1.5 text-xs font-medium text-slate-200 backdrop-blur-md hover:bg-slate-800"
-        >
-          <MapIcon className="h-3.5 w-3.5 shrink-0" />
-          <span className="hidden sm:inline">地图</span>
-        </button>
+            <button
+              type="button"
+              onClick={() => setActiveModal('map')}
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-slate-700/80 bg-slate-900/85 px-2.5 py-1.5 text-xs font-medium text-slate-200 backdrop-blur-md hover:bg-slate-800"
+            >
+              <MapIcon className="h-3.5 w-3.5 shrink-0" />
+              <span className="hidden sm:inline">地图</span>
+            </button>
+          </>
+        )}
 
         <button
           type="button"

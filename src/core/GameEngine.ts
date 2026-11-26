@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {
+  CameraMode,
   QUALITY_SPECS,
   QualityPreset,
   SignalState,
@@ -22,6 +23,10 @@ import { EconomyManager } from '../gameplay/EconomyManager';
 import { ParkingValidator } from '../gameplay/ParkingValidator';
 import { MapManifest } from '../map/types';
 import { toggleDocumentFullscreen } from '../utils/fullscreen';
+import { A2ExamArenaBuilder, BuiltExamArena } from '../exam/A2ExamArenaBuilder';
+import { A2ExamController } from '../exam/A2ExamController';
+import { getA2ExamLevel } from '../exam/A2ExamCatalog';
+import { A2ExamLevelId } from '../exam/types';
 
 export type MobileActionType =
   | 'camera'
@@ -76,6 +81,11 @@ export class GameEngine {
   private nav: NavigationSystem;
   private economy: EconomyManager;
   private readonly parkingValidator = new ParkingValidator();
+
+  private readonly examArenaBuilder: A2ExamArenaBuilder;
+  private examArena: BuiltExamArena | null = null;
+  private examController: A2ExamController | null = null;
+  private examForcedRain: number | null = null;
 
   private activeRoute: ActiveRoute | null = null;
   private trackedJobId: string | null = null;
@@ -163,6 +173,7 @@ export class GameEngine {
     this.textures.configureQuality(store.qualityPreset);
     this.env = new EnvironmentSystem(this.scene, this.renderer);
     this.mapBuilder = new MapBuilder(this.textures, this.env);
+    this.examArenaBuilder = new A2ExamArenaBuilder(this.textures);
 
     const manifest = MapRegistry.getMapById(store.selectedMapId);
     this.builtMap = this.mapBuilder.build(manifest);
@@ -204,33 +215,52 @@ export class GameEngine {
         this.physics.toggleCruiseControl(useGameStore.getState().speedLimiterEnabled),
       onCycleRetarder: () => this.physics.cycleRetarder(),
       onToggleTrailer: () => this.handleToggleTrailer(),
+      onToggleIgnition: () => this.handleToggleIgnition(),
+      onToggleExhaustBrake: () => this.handleToggleExhaustBrake(),
+      onToggleDiffLock: () => this.handleToggleDiffLock(),
+      onCenterSteering: () =>
+        useGameStore.getState().pushNotification('info', '方向盘正在回正', '前轮自动回正至直线行驶位置'),
+      onRestartExam: () => {
+        const s = useGameStore.getState();
+        if (s.gameMode === 'a2_exam' && s.gamePhase === 'playing' && s.activeModal === 'none') {
+          this.restartA2Exam();
+        }
+      },
       onShiftUp: () => this.physics.shiftUp(useGameStore.getState().transmissionMode),
       onShiftDown: () => this.physics.shiftDown(useGameStore.getState().transmissionMode),
-      onCameraMode: (mode) => {
-        if (mode === 1) this.cameraRig.resetCabLook();
-        useGameStore.getState().setCameraMode(mode);
-      },
+      onCameraMode: (mode) => this.setCameraModeSafely(mode),
       onCycleCamera: () => {
         const s = useGameStore.getState();
-        const next = ((s.cameraMode % 4) + 1) as 1 | 2 | 3 | 4;
-        if (next === 1) this.cameraRig.resetCabLook();
-        s.setCameraMode(next);
+        const maxCam =
+          s.gameMode === 'a2_exam' && s.examStrictCamera && s.a2ExamState?.phase === 'running'
+            ? 3
+            : 5;
+        const next = ((s.cameraMode % maxCam) + 1) as CameraMode;
+        this.setCameraModeSafely(next);
       },
       onRest: () => this.handleStationRest(),
       onCycleWipers: () => this.cycleWipers(),
       onToggleFullscreen: () => void toggleDocumentFullscreen(),
       onToggleMap: () => {
         const s = useGameStore.getState();
-        if (s.gamePhase !== 'playing') return;
+        if (s.gamePhase !== 'playing' || s.gameMode === 'a2_exam') return;
         s.setActiveModal(s.activeModal === 'map' ? 'none' : 'map');
       },
       onCycleAdvisorTab: () => {
         const s = useGameStore.getState();
+        if (s.gameMode === 'a2_exam') return;
         const order = ['nav', 'cargo', 'truck', 'controls'] as const;
         const idx = order.indexOf(s.advisorTab);
         s.setAdvisorTab(order[(idx + 1) % order.length]!);
       },
-      onInteract: () => this.handleZoneInteract(),
+      onInteract: () => {
+        const s = useGameStore.getState();
+        if (s.gameMode === 'a2_exam' && s.a2ExamState?.phase === 'briefing') {
+          this.beginActiveExamRun();
+          return;
+        }
+        this.handleZoneInteract();
+      },
       onEscape: () => {
         const s = useGameStore.getState();
         if (s.activeModal !== 'none') {
@@ -283,6 +313,135 @@ export class GameEngine {
     }
   };
 
+  private setCameraModeSafely(mode: CameraMode): void {
+    const s = useGameStore.getState();
+    if (
+      s.gameMode === 'a2_exam' &&
+      s.examStrictCamera &&
+      s.a2ExamState?.phase === 'running' &&
+      (mode === 4 || mode === 5)
+    ) {
+      s.pushNotification('warning', '严格考场视角已启用', '考试中仅允许使用驾驶室 [1] / 追尾 [2] / 倒车镜 [3]');
+      return;
+    }
+    if (mode === 1) this.cameraRig.resetCabLook();
+    s.setCameraMode(mode);
+  }
+
+  private handleToggleIgnition(): void {
+    const res = this.physics.toggleIgnition();
+    if (res.started) {
+      this.audio.playEngineStart();
+      useGameStore.getState().pushNotification('success', '发动机已点火启动', '气压系统正在充气');
+    } else if (!res.running) {
+      useGameStore.getState().pushNotification('info', '发动机已熄火', '按 I 键重新启动发动机');
+    }
+  }
+
+  private handleToggleExhaustBrake(): void {
+    const active = this.physics.toggleExhaustBrake();
+    useGameStore
+      .getState()
+      .pushNotification(
+        'info',
+        active ? '排气制动已开启' : '排气制动已关闭',
+        active ? '松油门下坡时自动提供发动机辅助制动' : '已切换回常规滑行'
+      );
+  }
+
+  private handleToggleDiffLock(): void {
+    const active = this.physics.toggleDiffLock();
+    useGameStore
+      .getState()
+      .pushNotification(
+        'info',
+        active ? '轴间差速锁已锁止' : '差速锁已解除',
+        active ? '低速湿滑/爬坡牵引力增强 (+18%)' : '恢复正常高速差速转向'
+      );
+  }
+
+  public enterA2Exam(levelId: A2ExamLevelId): void {
+    this.audio.unlock();
+    const s = useGameStore.getState();
+    if (this.examArena) {
+      this.scene.remove(this.examArena.root);
+      this.examArena.dispose();
+      this.examArena = null;
+    }
+
+    this.builtMap.root.visible = false;
+    this.traffic.setActiveCount(0);
+    this.examForcedRain = null;
+    this.wipersMode = 0;
+    this.wipersManualOverride = false;
+
+    const def = getA2ExamLevel(levelId);
+    this.examArena = this.examArenaBuilder.build(levelId);
+    this.scene.add(this.examArena.root);
+
+    this.truckVisuals.setTrailerCargoVisual('#e2e8f0', 'A2 EXAM', 'reefer');
+    this.physics.forcePose(
+      def.spawnPosition[0],
+      def.spawnPosition[1],
+      def.spawnPosition[2],
+      def.spawnHeadingRad,
+      def.spawnHeadingRad,
+      def.trailerAttached,
+      true
+    );
+
+    this.examController = new A2ExamController(levelId, s.examStrictCamera);
+    if (s.examStrictCamera) {
+      s.setCameraMode(1);
+    }
+
+    // Set clear bright daylight for考场
+    this.env.timeOfDayHours = 10.5;
+    s.setGameMode('a2_exam');
+    s.setActiveExamLevelId(levelId);
+    s.setA2ExamState(this.examController.getSnapshot());
+    s.setActiveModal('none');
+    s.setGamePhase('playing');
+  }
+
+  public beginActiveExamRun(): void {
+    if (!this.examController) return;
+    this.audio.unlock();
+    const fb = this.examController.beginRun();
+    if (fb.cue) this.audio.playExamCue(fb.cue);
+    if (fb.voice) this.audio.speakChinese(fb.voice, useGameStore.getState().examVoiceEnabled);
+    useGameStore.getState().setA2ExamState(this.examController.getSnapshot());
+  }
+
+  public restartA2Exam(): void {
+    const levelId = useGameStore.getState().activeExamLevelId;
+    if (!levelId) return;
+    this.enterA2Exam(levelId);
+  }
+
+  public exitA2ExamToCareer(openMenu = false): void {
+    const s = useGameStore.getState();
+    if (this.examArena) {
+      this.scene.remove(this.examArena.root);
+      this.examArena.dispose();
+      this.examArena = null;
+    }
+    this.examController = null;
+    this.examForcedRain = null;
+    this.builtMap.root.visible = true;
+    this.traffic.setActiveCount(QUALITY_SPECS[s.qualityPreset].maxTraffic);
+    this.physics.resetToSpawn(
+      this.builtMap.manifest.defaultSpawnPosition,
+      this.builtMap.manifest.defaultSpawnHeadingRad
+    );
+    s.setGameMode('career');
+    s.setA2ExamState(null);
+    s.setActiveModal('none');
+    if (openMenu) {
+      s.setGamePhase('menu');
+    }
+  }
+
   private handleToggleTrailer(): void {
     const res = this.physics.tryToggleTrailer();
     if (res.changed) {
@@ -320,8 +479,12 @@ export class GameEngine {
     const s = useGameStore.getState();
     switch (action) {
       case 'camera': {
-        const nextMode = ((s.cameraMode % 4) + 1) as 1 | 2 | 3 | 4;
-        s.setCameraMode(nextMode);
+        const maxCam =
+          s.gameMode === 'a2_exam' && s.examStrictCamera && s.a2ExamState?.phase === 'running'
+            ? 3
+            : 5;
+        const nextMode = ((s.cameraMode % maxCam) + 1) as CameraMode;
+        this.setCameraModeSafely(nextMode);
         break;
       }
       case 'lights':
@@ -509,6 +672,11 @@ export class GameEngine {
     window.removeEventListener('keydown', this.unlockAudioOnce);
     window.removeEventListener('pointerdown', this.unlockAudioOnce);
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    if (this.examArena) {
+      this.scene.remove(this.examArena.root);
+      this.examArena.dispose();
+      this.examArena = null;
+    }
     this.input.dispose();
     this.cameraRig.dispose();
     this.audio.dispose();
@@ -583,13 +751,36 @@ export class GameEngine {
       blinkerLit: this.physics.blinkerLit,
       parkingBrake: this.physics.parkingBrake,
       gear: this.physics.gear,
+      engineRunning: this.physics.engineRunning,
       retarderActive:
         this.physics.retarderLevel > 0 &&
         Math.abs(this.physics.speedMs) > 2 &&
         this.input.throttle < 0.05,
+      exhaustBrakeActive:
+        this.physics.exhaustBrakeActive &&
+        this.physics.engineRunning &&
+        this.physics.gear >= 1 &&
+        this.input.throttle < 0.05 &&
+        this.physics.rpm > 1050 &&
+        Math.abs(this.physics.speedMs) > 1.5,
+      lowAirWarning: this.physics.lowAirWarning,
       rainIntensity: this.env.rainIntensity,
       dtSec: frameDtSec,
     });
+
+    if (store.gamePhase === 'playing' && store.activeModal === 'none') {
+      if (this.physics.engineJustStarted) this.audio.playEngineStart();
+      if (this.physics.engineJustStalled) {
+        this.audio.playEngineStall();
+        store.pushNotification('warning', '发动机已熄火！', '手动挡转速过低/挡位过高，请按 I 重新点火');
+      }
+      if (this.physics.airBrakeReleaseEvent > 0) {
+        this.audio.playAirRelease(this.physics.airBrakeReleaseEvent);
+      }
+      if (this.physics.airDryerPurgeEvent) {
+        this.audio.playAirDryerPurge();
+      }
+    }
 
     this.telemetryAccumSec += frameDtSec;
     if (this.telemetryAccumSec >= this.telemetryIntervalSec) {
@@ -778,73 +969,114 @@ export class GameEngine {
       }
     }
 
-    const drivingActive = store.gamePhase === 'playing' && store.activeModal === 'none';
+    const isA2Exam = store.gameMode === 'a2_exam' && Boolean(this.examArena && this.examController);
+    const examRunning = !isA2Exam || this.examController?.phase === 'running';
+    const drivingActive = store.gamePhase === 'playing' && store.activeModal === 'none' && examRunning;
     this.input.setDrivingEnabled(drivingActive);
-    this.input.update(dtSec, this.physics.speedMs * 3.6);
+    this.input.update(dtSec, this.physics.speedMs * 3.6, store.realisticSteeringReturn);
 
     if (drivingActive) {
+      const surfaceGripOverride =
+        isA2Exam && this.examArena
+          ? this.examArena.getGripMultiplier(this.physics.x, this.physics.z)
+          : undefined;
       this.physics.step(dtSec, this.input, this.builtMap, {
         engineTier: store.engineTier,
-        cargoWeightTons: store.activeJob?.job.weightTons ?? 0,
-        fuelLiters: store.fuelLiters,
+        cargoWeightTons: isA2Exam ? 14 : store.activeJob?.job.weightTons ?? 0,
+        fuelLiters: isA2Exam ? 400 : store.fuelLiters,
         transmissionMode: store.transmissionMode,
         speedLimiterEnabled: store.speedLimiterEnabled,
-        truckHealth: store.truckHealth,
+        truckHealth: isA2Exam ? 100 : store.truckHealth,
         rainIntensity: this.env.rainIntensity,
         cabMotionEnabled: store.cabMotionEnabled,
-        onFuelBurned: (liters) => store.consumeFuel(liters),
-        onDistanceKm: (km) => store.addCareerDistance(km),
+        surfaceOverride: isA2Exam && this.examArena ? this.examArena.querySurface : undefined,
+        surfaceGripOverride,
+        skipMapCollisions: isA2Exam,
+        onFuelBurned: (liters) => {
+          if (!isA2Exam) store.consumeFuel(liters);
+        },
+        onDistanceKm: (km) => {
+          if (!isA2Exam) store.addCareerDistance(km);
+        },
       });
 
-      const trafficCollision = this.traffic.update(
-        dtSec,
-        this.physics.x,
-        this.physics.y,
-        this.physics.z,
-        this.physics.yaw,
-        this.physics.trailerX,
-        this.physics.trailerZ,
-        this.env.nightFactor,
-        this.env.rainIntensity
-      );
-
-      const impact = this.physics.lastCollision ?? trafficCollision;
-      if (impact) {
-        const dmg = Math.min(18, Math.max(1.5, impact.impactSpeedKmh * 0.25));
-        store.damageTruck(dmg);
-        store.damageCargo(dmg * 1.25);
-        this.audio.playCollision(Math.min(1, impact.impactSpeedKmh / 60));
-        store.pushNotification(
-          'warning',
-          `碰撞: ${impact.label}`,
-          `车损 +${dmg.toFixed(1)}%${store.activeJob ? ' · 货物受损' : ''}`
+      if (isA2Exam && this.examArena && this.examController) {
+        this.examArena.update(dtSec);
+        const prevPhase = this.examController.phase;
+        const fb = this.examController.step(
+          dtSec,
+          this.physics,
+          this.input,
+          this.examArena,
+          this.wipersMode
         );
-      }
-
-      const kmh = Math.abs(this.physics.speedMs) * 3.6;
-      const nowPerf = performance.now();
-      const fine = this.economy.checkSpeedCameras(this.physics.x, this.physics.z, kmh, nowPerf);
-      if (fine !== null) {
-        store.applyFine(fine, `区间测速抓拍超速 (${Math.round(kmh)} km/h)`);
-        store.triggerSpeedCameraFlash();
-        this.audio.playCameraFlash();
-      }
-
-      // Check upcoming intersection traffic signals & enforce red-light violation fines
-      this.evaluateTrafficSignals(kmh, nowPerf);
-
-      if (store.activeJob) {
-        store.tickJobTimer(dtSec);
-        if (store.parkingGuide.readyToDeliver) {
-          this.manualParkHoldSec += dtSec;
-          if (this.manualParkHoldSec >= 0.9) {
-            this.completeDelivery(true);
+        if (fb.forcedRainIntensity !== undefined) {
+          this.examForcedRain = fb.forcedRainIntensity;
+        }
+        if (fb.cue) this.audio.playExamCue(fb.cue);
+        if (fb.voice) this.audio.speakChinese(fb.voice, store.examVoiceEnabled);
+        if (this.examController.phase !== prevPhase) {
+          if (this.examController.phase === 'passed' || this.examController.phase === 'failed') {
+            store.recordA2ExamResult(
+              this.examController.levelId,
+              this.examController.phase === 'passed',
+              this.examController.score,
+              this.examController.elapsedSec
+            );
           }
-        } else {
-          this.manualParkHoldSec = 0;
+          store.setA2ExamState(this.examController.getSnapshot());
+        }
+      } else {
+        const trafficCollision = this.traffic.update(
+          dtSec,
+          this.physics.x,
+          this.physics.y,
+          this.physics.z,
+          this.physics.yaw,
+          this.physics.trailerX,
+          this.physics.trailerZ,
+          this.env.nightFactor,
+          this.env.rainIntensity
+        );
+
+        const impact = this.physics.lastCollision ?? trafficCollision;
+        if (impact) {
+          const dmg = Math.min(18, Math.max(1.5, impact.impactSpeedKmh * 0.25));
+          store.damageTruck(dmg);
+          store.damageCargo(dmg * 1.25);
+          this.audio.playCollision(Math.min(1, impact.impactSpeedKmh / 60));
+          store.pushNotification(
+            'warning',
+            `碰撞: ${impact.label}`,
+            `车损 +${dmg.toFixed(1)}%${store.activeJob ? ' · 货物受损' : ''}`
+          );
+        }
+
+        const kmh = Math.abs(this.physics.speedMs) * 3.6;
+        const nowPerf = performance.now();
+        const fine = this.economy.checkSpeedCameras(this.physics.x, this.physics.z, kmh, nowPerf);
+        if (fine !== null) {
+          store.applyFine(fine, `区间测速抓拍超速 (${Math.round(kmh)} km/h)`);
+          store.triggerSpeedCameraFlash();
+          this.audio.playCameraFlash();
+        }
+
+        // Check upcoming intersection traffic signals & enforce red-light violation fines
+        this.evaluateTrafficSignals(kmh, nowPerf);
+
+        if (store.activeJob) {
+          store.tickJobTimer(dtSec);
+          if (store.parkingGuide.readyToDeliver) {
+            this.manualParkHoldSec += dtSec;
+            if (this.manualParkHoldSec >= 0.9) {
+              this.completeDelivery(true);
+            }
+          } else {
+            this.manualParkHoldSec = 0;
+          }
         }
       }
-    } else {
+    } else if (!isA2Exam) {
       this.traffic.update(
         dtSec * 0.35,
         this.physics.x,
@@ -858,10 +1090,21 @@ export class GameEngine {
       );
     }
 
-    this.env.weatherSetting = store.weatherSetting;
-    this.builtMap.update(dtSec, this.elapsedSec);
+    this.env.weatherSetting = isA2Exam
+      ? this.examForcedRain !== null
+        ? 'rain'
+        : 'clear'
+      : store.weatherSetting;
+    if (!isA2Exam) {
+      this.builtMap.update(dtSec, this.elapsedSec);
+    }
     this.env.update(dtSec, this.physics.x, this.physics.z, this.physics.y);
-    this.builtMap.setRainWetness(this.env.rainIntensity);
+    if (isA2Exam && this.examForcedRain !== null) {
+      this.env.rainIntensity = this.examForcedRain;
+    }
+    if (!isA2Exam) {
+      this.builtMap.setRainWetness(this.env.rainIntensity);
+    }
 
     // Rain-sensing automatic wipers (yields to manual P-key override)
     const isRaining = this.env.rainIntensity > 0.25;
@@ -929,10 +1172,12 @@ export class GameEngine {
         : `${store.transmissionMode === 'auto' ? 'A' : 'M'}${this.physics.gear}`;
     const hitchDeg = (this.physics.hitchAngleRad * 180) / Math.PI;
 
-    const currentCity = this.economy.detectCurrentCity(this.physics.x, this.physics.z);
-    const activeDest = store.activeJob
-      ? this.economy.findDepotById(store.activeJob.job.destinationDepotId)?.depot ?? null
-      : null;
+    const isA2Exam = store.gameMode === 'a2_exam';
+    const currentCity = isA2Exam ? null : this.economy.detectCurrentCity(this.physics.x, this.physics.z);
+    const activeDest =
+      !isA2Exam && store.activeJob
+        ? this.economy.findDepotById(store.activeJob.job.destinationDepotId)?.depot ?? null
+        : null;
 
     const guidance = this.nav.getGuidance(
       this.physics.x,
@@ -943,11 +1188,13 @@ export class GameEngine {
       this.activeRoute
     );
 
-    const nearby = this.economy.detectNearbyInteraction(
-      this.physics.x,
-      this.physics.z,
-      activeDest?.id ?? null
-    );
+    const nearby = isA2Exam
+      ? null
+      : this.economy.detectNearbyInteraction(
+          this.physics.x,
+          this.physics.z,
+          activeDest?.id ?? null
+        );
     store.setNearbyInteraction(nearby);
 
     const parkingGuide = this.parkingValidator.evaluate(
@@ -959,6 +1206,10 @@ export class GameEngine {
       kmh
     );
     store.setParkingGuide(parkingGuide);
+
+    if (isA2Exam && this.examController) {
+      store.setA2ExamState(this.examController.getSnapshot());
+    }
 
     // Update 3D cockpit instrument cluster & SatNav CanvasTexture cleanly when in 1st-person view
     if (store.cameraMode === 1 && store.gamePhase === 'playing') {
@@ -972,13 +1223,21 @@ export class GameEngine {
         leftBlinker: this.physics.blinkerLit && (this.physics.leftBlinker || this.physics.hazardLights),
         rightBlinker: this.physics.blinkerLit && (this.physics.rightBlinker || this.physics.hazardLights),
         cruiseControlKmh: this.physics.cruiseControlKmh,
+        airPressureBar: this.physics.airPressureBar,
+        lowAirWarning: this.physics.lowAirWarning,
+        engineRunning: this.physics.engineRunning,
+        exhaustBrakeActive: this.physics.exhaustBrakeActive,
+        retarderLevel: this.physics.retarderLevel,
+        brakeTempC: this.physics.brakeTempC,
       });
       this.textures.updateDynamicCabGps({
         speedKmh: Math.round(kmh),
         speedLimitKmh: this.physics.speedLimitKmh,
         distanceMeters: guidance.distanceMeters,
         hasActiveJob: Boolean(store.activeJob),
-        instruction: guidance.instruction,
+        instruction: isA2Exam
+          ? this.examController?.instruction ?? '中国 A2 驾考模拟'
+          : guidance.instruction,
       });
     }
 
@@ -1012,7 +1271,9 @@ export class GameEngine {
       wipersMode: this.wipersMode,
       upcomingSignal: this.upcomingSignal,
       upcomingSignalDistMeters: this.upcomingSignalDistMeters,
-      currentCityName: currentCity?.name ?? '欧陆干线公路',
+      currentCityName: isA2Exam
+        ? '中国 A2 驾考中心'
+        : currentCity?.name ?? '欧陆干线公路',
       navDistanceMeters: Math.round(guidance.distanceMeters),
       navEtaSeconds: Math.round(guidance.etaSeconds),
       navInstruction: guidance.instruction,
@@ -1022,6 +1283,20 @@ export class GameEngine {
       trailerX: this.physics.trailerX,
       trailerZ: this.physics.trailerZ,
       trailerHeadingRad: this.physics.trailerYaw,
+      airPressureBar: Number(this.physics.airPressureBar.toFixed(2)),
+      lowAirWarning: this.physics.lowAirWarning,
+      emergencyBrakeLock: this.physics.emergencyBrakeLock,
+      brakeTempC: Math.round(this.physics.brakeTempC),
+      brakeFadePct: this.physics.brakeFadePct,
+      engineRunning: this.physics.engineRunning,
+      engineStalled: this.physics.engineStalled,
+      exhaustBrakeActive: this.physics.exhaustBrakeActive,
+      diffLockActive: this.physics.diffLockActive,
+      trailerBrakeActive: this.physics.trailerBrakeActive,
+      clutchPedal: Number(this.input.clutch.toFixed(2)),
+      frontWheelAngleDeg: this.physics.frontWheelAngleDeg,
+      totalWeightTons: this.physics.totalWeightTons,
+      instantFuelLPer100Km: this.physics.instantFuelLPer100Km,
     });
   }
 }

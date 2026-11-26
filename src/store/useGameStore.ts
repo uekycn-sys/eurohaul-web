@@ -1,13 +1,15 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { A2ExamLevelId, A2ExamStateSnapshot, A2LevelBestRecord } from '../exam/types';
 
 export type QualityPreset = 'mobile_fast' | 'mobile_balanced' | 'pc_igpu' | 'high' | 'ultra';
 export type MobileSteeringStyle = 'wheel' | 'buttons';
 export type GamePhase = 'menu' | 'playing';
-export type ActiveModal = 'none' | 'jobs' | 'garage' | 'map' | 'settings' | 'delivery_summary';
+export type GameMode = 'career' | 'a2_exam';
+export type ActiveModal = 'none' | 'jobs' | 'garage' | 'map' | 'settings' | 'delivery_summary' | 'exam_select';
 export type TransmissionMode = 'auto' | 'sequential';
 export type HeadlightMode = 0 | 1 | 2; // 0: Off, 1: Low/DRL, 2: High Beam
-export type CameraMode = 1 | 2 | 3 | 4;
+export type CameraMode = 1 | 2 | 3 | 4 | 5;
 export type AdvisorTab = 'nav' | 'cargo' | 'truck' | 'controls';
 export type WeatherSetting = 'auto' | 'clear' | 'rain';
 export type WipersMode = 0 | 1 | 2;
@@ -331,6 +333,21 @@ export interface TelemetrySnapshot {
   trailerX: number;
   trailerZ: number;
   trailerHeadingRad: number;
+  // Realistic heavy-truck telemetry
+  airPressureBar: number;
+  lowAirWarning: boolean;
+  emergencyBrakeLock: boolean;
+  brakeTempC: number;
+  brakeFadePct: number;
+  engineRunning: boolean;
+  engineStalled: boolean;
+  exhaustBrakeActive: boolean;
+  diffLockActive: boolean;
+  trailerBrakeActive: boolean;
+  clutchPedal: number;
+  frontWheelAngleDeg: number;
+  totalWeightTons: number;
+  instantFuelLPer100Km: number;
 }
 
 interface PersistedCareerState {
@@ -357,12 +374,19 @@ interface PersistedCareerState {
   mobileSteeringStyle: MobileSteeringStyle;
   speedLimiterEnabled: boolean;
   weatherSetting: WeatherSetting;
+  realisticSteeringReturn: boolean;
+  examVoiceEnabled: boolean;
+  examStrictCamera: boolean;
+  a2ExamProgress: Partial<Record<A2ExamLevelId, A2LevelBestRecord>>;
 }
 
 interface GameStoreState extends PersistedCareerState {
   detectedDeviceLabel: string;
   isTouchDevice: boolean;
   gamePhase: GamePhase;
+  gameMode: GameMode;
+  activeExamLevelId: A2ExamLevelId | null;
+  a2ExamState: A2ExamStateSnapshot | null;
   activeModal: ActiveModal;
   cameraMode: CameraMode;
   advisorTab: AdvisorTab;
@@ -378,6 +402,10 @@ interface GameStoreState extends PersistedCareerState {
 
   // Actions
   setGamePhase: (phase: GamePhase) => void;
+  setGameMode: (mode: GameMode) => void;
+  setActiveExamLevelId: (levelId: A2ExamLevelId | null) => void;
+  setA2ExamState: (state: A2ExamStateSnapshot | null) => void;
+  recordA2ExamResult: (levelId: A2ExamLevelId, passed: boolean, score: number, elapsedSec: number) => void;
   setSelectedMapId: (mapId: string) => void;
   setActiveModal: (modal: ActiveModal) => void;
   setCameraMode: (mode: CameraMode) => void;
@@ -395,6 +423,9 @@ interface GameStoreState extends PersistedCareerState {
   setMobileSteeringStyle: (style: MobileSteeringStyle) => void;
   setSpeedLimiterEnabled: (enabled: boolean) => void;
   setWeatherSetting: (weather: WeatherSetting) => void;
+  setRealisticSteeringReturn: (enabled: boolean) => void;
+  setExamVoiceEnabled: (enabled: boolean) => void;
+  setExamStrictCamera: (enabled: boolean) => void;
 
   // Gameplay & economy actions
   setAvailableJobs: (jobs: FreightJob[]) => void;
@@ -462,6 +493,20 @@ const DEFAULT_TELEMETRY: TelemetrySnapshot = {
   trailerX: 0,
   trailerZ: 0,
   trailerHeadingRad: 0,
+  airPressureBar: 8.0,
+  lowAirWarning: false,
+  emergencyBrakeLock: false,
+  brakeTempC: 65,
+  brakeFadePct: 0,
+  engineRunning: true,
+  engineStalled: false,
+  exhaustBrakeActive: false,
+  diffLockActive: false,
+  trailerBrakeActive: false,
+  clutchPedal: 0,
+  frontWheelAngleDeg: 0,
+  totalWeightTons: 15,
+  instantFuelLPer100Km: 0,
 };
 
 const DEFAULT_PARKING_GUIDE: ParkingGuideState = {
@@ -500,6 +545,10 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   mobileSteeringStyle: 'wheel',
   speedLimiterEnabled: true,
   weatherSetting: 'auto',
+  realisticSteeringReturn: true,
+  examVoiceEnabled: true,
+  examStrictCamera: false,
+  a2ExamProgress: {},
 };
 
 let notificationSeq = 1;
@@ -542,6 +591,9 @@ export const useGameStore = create<GameStoreState>()(
       detectedDeviceLabel: INITIAL_HARDWARE.deviceLabel,
       isTouchDevice: INITIAL_HARDWARE.isTouchDevice,
       gamePhase: 'menu',
+      gameMode: 'career',
+      activeExamLevelId: null,
+      a2ExamState: null,
       activeModal: 'none',
       cameraMode: 1,
       advisorTab: 'nav',
@@ -556,6 +608,33 @@ export const useGameStore = create<GameStoreState>()(
       telemetry: DEFAULT_TELEMETRY,
 
       setGamePhase: (gamePhase) => set({ gamePhase }),
+      setGameMode: (gameMode) => set({ gameMode }),
+      setActiveExamLevelId: (activeExamLevelId) => set({ activeExamLevelId }),
+      setA2ExamState: (a2ExamState) => set({ a2ExamState }),
+      recordA2ExamResult: (levelId, passed, score, elapsedSec) =>
+        set((s) => {
+          const prev = s.a2ExamProgress[levelId] ?? {
+            passed: false,
+            bestScore: 0,
+            bestTimeSec: null,
+            attempts: 0,
+          };
+          const nextBestTime =
+            passed && (prev.bestTimeSec === null || elapsedSec < prev.bestTimeSec)
+              ? Number(elapsedSec.toFixed(1))
+              : prev.bestTimeSec;
+          return {
+            a2ExamProgress: {
+              ...s.a2ExamProgress,
+              [levelId]: {
+                passed: prev.passed || passed,
+                bestScore: Math.max(prev.bestScore, score),
+                bestTimeSec: nextBestTime,
+                attempts: prev.attempts + 1,
+              },
+            },
+          };
+        }),
       setSelectedMapId: (selectedMapId) => set({ selectedMapId }),
       setActiveModal: (activeModal) => set({ activeModal }),
       setCameraMode: (cameraMode) => set({ cameraMode }),
@@ -580,6 +659,9 @@ export const useGameStore = create<GameStoreState>()(
       setMobileSteeringStyle: (mobileSteeringStyle) => set({ mobileSteeringStyle }),
       setSpeedLimiterEnabled: (speedLimiterEnabled) => set({ speedLimiterEnabled }),
       setWeatherSetting: (weatherSetting) => set({ weatherSetting }),
+      setRealisticSteeringReturn: (realisticSteeringReturn) => set({ realisticSteeringReturn }),
+      setExamVoiceEnabled: (examVoiceEnabled) => set({ examVoiceEnabled }),
+      setExamStrictCamera: (examStrictCamera) => set({ examStrictCamera }),
 
       setAvailableJobs: (availableJobs) => set({ availableJobs }),
 
@@ -878,12 +960,13 @@ export const useGameStore = create<GameStoreState>()(
     }),
     {
       name: 'eurohaul_save_v1',
-      version: 3,
+      version: 4,
       migrate: (persistedState) => {
         const st = (persistedState ?? {}) as Partial<PersistedCareerState>;
         return {
           ...INITIAL_PERSISTED,
           ...st,
+          a2ExamProgress: st.a2ExamProgress ?? {},
           qualityPreset:
             !INITIAL_HARDWARE.isTouchDevice && st.qualityPreset === 'high'
               ? INITIAL_HARDWARE.recommendedPreset
@@ -914,6 +997,10 @@ export const useGameStore = create<GameStoreState>()(
         mobileSteeringStyle: state.mobileSteeringStyle,
         speedLimiterEnabled: state.speedLimiterEnabled,
         weatherSetting: state.weatherSetting,
+        realisticSteeringReturn: state.realisticSteeringReturn,
+        examVoiceEnabled: state.examVoiceEnabled,
+        examStrictCamera: state.examStrictCamera,
+        a2ExamProgress: state.a2ExamProgress,
       }),
     }
   )

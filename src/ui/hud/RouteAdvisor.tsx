@@ -381,10 +381,19 @@ export const RouteAdvisor = memo(function RouteAdvisor({
               <b className="text-amber-300">W / S</b> 油门 / 刹车
             </span>
             <span>
-              <b className="text-amber-300">A / D</b> 转向
+              <b className="text-amber-300">A / D / N</b> 转向 / 回正
             </span>
             <span>
               <b className="text-amber-300">Space</b> 手刹启闭
+            </span>
+            <span>
+              <b className="text-amber-300">I / Z</b> 点火 / 离合
+            </span>
+            <span>
+              <b className="text-amber-300">J / B</b> 排气制 / 缓速器
+            </span>
+            <span>
+              <b className="text-amber-300">U / Y</b> 差速锁 / 挂车刹
             </span>
             <span>
               <b className="text-amber-300">Q / E</b> 左右转向灯
@@ -393,22 +402,16 @@ export const RouteAdvisor = memo(function RouteAdvisor({
               <b className="text-amber-300">L / X</b> 大灯 / 双闪
             </span>
             <span>
-              <b className="text-amber-300">C / B</b> 巡航 / 缓速器
+              <b className="text-amber-300">C / T / H</b> 巡航 / 摘挂 / 喇叭
             </span>
             <span>
-              <b className="text-amber-300">T / H</b> 摘挂 / 气喇叭
-            </span>
-            <span>
-              <b className="text-amber-300">1 - 4 / V</b> 切换视角
+              <b className="text-amber-300">1 - 5 / V</b> 切换视角
             </span>
             <span>
               <b className="text-amber-300">Shift/Ctrl</b> 升降档
             </span>
             <span>
-              <b className="text-amber-300">P / F</b> 雨刷 / 全屏
-            </span>
-            <span>
-              <b className="text-amber-300">Enter / R</b> 交互 / 休息
+              <b className="text-amber-300">P / F / R</b> 雨刷 / 全屏 / 休
             </span>
           </div>
         )}

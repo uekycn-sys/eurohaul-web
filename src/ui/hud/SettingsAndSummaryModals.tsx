@@ -49,6 +49,10 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
   const setMirrorsEnabled = useGameStore((s) => s.setMirrorsEnabled);
   const speedLimiterEnabled = useGameStore((s) => s.speedLimiterEnabled);
   const setSpeedLimiterEnabled = useGameStore((s) => s.setSpeedLimiterEnabled);
+  const realisticSteeringReturn = useGameStore((s) => s.realisticSteeringReturn);
+  const setRealisticSteeringReturn = useGameStore((s) => s.setRealisticSteeringReturn);
+  const examVoiceEnabled = useGameStore((s) => s.examVoiceEnabled);
+  const setExamVoiceEnabled = useGameStore((s) => s.setExamVoiceEnabled);
   const mobileControlsEnabled = useGameStore((s) => s.mobileControlsEnabled);
   const setMobileControlsEnabled = useGameStore((s) => s.setMobileControlsEnabled);
   const mobileSteeringStyle = useGameStore((s) => s.mobileSteeringStyle);
@@ -188,6 +192,36 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
                   }`}
                 >
                   {speedLimiterEnabled ? '开启 (90 km/h)' : '关闭 (110 km/h)'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">真实主销回正 (低速不自动归零 · N回正)</span>
+                <button
+                  type="button"
+                  onClick={() => setRealisticSteeringReturn(!realisticSteeringReturn)}
+                  className={`rounded-lg px-3 py-1 font-semibold ${
+                    realisticSteeringReturn
+                      ? 'bg-emerald-500 text-slate-950'
+                      : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  {realisticSteeringReturn ? '真实模式' : '自动回正'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">A2 考场中文语音播报</span>
+                <button
+                  type="button"
+                  onClick={() => setExamVoiceEnabled(!examVoiceEnabled)}
+                  className={`rounded-lg px-3 py-1 font-semibold ${
+                    examVoiceEnabled
+                      ? 'bg-emerald-500 text-slate-950'
+                      : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  {examVoiceEnabled ? '已开启' : '已关闭'}
                 </button>
               </div>
 

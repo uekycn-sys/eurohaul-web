@@ -9,6 +9,7 @@ import { TruckVisualRefs } from './TruckMeshBuilder';
  * 2: Third-Person Chase (speed-reactive FOV & damped follow)
  * 3: Reverse Side-Mirror Angle (driver-side elevated look-back at trailer & bay)
  * 4: Cinematic Orbit (auto-orbit + pointer drag support)
+ * 5: Overhead Precision Top-Down (ideal for A2 exam lines & trailer off-tracking)
  */
 export class CameraRig {
   private readonly camera: THREE.PerspectiveCamera;
@@ -21,6 +22,7 @@ export class CameraRig {
 
   private orbitYaw = 0.65;
   private orbitPitch = 0.28;
+  private overheadHeight = 24;
   private cabLookYaw = 0;
   private cabLookPitch = 0;
   private isDragging = false;
@@ -38,9 +40,14 @@ export class CameraRig {
     this.domElement = domElement;
     domElement.addEventListener('pointerdown', this.onPointerDown);
     domElement.addEventListener('dblclick', this.onDoubleClick);
+    domElement.addEventListener('wheel', this.onWheel, { passive: true });
     window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
   }
+
+  private readonly onWheel = (e: WheelEvent): void => {
+    this.overheadHeight = THREE.MathUtils.clamp(this.overheadHeight + e.deltaY * 0.015, 14, 38);
+  };
 
   public resetCabLook(): void {
     this.cabLookYaw = 0;
@@ -209,6 +216,36 @@ export class CameraRig {
       return;
     }
 
+    if (mode === 5) {
+      // Overhead precision camera tracking tractor-trailer midpoint
+      const fwdX = Math.sin(physics.yaw);
+      const fwdZ = Math.cos(physics.yaw);
+      const cx = physics.trailerAttached ? (physics.x * 0.45 + physics.trailerX * 0.55) : physics.x;
+      const cz = physics.trailerAttached ? (physics.z * 0.45 + physics.trailerZ * 0.55) : physics.z;
+
+      this.desiredPos.set(
+        cx - fwdX * 4.5,
+        physics.y + this.overheadHeight,
+        cz - fwdZ * 4.5
+      );
+      this.desiredLook.set(cx + fwdX * 1.2, physics.y + 0.5, cz + fwdZ * 1.2);
+
+      this.camera.fov += (52 - this.camera.fov) * Math.min(1, dtSec * 8);
+      this.camera.updateProjectionMatrix();
+
+      if (!this.initialized) {
+        this.currentPos.copy(this.desiredPos);
+        this.currentLook.copy(this.desiredLook);
+        this.initialized = true;
+      } else {
+        this.currentPos.lerp(this.desiredPos, Math.min(1, dtSec * 8));
+        this.currentLook.lerp(this.desiredLook, Math.min(1, dtSec * 10));
+      }
+      this.camera.position.copy(this.currentPos);
+      this.camera.lookAt(this.currentLook);
+      return;
+    }
+
     // Mode 3: Driver-side reverse sightline (looks along left side of trailer & bay)
     const fwdX = Math.sin(physics.yaw);
     const fwdZ = Math.cos(physics.yaw);
@@ -244,6 +281,7 @@ export class CameraRig {
   public dispose(): void {
     this.domElement.removeEventListener('pointerdown', this.onPointerDown);
     this.domElement.removeEventListener('dblclick', this.onDoubleClick);
+    this.domElement.removeEventListener('wheel', this.onWheel);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
   }

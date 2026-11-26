@@ -7,9 +7,14 @@ export interface InputActions {
   onToggleCruiseControl?: () => void;
   onCycleRetarder?: () => void;
   onToggleTrailer?: () => void;
+  onToggleIgnition?: () => void;
+  onToggleExhaustBrake?: () => void;
+  onToggleDiffLock?: () => void;
+  onCenterSteering?: () => void;
+  onRestartExam?: () => void;
   onShiftUp?: () => void;
   onShiftDown?: () => void;
-  onCameraMode?: (mode: 1 | 2 | 3 | 4) => void;
+  onCameraMode?: (mode: 1 | 2 | 3 | 4 | 5) => void;
   onCycleCamera?: () => void;
   onToggleMap?: () => void;
   onCycleAdvisorTab?: () => void;
@@ -21,8 +26,8 @@ export interface InputActions {
 }
 
 /**
- * Handles smoothed keyboard driving inputs (speed-sensitive steering with self-centering)
- * and discrete vehicle control bindings without leaking state across focus loss.
+ * Handles smoothed keyboard driving inputs (speed-sensitive steering with configurable caster return,
+ * progressive clutch pedal, trailer hand-valve, and discrete vehicle control bindings).
  */
 export class InputManager {
   private readonly keys = new Set<string>();
@@ -32,8 +37,11 @@ export class InputManager {
   public throttle = 0;
   public brake = 0;
   public steer = 0; // +1 = Left, -1 = Right
+  public clutch = 0; // 0 = engaged, 1 = fully depressed
+  public trailerBrake = false;
   public horn = false;
 
+  private centeringSteer = false;
   private touchSteer: number | null = null;
   private touchThrottle = 0;
   private touchBrake = 0;
@@ -51,11 +59,17 @@ export class InputManager {
     if (!enabled) {
       this.keys.clear();
       this.horn = false;
+      this.trailerBrake = false;
+      this.centeringSteer = false;
       this.touchSteer = null;
       this.touchThrottle = 0;
       this.touchBrake = 0;
       this.touchHorn = false;
     }
+  }
+
+  public triggerCenterSteering(): void {
+    this.centeringSteer = true;
   }
 
   public setTouchSteer(steerNorm: number | null): void {
@@ -74,11 +88,13 @@ export class InputManager {
     this.touchHorn = active;
   }
 
-  public update(dtSec: number, speedKmh: number): void {
+  public update(dtSec: number, speedKmh: number, realisticSteeringReturn = true): void {
     if (!this.enabled) {
       this.throttle = Math.max(0, this.throttle - dtSec * 4);
       this.brake = Math.max(0, this.brake - dtSec * 4);
+      this.clutch = Math.max(0, this.clutch - dtSec * 5);
       this.steer *= Math.max(0, 1 - dtSec * 6);
+      this.trailerBrake = false;
       this.horn = false;
       return;
     }
@@ -87,10 +103,12 @@ export class InputManager {
     const kbBrake = this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0;
     const wantLeft = this.keys.has('KeyA') || this.keys.has('ArrowLeft');
     const wantRight = this.keys.has('KeyD') || this.keys.has('ArrowRight');
+    const wantClutch = this.keys.has('KeyZ') ? 1 : 0;
 
     this.horn = this.keys.has('KeyH') || this.touchHorn;
+    this.trailerBrake = this.keys.has('KeyY');
 
-    // Progressive throttle & brake application (blend keyboard + touch)
+    // Progressive throttle, brake, and clutch pedal (controlled release for half-clutch hill starts)
     const targetThrottle = Math.max(kbThrottle, this.touchThrottle);
     const throttleRate = targetThrottle > this.throttle ? 2.4 : 4.2;
     this.throttle += (targetThrottle - this.throttle) * Math.min(1, dtSec * throttleRate * 3);
@@ -99,19 +117,38 @@ export class InputManager {
     const brakeRate = targetBrake > this.brake ? 3.2 : 4.8;
     this.brake += (targetBrake - this.brake) * Math.min(1, dtSec * brakeRate * 3);
 
-    // Speed-sensitive steering ramp & auto self-centering
+    if (wantClutch > this.clutch) {
+      this.clutch = Math.min(1, this.clutch + dtSec * 8.0);
+    } else if (wantClutch < this.clutch) {
+      this.clutch = Math.max(0, this.clutch - dtSec * 1.9);
+    }
+
+    // Speed-sensitive steering ramp & caster self-centering
     if (this.touchSteer !== null) {
       this.steer += (this.touchSteer - this.steer) * Math.min(1, dtSec * 14);
       return;
     }
 
     let targetSteer = 0;
-    if (wantLeft && !wantRight) targetSteer = 1;
-    else if (wantRight && !wantLeft) targetSteer = -1;
+    if (wantLeft && !wantRight) {
+      targetSteer = 1;
+      this.centeringSteer = false;
+    } else if (wantRight && !wantLeft) {
+      targetSteer = -1;
+      this.centeringSteer = false;
+    }
 
     const absSpeed = Math.abs(speedKmh);
-    const speedSteerSpeed = Math.max(1.15, 2.5 - absSpeed * 0.015);
-    const centerSpeed = 3.2 + Math.min(3.0, absSpeed * 0.04);
+    const speedSteerSpeed = realisticSteeringReturn
+      ? Math.max(0.85, 1.85 - absSpeed * 0.012)
+      : Math.max(1.15, 2.5 - absSpeed * 0.015);
+    const centerSpeed = this.centeringSteer
+      ? 5.5
+      : realisticSteeringReturn
+      ? absSpeed < 1.5
+        ? 0
+        : 0.6 + Math.min(4.2, absSpeed * 0.08)
+      : 3.2 + Math.min(3.0, absSpeed * 0.04);
 
     if (targetSteer !== 0) {
       const diff = targetSteer - this.steer;
@@ -121,10 +158,11 @@ export class InputManager {
       } else {
         this.steer += step;
       }
-    } else {
+    } else if (centerSpeed > 0) {
       const step = centerSpeed * dtSec;
       if (Math.abs(this.steer) <= step) {
         this.steer = 0;
+        this.centeringSteer = false;
       } else {
         this.steer -= Math.sign(this.steer) * step;
       }
@@ -196,6 +234,22 @@ export class InputManager {
       case 'KeyT':
         this.actions.onToggleTrailer?.();
         break;
+      case 'KeyI':
+        this.actions.onToggleIgnition?.();
+        break;
+      case 'KeyJ':
+        this.actions.onToggleExhaustBrake?.();
+        break;
+      case 'KeyU':
+        this.actions.onToggleDiffLock?.();
+        break;
+      case 'KeyN':
+        this.triggerCenterSteering();
+        this.actions.onCenterSteering?.();
+        break;
+      case 'Backspace':
+        this.actions.onRestartExam?.();
+        break;
       case 'ShiftLeft':
       case 'ShiftRight':
         this.actions.onShiftUp?.();
@@ -215,6 +269,9 @@ export class InputManager {
         break;
       case 'Digit4':
         this.actions.onCameraMode?.(4);
+        break;
+      case 'Digit5':
+        this.actions.onCameraMode?.(5);
         break;
       case 'KeyV':
         this.actions.onCycleCamera?.();

@@ -16,6 +16,12 @@ export interface DashboardDrawState {
   leftBlinker: boolean;
   rightBlinker: boolean;
   cruiseControlKmh?: number | null;
+  airPressureBar?: number;
+  lowAirWarning?: boolean;
+  engineRunning?: boolean;
+  exhaustBrakeActive?: boolean;
+  retarderLevel?: number;
+  brakeTempC?: number;
 }
 
 export interface CabGpsDrawState {
@@ -1084,7 +1090,12 @@ export class ProceduralTextures {
 
   public updateDynamicDashboard(state: DashboardDrawState): void {
     if (!this.dashCtx || !this.dashTexture) return;
-    const key = `${state.speedKmh}_${Math.round(state.rpm / 25)}_${state.gearLabel}_${Math.round(state.fuelPct)}_${state.parkingBrake}_${state.leftBlinker}_${state.rightBlinker}_${state.cruiseControlKmh ?? 'none'}`;
+    const airBar = state.airPressureBar ?? 8.0;
+    const engineRunning = state.engineRunning ?? true;
+    const exh = Boolean(state.exhaustBrakeActive);
+    const ret = state.retarderLevel ?? 0;
+    const lowAir = Boolean(state.lowAirWarning);
+    const key = `${state.speedKmh}_${Math.round(state.rpm / 25)}_${state.gearLabel}_${Math.round(state.fuelPct)}_${state.parkingBrake}_${state.leftBlinker}_${state.rightBlinker}_${state.cruiseControlKmh ?? 'none'}_${airBar.toFixed(1)}_${engineRunning}_${exh}_${ret}_${lowAir}`;
     if (key === this.lastDashKey) return;
     this.lastDashKey = key;
 
@@ -1185,36 +1196,55 @@ export class ProceduralTextures {
     );
 
     // Core high-contrast digital speedometer (clearly visible through upper wheel rim)
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 46px monospace';
-    ctx.fillText(String(state.speedKmh), 256, 80);
+    ctx.fillStyle = engineRunning ? '#ffffff' : '#64748b';
+    ctx.font = 'bold 44px monospace';
+    ctx.fillText(String(state.speedKmh), 256, 76);
 
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 13px sans-serif';
-    ctx.fillText('KM/H', 256, 110);
+    ctx.fillStyle = lowAir ? '#ef4444' : !engineRunning ? '#f59e0b' : '#38bdf8';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.fillText(
+      lowAir ? 'LOW AIR!' : !engineRunning ? 'IGN OFF [I]' : 'KM/H',
+      256,
+      104
+    );
+
+    // Auxiliary status badges (EXH / R1-3)
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = exh ? '#38bdf8' : '#334155';
+    ctx.fillText('EXH', 184, 104);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = ret > 0 ? '#f59e0b' : '#334155';
+    ctx.fillText(ret > 0 ? `R${ret}` : 'RET', 328, 104);
 
     // Gear & Parking brake row
     ctx.fillStyle = '#fbbf24';
-    ctx.font = 'bold 26px monospace';
+    ctx.font = 'bold 24px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(state.gearLabel, 188, 136);
+    ctx.fillText(state.gearLabel, 186, 130);
 
     ctx.fillStyle = state.parkingBrake ? '#ef4444' : '#64748b';
-    ctx.font = 'bold 13px monospace';
+    ctx.font = 'bold 12px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(state.parkingBrake ? 'PARK [P]' : 'DRIVE', 324, 136);
+    ctx.fillText(state.parkingBrake ? 'PARK [P]' : 'DRIVE', 326, 130);
 
-    // Compact RPM & Fuel dual status bars
+    // Compact RPM, Air Pressure (MPa) & Fuel status bars
     const rpmFrac = Math.max(0, Math.min(1, (state.rpm - 600) / 1700));
     ctx.fillStyle = '#1e293b';
-    ctx.fillRect(186, 152, 140, 6);
+    ctx.fillRect(186, 145, 140, 5);
     ctx.fillStyle = state.rpm > 1850 ? '#ef4444' : state.rpm > 1550 ? '#fbbf24' : '#38bdf8';
-    ctx.fillRect(186, 152, 140 * rpmFrac, 6);
+    ctx.fillRect(186, 145, 140 * rpmFrac, 5);
+
+    const airFrac = Math.max(0, Math.min(1, airBar / 8.5));
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(186, 154, 140, 5);
+    ctx.fillStyle = lowAir ? '#ef4444' : '#38bdf8';
+    ctx.fillRect(186, 154, 140 * airFrac, 5);
 
     ctx.fillStyle = '#1e293b';
-    ctx.fillRect(186, 162, 140, 6);
+    ctx.fillRect(186, 163, 140, 5);
     ctx.fillStyle = state.fuelPct < 18 ? '#ef4444' : '#10b981';
-    ctx.fillRect(186, 162, 140 * Math.max(0, Math.min(1, state.fuelPct / 100)), 6);
+    ctx.fillRect(186, 163, 140 * Math.max(0, Math.min(1, state.fuelPct / 100)), 5);
 
     this.dashTexture.needsUpdate = true;
   }
