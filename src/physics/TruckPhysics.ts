@@ -24,8 +24,10 @@ const CRR_OFFROAD = 0.06;
 // 0.5 * rho(1.225) * Cd(0.65) * A(9.5 m^2)
 const AERO_DRAG_COEFF = 0.5 * 1.225 * 0.65 * 9.5;
 
-const TRACTOR_WHEELBASE = 4.2;
+const TRACTOR_WHEELBASE = 3.65;
+const REAR_AXLE_LOCAL_Z = -1.75;
 const HITCH_LOCAL_Z = -1.65;
+const HITCH_FROM_REAR_AXLE = 0.10;
 const KINGPIN_LOCAL_Z = 5.2;
 const TRAILER_WHEELBASE = 9.7;
 const MAX_HITCH_ANGLE_RAD = (72 * Math.PI) / 180;
@@ -179,6 +181,7 @@ export class TruckPhysics {
   public odometerKm = 0;
   public speedLimitKmh = 80;
   public onRoad = true;
+  public onRumbleStrip = false;
   public nearestSegmentId: string | null = null;
   public isReversingThrottle = false;
   public wheelSpinAngle = 0;
@@ -282,6 +285,7 @@ export class TruckPhysics {
     this.cabRoll = 0;
     this.cabPitchVel = 0;
     this.cabRollVel = 0;
+    this.onRumbleStrip = false;
     this.syncAttachedTrailerPosition();
     this.savePreviousPose();
   }
@@ -324,6 +328,7 @@ export class TruckPhysics {
     this.rpm = Math.max(this.rpm, IDLE_RPM);
     this.starterCooldownSec = 0.7;
     this.engineJustStarted = true;
+    this.cabRollVel += 0.32;
     return { running: true, started: true };
   }
 
@@ -633,6 +638,11 @@ export class TruckPhysics {
     }
 
     // Query road surface under tractor & continuous slope
+    this.surfaceMain.roadHalfWidth = 0;
+    this.surfaceMain.medianBarrierHit = false;
+    this.surfaceMain.medianPushX = 0;
+    this.surfaceMain.medianPushZ = 0;
+    this.surfaceMain.medianPenetration = 0;
     this.queryGround(this.x, this.z, map, this.surfaceMain, opts.surfaceOverride);
     this.speedLimitKmh = this.surfaceMain.speedLimitKmh;
     this.onRoad = this.surfaceMain.onRoad;
@@ -669,9 +679,9 @@ export class TruckPhysics {
 
     if (opts.transmissionMode === 'auto') {
       if (this.gear === 0) this.gear = 1;
-      if (this.speedMs > -0.4 && this.speedMs < 0.6 && input.brake > 0.2 && input.throttle < 0.05) {
+      if (Math.abs(this.speedMs) < 0.25 && input.brake > 0.25 && input.throttle < 0.05) {
         this.autoReverseHoldSec += dtSec;
-        if (this.autoReverseHoldSec > 0.22) {
+        if (this.autoReverseHoldSec > 0.55) {
           if (this.gear >= 0) {
             this.gear = -1;
             this.shiftCooldownSec = 0.4;
@@ -1064,6 +1074,20 @@ export class TruckPhysics {
       this.trailerAttached && this.trailerBrakeActive && Math.abs(this.speedMs) > 0.08
         ? Math.sign(this.speedMs) * 38000
         : 0;
+    const engineBrakingForceN =
+      this.engineRunning &&
+      this.gear !== 0 &&
+      clutchEngage > 0.3 &&
+      effectiveThrottle < 0.04 &&
+      this.shiftTimerSec <= 0 &&
+      Math.abs(this.speedMs) > 0.8
+        ? Math.sign(this.speedMs) *
+          THREE.MathUtils.clamp(
+            (1400 + Math.abs(this.rpm) * 3.8) * Math.min(2.6, Math.max(0.6, absRatio * 0.25)),
+            1500,
+            14500
+          )
+        : 0;
 
     const serviceBrakeForceN = this.appliedBrakePressure * maxServiceBrakeN;
     // Brake thermal heating & cooling
@@ -1077,7 +1101,14 @@ export class TruckPhysics {
         : 0;
 
     let netForceN =
-      driveForceN - aeroDragN - rollingDragN + slopeGravityN - retarderForceN - exhaustBrakeForceN - trailerBrakeForceN;
+      driveForceN -
+      aeroDragN -
+      rollingDragN +
+      slopeGravityN -
+      retarderForceN -
+      exhaustBrakeForceN -
+      trailerBrakeForceN -
+      engineBrakingForceN;
     const totalBrakeN = (this.parkingBrake ? maxParkingBrakeN : 0) + serviceBrakeForceN;
 
     if (Math.abs(this.speedMs) > 0.08) {
@@ -1136,8 +1167,11 @@ export class TruckPhysics {
     const yawRate = this.effectiveYawRate;
     this.yaw = wrapAngle(this.yaw + yawRate * dtSec);
 
-    const dx = Math.sin(this.yaw) * this.speedMs * dtSec;
-    const dz = Math.cos(this.yaw) * this.speedMs * dtSec;
+    // Dual-rear-axle (z = -1.75m) no-slip pivot kinematics: origin translates with axle lever arm
+    const vx = Math.sin(this.yaw) * this.speedMs + Math.cos(this.yaw) * (yawRate * -REAR_AXLE_LOCAL_Z);
+    const vz = Math.cos(this.yaw) * this.speedMs - Math.sin(this.yaw) * (yawRate * -REAR_AXLE_LOCAL_Z);
+    const dx = vx * dtSec;
+    const dz = vz * dtSec;
     this.x += dx;
     this.z += dz;
 
@@ -1147,11 +1181,11 @@ export class TruckPhysics {
 
     this.wheelSpinAngle += (this.speedMs * dtSec) / WHEEL_RADIUS;
 
-    // Articulated trailer kinematics
+    // Articulated trailer kinematics using fifth-wheel offset relative to rear drive-axle pivot (+0.10m)
     if (this.trailerAttached) {
       const angleDiff = wrapAngle(this.yaw - this.trailerYaw);
       const hitchVelPerp =
-        this.speedMs * Math.sin(angleDiff) + yawRate * HITCH_LOCAL_Z * Math.cos(angleDiff);
+        this.speedMs * Math.sin(angleDiff) + yawRate * HITCH_FROM_REAR_AXLE * Math.cos(angleDiff);
       const trailerYawRate = hitchVelPerp / TRAILER_WHEELBASE;
       this.trailerYaw = wrapAngle(this.trailerYaw + trailerYawRate * dtSec);
 
@@ -1185,7 +1219,7 @@ export class TruckPhysics {
     const trTargetPitch = THREE.MathUtils.clamp(-Math.atan2(trFrontY - trBackY, 9.0), -0.24, 0.24);
     this.trailerPitch += (trTargetPitch - this.trailerPitch) * Math.min(1, dtSec * 10);
 
-    // Collisions with guardrails & static building colliders (skipped inside custom A2 exam arenas)
+    // Collisions with guardrails, motorway central median & static building colliders (skipped inside custom A2 exam arenas)
     if (!opts.skipMapCollisions) {
       this.resolveCollisions(map);
 
@@ -1195,6 +1229,16 @@ export class TruckPhysics {
       this.z = THREE.MathUtils.clamp(this.z, b.minZ + 35, b.maxZ - 35);
       if (this.trailerAttached) this.syncAttachedTrailerPosition();
     }
+
+    // Highway edge white-line rumble strip detection
+    const roadHalfW = this.surfaceMain.roadHalfWidth ?? 0;
+    this.onRumbleStrip =
+      !opts.skipMapCollisions &&
+      this.surfaceMain.onRoad &&
+      roadHalfW >= 6 &&
+      absSpeedKmh > 30 &&
+      this.surfaceMain.roadDist >= roadHalfW - 0.85 &&
+      this.surfaceMain.roadDist <= roadHalfW + 0.35;
 
     // 2nd-order underdamped cab air suspension (~1.5Hz, zeta ~0.42) with natural brake-stop rebound & outward roll
     const latAccelRaw = this.speedMs * yawRate;
@@ -1208,10 +1252,11 @@ export class TruckPhysics {
       const longAccel = Math.abs(this.cabLongAccel) < 0.08 ? 0 : this.cabLongAccel;
       const latAccel = Math.abs(this.filteredLatAccelMs2) < 0.12 ? 0 : this.filteredLatAccelMs2;
       const shiftDip = this.shiftTimerSec > 0 && throttleCmd > 0.15 ? 0.006 : 0;
-      if (Math.abs(this.speedMs) > 0.04 || Math.abs(longAccel) > 0.05 || shiftDip > 0) {
+      const torqueTwist = absSpeedKmh < 12 && this.engineRunning ? effectiveThrottle * 0.012 : 0;
+      if (Math.abs(this.speedMs) > 0.04 || Math.abs(longAccel) > 0.05 || shiftDip > 0 || torqueTwist > 0) {
         targetCabPitch = THREE.MathUtils.clamp(-longAccel * 0.0082 + shiftDip, -0.032, 0.049);
         // Positive latAccel (left turn) -> positive rotation.z -> cab rolls outward to the RIGHT
-        targetCabRoll = THREE.MathUtils.clamp(latAccel * 0.0112, -0.056, 0.056);
+        targetCabRoll = THREE.MathUtils.clamp(latAccel * 0.0112 + torqueTwist, -0.056, 0.056);
       }
     }
 
@@ -1250,7 +1295,11 @@ export class TruckPhysics {
   }
 
   private resolveCollisions(map: BuiltMap): void {
-    // Guardrail firm lateral barrier deflection (prevents clipping past guardrail posts!)
+    // Guardrail & 4-lane motorway central median barrier deflection
+    this.surfaceMain.medianBarrierHit = false;
+    this.surfaceMain.medianPushX = 0;
+    this.surfaceMain.medianPushZ = 0;
+    this.surfaceMain.medianPenetration = 0;
     map.querySurface(this.x, this.z, this.surfaceMain);
     if (this.surfaceMain.guardrailHit && this.surfaceMain.nearestSegmentId) {
       const seg = map.segmentMap.get(this.surfaceMain.nearestSegmentId);
@@ -1262,6 +1311,16 @@ export class TruckPhysics {
       this.speedMs *= 0.94;
       if (impactKmh > 18 && this.collisionCooldownSec <= 0) {
         this.lastCollision = { impactSpeedKmh: impactKmh, label: '公路防撞护栏' };
+        this.collisionCooldownSec = 1.4;
+      }
+    } else if (this.surfaceMain.medianBarrierHit) {
+      const pen = Math.max(0.2, this.surfaceMain.medianPenetration ?? 0.35);
+      const impactKmh = Math.abs(this.speedMs) * 3.6;
+      this.x += (this.surfaceMain.medianPushX ?? 0) * pen;
+      this.z += (this.surfaceMain.medianPushZ ?? 0) * pen;
+      this.speedMs *= 0.90;
+      if (impactKmh > 18 && this.collisionCooldownSec <= 0) {
+        this.lastCollision = { impactSpeedKmh: impactKmh, label: '高速中央防撞护栏' };
         this.collisionCooldownSec = 1.4;
       }
     }

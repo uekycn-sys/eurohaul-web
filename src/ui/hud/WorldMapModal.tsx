@@ -67,6 +67,22 @@ export const WorldMapModal = memo(function WorldMapModal({
 
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    const sampleSegPoint = (segId: string, t: number): [number, number] | null => {
+      const seg = mapManifest.segments.find((s) => s.id === segId);
+      if (!seg) return null;
+      const a = nodeLookup.get(seg.fromNodeId);
+      const b = nodeLookup.get(seg.toNodeId);
+      if (!a || !b) return null;
+      const pts = [a.position, ...(seg.controlPoints ?? []), b.position];
+      const clampedT = Math.max(0, Math.min(1, t));
+      const fIdx = clampedT * (pts.length - 1);
+      const i0 = Math.min(pts.length - 2, Math.floor(fIdx));
+      const frac = fIdx - i0;
+      const p0 = pts[i0]!;
+      const p1 = pts[i0 + 1]!;
+      return toMap(p0[0] + (p1[0] - p0[0]) * frac, p0[2] + (p1[2] - p0[2]) * frac);
+    };
+
     for (const seg of mapManifest.segments) {
       const a = nodeLookup.get(seg.fromNodeId);
       const b = nodeLookup.get(seg.toNodeId);
@@ -81,6 +97,61 @@ export const WorldMapModal = memo(function WorldMapModal({
         if (i === 0) ctx.moveTo(mx, my);
         else ctx.lineTo(mx, my);
       }
+      ctx.stroke();
+    }
+
+    // Route shields from gantries + national corridor fallback
+    const shields: Array<{ code: string; pos: [number, number]; isMotorway: boolean }> = [];
+    for (const g of mapManifest.gantries ?? []) {
+      const p = sampleSegPoint(g.segmentId, g.t);
+      if (p) shields.push({ code: g.routeCode, pos: p, isMotorway: g.style === 'motorway' });
+    }
+    const b3Pos = sampleSegPoint('seg_b3_east', 0.5);
+    if (b3Pos) shields.push({ code: 'B3', pos: b3Pos, isMotorway: false });
+
+    ctx.font = 'bold 10px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const sh of shields) {
+      const [sx, sy] = sh.pos;
+      const bw = sh.code.length > 2 ? 32 : 24;
+      const bh = 15;
+      ctx.fillStyle = sh.isMotorway ? '#1d4ed8' : '#eab308';
+      ctx.strokeStyle = sh.isMotorway ? '#e2e8f0' : '#0f172a';
+      ctx.lineWidth = 1.2;
+      ctx.fillRect(sx - bw / 2, sy - bh / 2, bw, bh);
+      ctx.strokeRect(sx - bw / 2, sy - bh / 2, bw, bh);
+      ctx.fillStyle = sh.isMotorway ? '#ffffff' : '#0f172a';
+      ctx.fillText(sh.code, sx, sy + 0.5);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+
+    // E-Toll stations from landmarks
+    for (const lm of mapManifest.landmarks) {
+      if (lm.kind !== 'toll_booth') continue;
+      const [tx, ty] = toMap(lm.position[0], lm.position[2]);
+      ctx.fillStyle = '#0284c7';
+      ctx.strokeStyle = '#e0f2fe';
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(tx - 7, ty - 7, 14, 14);
+      ctx.strokeRect(tx - 7, ty - 7, 14, 14);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 9px Inter, sans-serif';
+      ctx.fillText('E', tx - 3, ty + 3);
+    }
+
+    // Speed cameras
+    for (const cam of mapManifest.speedCameras) {
+      const pos = sampleSegPoint(cam.segmentId, cam.t);
+      if (!pos) continue;
+      const [cx, cy] = pos;
+      ctx.fillStyle = '#ef4444';
+      ctx.strokeStyle = '#fef2f2';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.fill();
       ctx.stroke();
     }
 
@@ -187,6 +258,21 @@ export const WorldMapModal = memo(function WorldMapModal({
           </span>
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-400" /> 目的卸货位
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500" /> 加油站
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-sky-500" /> 维修站
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-flex h-3 w-3 items-center justify-center rounded-[2px] border border-sky-200 bg-sky-600 text-[8px] font-bold text-white">
+              E
+            </span>
+            E-Toll 收费站
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full border border-white bg-rose-500" /> 测速雷达
           </span>
         </div>
       </div>

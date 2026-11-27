@@ -11,6 +11,8 @@ export type TransmissionMode = 'auto' | 'real_auto' | 'sequential';
 export type HeadlightMode = 0 | 1 | 2; // 0: Off, 1: Low/DRL, 2: High Beam
 export type CameraMode = 1 | 2 | 3 | 4 | 5;
 export type AdvisorTab = 'nav' | 'cargo' | 'truck' | 'controls';
+export type MirrorDisplayMode = 'both' | 'right_only' | 'off';
+export type AdvisorDisplayMode = 'full' | 'mini' | 'hidden';
 export type WeatherSetting = 'auto' | 'clear' | 'rain';
 export type WipersMode = 0 | 1 | 2;
 export type SignalState = 'green' | 'amber' | 'red';
@@ -283,6 +285,9 @@ export interface ParkingGuideState {
   angleErrorDeg: number;
   speedKmh: number;
   readyToDeliver: boolean;
+  bayX?: number;
+  bayZ?: number;
+  bayHeadingRad?: number;
 }
 
 export interface HudNotification {
@@ -354,6 +359,8 @@ export interface TelemetrySnapshot {
   navTurnDir: 'straight' | 'left' | 'right' | 'arrive';
   navTurnDistMeters: number | null;
   estFuelRangeKm: number;
+  upcomingTollLabel: string | null;
+  upcomingTollDistMeters: number | null;
 }
 
 interface PersistedCareerState {
@@ -374,6 +381,13 @@ interface PersistedCareerState {
   showDrawCalls: boolean;
   cabMotionEnabled: boolean;
   mirrorsEnabled: boolean;
+  mirrorDisplayMode: MirrorDisplayMode;
+  advisorDisplayMode: AdvisorDisplayMode;
+  cabFovDeg: number;
+  seatOffsetZ: number;
+  seatOffsetY: number;
+  steeringCameraEnabled: boolean;
+  showCabPendant: boolean;
   audioEnabled: boolean;
   masterVolume: number;
   mobileControlsEnabled: boolean;
@@ -396,6 +410,7 @@ interface GameStoreState extends PersistedCareerState {
   activeExamLevelId: A2ExamLevelId | null;
   a2ExamState: A2ExamStateSnapshot | null;
   activeModal: ActiveModal;
+  seatAdjustOpen: boolean;
   cameraMode: CameraMode;
   advisorTab: AdvisorTab;
   transmissionMode: TransmissionMode;
@@ -425,6 +440,17 @@ interface GameStoreState extends PersistedCareerState {
   setShowDrawCalls: (show: boolean) => void;
   setCabMotionEnabled: (enabled: boolean) => void;
   setMirrorsEnabled: (enabled: boolean) => void;
+  setMirrorDisplayMode: (mode: MirrorDisplayMode) => void;
+  cycleMirrorDisplayMode: () => void;
+  cycleAdvisorDisplayMode: () => void;
+  setSeatAdjustOpen: (open: boolean) => void;
+  toggleSeatAdjustOpen: () => void;
+  setCabFovDeg: (fov: number) => void;
+  setSeatOffsetZ: (z: number) => void;
+  setSeatOffsetY: (y: number) => void;
+  resetSeatAdjust: () => void;
+  setSteeringCameraEnabled: (enabled: boolean) => void;
+  setShowCabPendant: (show: boolean) => void;
   setAudioEnabled: (enabled: boolean) => void;
   setMasterVolume: (vol: number) => void;
   setMobileControlsEnabled: (enabled: boolean) => void;
@@ -526,6 +552,8 @@ const DEFAULT_TELEMETRY: TelemetrySnapshot = {
   navTurnDir: 'straight',
   navTurnDistMeters: null,
   estFuelRangeKm: 1200,
+  upcomingTollLabel: null,
+  upcomingTollDistMeters: null,
 };
 
 const DEFAULT_PARKING_GUIDE: ParkingGuideState = {
@@ -558,6 +586,13 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   showDrawCalls: true,
   cabMotionEnabled: true,
   mirrorsEnabled: INITIAL_SPEC.defaultMirrors,
+  mirrorDisplayMode: INITIAL_SPEC.defaultMirrors ? 'both' : 'off',
+  advisorDisplayMode: 'full',
+  cabFovDeg: 68,
+  seatOffsetZ: 0,
+  seatOffsetY: 0,
+  steeringCameraEnabled: true,
+  showCabPendant: true,
   audioEnabled: true,
   masterVolume: 0.6,
   mobileControlsEnabled: INITIAL_HARDWARE.isTouchDevice,
@@ -616,6 +651,7 @@ export const useGameStore = create<GameStoreState>()(
       activeExamLevelId: null,
       a2ExamState: null,
       activeModal: 'none',
+      seatAdjustOpen: false,
       cameraMode: 1,
       advisorTab: 'nav',
       transmissionMode: 'auto',
@@ -670,15 +706,66 @@ export const useGameStore = create<GameStoreState>()(
               : 'auto',
         })),
       setQualityPreset: (qualityPreset, syncDefaults = true) =>
-        set((s) => ({
-          qualityPreset,
-          mirrorsEnabled: syncDefaults ? QUALITY_SPECS[qualityPreset].defaultMirrors : s.mirrorsEnabled,
-        })),
+        set((s) => {
+          const nextMirrors = syncDefaults ? QUALITY_SPECS[qualityPreset].defaultMirrors : s.mirrorsEnabled;
+          const nextMode: MirrorDisplayMode = syncDefaults
+            ? nextMirrors
+              ? 'both'
+              : 'off'
+            : s.mirrorDisplayMode;
+          return {
+            qualityPreset,
+            mirrorsEnabled: nextMirrors,
+            mirrorDisplayMode: nextMode,
+          };
+        }),
       setDrsEnabled: (drsEnabled) => set({ drsEnabled }),
       setShowFps: (showFps) => set({ showFps }),
       setShowDrawCalls: (showDrawCalls) => set({ showDrawCalls }),
       setCabMotionEnabled: (cabMotionEnabled) => set({ cabMotionEnabled }),
-      setMirrorsEnabled: (mirrorsEnabled) => set({ mirrorsEnabled }),
+      setMirrorsEnabled: (mirrorsEnabled) =>
+        set({
+          mirrorsEnabled,
+          mirrorDisplayMode: mirrorsEnabled ? 'both' : 'off',
+        }),
+      setMirrorDisplayMode: (mirrorDisplayMode) =>
+        set({
+          mirrorDisplayMode,
+          mirrorsEnabled: mirrorDisplayMode !== 'off',
+        }),
+      cycleMirrorDisplayMode: () =>
+        set((s) => {
+          const next: MirrorDisplayMode =
+            s.mirrorDisplayMode === 'both'
+              ? 'right_only'
+              : s.mirrorDisplayMode === 'right_only'
+              ? 'off'
+              : 'both';
+          return {
+            mirrorDisplayMode: next,
+            mirrorsEnabled: next !== 'off',
+          };
+        }),
+      cycleAdvisorDisplayMode: () =>
+        set((s) => ({
+          advisorDisplayMode:
+            s.advisorDisplayMode === 'full'
+              ? 'mini'
+              : s.advisorDisplayMode === 'mini'
+              ? 'hidden'
+              : 'full',
+        })),
+      setSeatAdjustOpen: (seatAdjustOpen) => set({ seatAdjustOpen }),
+      toggleSeatAdjustOpen: () => set((s) => ({ seatAdjustOpen: !s.seatAdjustOpen })),
+      setCabFovDeg: (cabFovDeg) =>
+        set({ cabFovDeg: Math.round(Math.max(58, Math.min(82, cabFovDeg))) }),
+      setSeatOffsetZ: (seatOffsetZ) =>
+        set({ seatOffsetZ: Number(Math.max(-0.2, Math.min(0.15, seatOffsetZ)).toFixed(2)) }),
+      setSeatOffsetY: (seatOffsetY) =>
+        set({ seatOffsetY: Number(Math.max(-0.12, Math.min(0.12, seatOffsetY)).toFixed(2)) }),
+      resetSeatAdjust: () => set({ cabFovDeg: 68, seatOffsetZ: 0, seatOffsetY: 0 }),
+      setSteeringCameraEnabled: (steeringCameraEnabled) => set({ steeringCameraEnabled }),
+      setShowCabPendant: (showCabPendant) => set({ showCabPendant }),
       setAudioEnabled: (audioEnabled) => set({ audioEnabled }),
       setMasterVolume: (masterVolume) => set({ masterVolume: Math.max(0, Math.min(1, masterVolume)) }),
       setMobileControlsEnabled: (mobileControlsEnabled) => set({ mobileControlsEnabled }),
@@ -1016,12 +1103,29 @@ export const useGameStore = create<GameStoreState>()(
     }),
     {
       name: 'eurohaul_save_v1',
-      version: 5,
+      version: 6,
       migrate: (persistedState) => {
         const st = (persistedState ?? {}) as Partial<PersistedCareerState>;
+        const mirrorsEnabled = st.mirrorsEnabled ?? INITIAL_SPEC.defaultMirrors;
+        const mirrorDisplayMode: MirrorDisplayMode =
+          st.mirrorDisplayMode === 'both' ||
+          st.mirrorDisplayMode === 'right_only' ||
+          st.mirrorDisplayMode === 'off'
+            ? st.mirrorDisplayMode
+            : mirrorsEnabled
+            ? 'both'
+            : 'off';
         return {
           ...INITIAL_PERSISTED,
           ...st,
+          mirrorsEnabled: mirrorDisplayMode !== 'off',
+          mirrorDisplayMode,
+          advisorDisplayMode: st.advisorDisplayMode ?? 'full',
+          cabFovDeg: st.cabFovDeg ?? 68,
+          seatOffsetZ: st.seatOffsetZ ?? 0,
+          seatOffsetY: st.seatOffsetY ?? 0,
+          steeringCameraEnabled: st.steeringCameraEnabled ?? true,
+          showCabPendant: st.showCabPendant ?? true,
           a2ExamProgress: st.a2ExamProgress ?? {},
           qualityPreset:
             !INITIAL_HARDWARE.isTouchDevice && st.qualityPreset === 'high'
@@ -1047,6 +1151,13 @@ export const useGameStore = create<GameStoreState>()(
         showDrawCalls: state.showDrawCalls,
         cabMotionEnabled: state.cabMotionEnabled,
         mirrorsEnabled: state.mirrorsEnabled,
+        mirrorDisplayMode: state.mirrorDisplayMode,
+        advisorDisplayMode: state.advisorDisplayMode,
+        cabFovDeg: state.cabFovDeg,
+        seatOffsetZ: state.seatOffsetZ,
+        seatOffsetY: state.seatOffsetY,
+        steeringCameraEnabled: state.steeringCameraEnabled,
+        showCabPendant: state.showCabPendant,
         audioEnabled: state.audioEnabled,
         masterVolume: state.masterVolume,
         mobileControlsEnabled: state.mobileControlsEnabled,

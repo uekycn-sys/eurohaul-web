@@ -101,7 +101,13 @@ export class CameraRig {
     visuals: TruckVisualRefs,
     isMenu: boolean,
     cabMotionEnabled = true,
-    quickLookDir: -1 | 0 | 1 = 0
+    quickLookDir: -1 | 0 | 1 = 0,
+    cabOptions?: {
+      fovDeg?: number;
+      seatOffsetZ?: number;
+      seatOffsetY?: number;
+      steeringCameraEnabled?: boolean;
+    }
   ): void {
     this.lastMode = mode;
     this.isMenuMode = isMenu;
@@ -143,6 +149,7 @@ export class CameraRig {
       const safeDt = Math.min(0.033, Math.max(0.001, dtSec));
 
       let heaveY = 0;
+      const rumbleActive = (physics as { onRumbleStrip?: boolean }).onRumbleStrip ?? false;
       if (cabMotionEnabled) {
         this.rumbleClockSec += safeDt * (1 + Math.min(2.0, absKmh / 45));
         const accelSignal = Math.abs(physics.filteredAccelMs2) < 0.08 ? 0 : physics.filteredAccelMs2;
@@ -150,7 +157,11 @@ export class CameraRig {
           !physics.onRoad && absKmh > 3
             ? Math.sin(this.rumbleClockSec * 22) * 0.008 * Math.min(1, absKmh / 30)
             : 0;
-        const targetHeave = THREE.MathUtils.clamp(accelSignal * 0.0032 + offroadRumble, -0.015, 0.015);
+        const stripRumble =
+          rumbleActive && absKmh > 25
+            ? Math.sin(this.rumbleClockSec * 72) * 0.0045
+            : 0;
+        const targetHeave = THREE.MathUtils.clamp(accelSignal * 0.0032 + offroadRumble + stripRumble, -0.015, 0.015);
         const lpAlpha = 1 - Math.exp(-8.5 * safeDt);
         this.seatHeaveY += (targetHeave - this.seatHeaveY) * lpAlpha;
         if (targetHeave === 0 && Math.abs(this.seatHeaveY) < 0.00015) {
@@ -161,24 +172,40 @@ export class CameraRig {
         this.seatHeaveY = 0;
       }
 
-      const steerAlpha = 1 - Math.exp(-7.5 * safeDt);
-      const speedLookScale = THREE.MathUtils.clamp(absKmh / 35, 0, 1);
-      this.smoothLookSteer +=
-        (physics.steerAngleRad * 3.8 * speedLookScale - this.smoothLookSteer) * steerAlpha;
+      const steeringCamOn = cabOptions?.steeringCameraEnabled ?? true;
+      const steerAlpha = 1 - Math.exp(-6.5 * safeDt);
+      const speedLookScale = THREE.MathUtils.clamp((absKmh - 6) / 30, 0, 1);
+      const blinkerLookRad =
+        (physics.leftBlinker ? 0.07 : physics.rightBlinker ? -0.07 : 0) * (absKmh > 4 ? 1 : 0.4);
+      // Up to +-14 deg (+-0.244 rad) head yaw into corner apex
+      const targetSteerYaw = steeringCamOn
+        ? THREE.MathUtils.clamp(physics.steerAngleRad * 0.44 * speedLookScale + blinkerLookRad, -0.244, 0.244)
+        : 0;
+      this.smoothLookSteer += (targetSteerYaw - this.smoothLookSteer) * steerAlpha;
       this.quickLookYaw += (quickLookDir * 0.68 - this.quickLookYaw) * (1 - Math.exp(-12 * safeDt));
 
+      const seatOffsetY = cabOptions?.seatOffsetY ?? 0;
+      const seatOffsetZ = cabOptions?.seatOffsetZ ?? 0;
+      const eyeY = 2.64 + seatOffsetY + heaveY;
+      const eyeZ = 1.58 + seatOffsetZ;
+
       visuals.tractorRoot.updateMatrixWorld(true);
-      this.tempVec.set(0.58, 2.57 + heaveY, 1.74);
+      this.tempVec.set(0.58, eyeY, eyeZ);
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredPos.copy(this.tempVec);
 
-      const totalHeadYaw = THREE.MathUtils.clamp(this.cabLookYaw + this.quickLookYaw, -1.35, 1.35);
+      const totalHeadYaw = THREE.MathUtils.clamp(
+        this.cabLookYaw + this.quickLookYaw + this.smoothLookSteer,
+        -1.35,
+        1.35
+      );
       const headYawSin = Math.sin(totalHeadYaw);
       const headYawCos = Math.cos(totalHeadYaw);
+      // Default ~ -4 deg downward gaze (dy = -1.40 at 20m forward) so road + full cluster + wheel are unobstructed
       this.tempVec.set(
-        0.58 + this.smoothLookSteer * headYawCos + headYawSin * 20,
-        2.4 + heaveY * 0.35 + this.cabLookPitch * 14,
-        1.74 + headYawCos * 20.3
+        0.58 + headYawSin * 20,
+        eyeY - 1.40 + heaveY * 0.35 + this.cabLookPitch * 14,
+        eyeZ + headYawCos * 20
       );
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredLook.copy(this.tempVec);
@@ -186,8 +213,9 @@ export class CameraRig {
       this.currentPos.copy(this.desiredPos);
       this.currentLook.copy(this.desiredLook);
       this.initialized = true;
+      const targetCabFov = cabOptions?.fovDeg ?? 68;
       const fovAlpha = 1 - Math.exp(-8 * safeDt);
-      this.camera.fov += (67 - this.camera.fov) * fovAlpha;
+      this.camera.fov += (targetCabFov - this.camera.fov) * fovAlpha;
       this.camera.updateProjectionMatrix();
       this.camera.position.copy(this.currentPos);
       this.camera.lookAt(this.currentLook);

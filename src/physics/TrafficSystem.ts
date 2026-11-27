@@ -8,6 +8,8 @@ interface TrafficAgent {
   segment: CompiledRoadSegment;
   dir: 1 | -1;
   laneSlot: 0 | 1; // 0 = outer slow lane, 1 = inner fast lane (on 4+ lane motorways)
+  targetLaneSlot: 0 | 1;
+  lateralShift: number;
   sMeters: number;
   speedMs: number;
   targetSpeedMs: number;
@@ -16,10 +18,17 @@ interface TrafficAgent {
   colorHex: string;
   braking: boolean;
   yieldTimerSec: number;
+  accidentTimerSec: number;
   x: number;
   y: number;
   z: number;
   yaw: number;
+  pitch: number;
+  trailerX: number;
+  trailerY: number;
+  trailerZ: number;
+  trailerYaw: number;
+  trailerPitch: number;
 }
 
 const SEDAN_COLORS = ['#dc2626', '#2563eb', '#e2e8f0', '#475569', '#059669', '#0f172a'] as const;
@@ -30,12 +39,13 @@ const TRAILER_COLORS = ['#f8fafc', '#e2e8f0', '#dbeafe', '#fef3c7'] as const;
 const BUBBLE_MIN_M = 80;
 const BUBBLE_MAX_M = 480;
 const RECYCLE_DIST_M = 520;
-const MIN_SAFE_GAP_M = 35;
+const MIN_SAFE_GAP_M = 38;
+const PLAYER_HULL_RADIUS = 1.45;
 
 /**
  * Instanced AI traffic simulation maintaining a dense player-centered dynamic
- * traffic bubble (80m..480m) with multi-lane motorway discipline (slow outer trucks,
- * fast inner sedans), distinct semi-trailers, dynamic brake lights, and horn yield.
+ * traffic bubble (80m..480m) with multi-lane motorway discipline, physical stopping-distance
+ * braking, articulated semi-trailers following road curvature/pitch, and anti-clipping collision handling.
  */
 export class TrafficSystem {
   private readonly builtMap: BuiltMap;
@@ -59,6 +69,7 @@ export class TrafficSystem {
   private readonly disposables: { dispose: () => void }[] = [];
 
   private collisionCooldownSec = 0;
+  private hazardClockSec = 0;
 
   constructor(
     builtMap: BuiltMap,
@@ -210,6 +221,8 @@ export class TrafficSystem {
         segment: fallbackSeg,
         dir: i % 2 === 0 ? 1 : -1,
         laneSlot,
+        targetLaneSlot: laneSlot,
+        lateralShift: this.getLaneOffsetMeters(fallbackSeg, laneSlot),
         sMeters: Math.min(fallbackSeg.lengthMeters - 10, 15 + i * 24),
         speedMs: 14,
         targetSpeedMs: 14,
@@ -218,10 +231,17 @@ export class TrafficSystem {
         colorHex,
         braking: false,
         yieldTimerSec: 0,
+        accidentTimerSec: 0,
         x: 0,
         y: 0,
         z: 0,
         yaw: 0,
+        pitch: 0,
+        trailerX: 0,
+        trailerY: 0,
+        trailerZ: 0,
+        trailerYaw: 0,
+        trailerPitch: 0,
       };
       this.placeAgentInBubble(agent, i, focusX, focusZ, focusYaw, true);
       this.agents.push(agent);
@@ -336,15 +356,17 @@ export class TrafficSystem {
       agent.segment = pick.seg;
       agent.dir = pick.dir;
       agent.laneSlot = pick.laneSlot;
+      agent.targetLaneSlot = pick.laneSlot;
+      agent.lateralShift = this.getLaneOffsetMeters(pick.seg, pick.laneSlot);
       agent.sMeters = pick.sMeters;
       agent.targetSpeedMs = this.speedForAgent(pick.seg, agent.archetype, pick.laneSlot);
       agent.speedMs = agent.targetSpeedMs;
       agent.yieldTimerSec = 0;
+      agent.accidentTimerSec = 0;
       this.syncAgentPose(agent);
       return;
     }
 
-    // Relaxed fallback within 100..480m on any segment
     for (let sIdx = 0; sIdx < this.builtMap.segments.length; sIdx++) {
       const seg = this.builtMap.segments[(sIdx + slotIndex) % this.builtMap.segments.length]!;
       if (seg.samples.length < 3) continue;
@@ -354,10 +376,13 @@ export class TrafficSystem {
         agent.segment = seg;
         agent.dir = seg.def.oneWay || slotIndex % 2 === 0 ? 1 : -1;
         agent.laneSlot = this.pickLaneSlot(seg, agent.archetype, slotIndex);
+        agent.targetLaneSlot = agent.laneSlot;
+        agent.lateralShift = this.getLaneOffsetMeters(seg, agent.laneSlot);
         agent.sMeters = seg.lengthMeters * 0.5;
         agent.targetSpeedMs = this.speedForAgent(seg, agent.archetype, agent.laneSlot);
         agent.speedMs = agent.targetSpeedMs;
         agent.yieldTimerSec = 0;
+        agent.accidentTimerSec = 0;
         this.syncAgentPose(agent);
         return;
       }
@@ -366,23 +391,60 @@ export class TrafficSystem {
     this.syncAgentPose(agent);
   }
 
-  private syncAgentPose(agent: TrafficAgent): void {
-    const t = THREE.MathUtils.clamp(agent.sMeters / agent.segment.lengthMeters, 0, 1);
-    const p = agent.segment.curve.getPointAt(t);
-    const tan = agent.segment.curve.getTangentAt(t);
+  private samplePitch(seg: CompiledRoadSegment, sMeters: number, dir: 1 | -1): number {
+    const tAhead = THREE.MathUtils.clamp((sMeters + dir * 2.6) / seg.lengthMeters, 0, 1);
+    const tBehind = THREE.MathUtils.clamp((sMeters - dir * 2.6) / seg.lengthMeters, 0, 1);
+    const pA = seg.curve.getPointAt(tAhead);
+    const pB = seg.curve.getPointAt(tBehind);
+    const dHoriz = Math.hypot(pA.x - pB.x, pA.z - pB.z) || 1;
+    return THREE.MathUtils.clamp(-Math.atan2(pA.y - pB.y, dHoriz), -0.25, 0.25);
+  }
+
+  private syncAgentPose(agent: TrafficAgent, dtSec = 0.016): void {
+    const seg = agent.segment;
+    const t = THREE.MathUtils.clamp(agent.sMeters / seg.lengthMeters, 0, 1);
+    const p = seg.curve.getPointAt(t);
+    const tan = seg.curve.getTangentAt(t);
     const hLen = Math.hypot(tan.x, tan.z) || 1;
     const tx = tan.x / hLen;
     const tz = tan.z / hLen;
 
-    // Right-hand side of travel
+    const targetLat = this.getLaneOffsetMeters(seg, agent.targetLaneSlot);
+    agent.lateralShift += (targetLat - agent.lateralShift) * Math.min(1, dtSec * 3.5);
+    if (Math.abs(targetLat - agent.lateralShift) < 0.2) {
+      agent.laneSlot = agent.targetLaneSlot;
+    }
+
     const rx = -tz * agent.dir;
     const rz = tx * agent.dir;
-    const laneOffset = this.getLaneOffsetMeters(agent.segment, agent.laneSlot);
-
-    agent.x = p.x + rx * laneOffset;
+    agent.x = p.x + rx * agent.lateralShift;
     agent.y = p.y;
-    agent.z = p.z + rz * laneOffset;
+    agent.z = p.z + rz * agent.lateralShift;
     agent.yaw = Math.atan2(tx * agent.dir, tz * agent.dir);
+    agent.pitch = this.samplePitch(seg, agent.sMeters, agent.dir);
+
+    if (agent.archetype === 'semi') {
+      const sTr = THREE.MathUtils.clamp(agent.sMeters - agent.dir * 5.9, 0, seg.lengthMeters);
+      const tTr = THREE.MathUtils.clamp(sTr / seg.lengthMeters, 0, 1);
+      const pTr = seg.curve.getPointAt(tTr);
+      const tanTr = seg.curve.getTangentAt(tTr);
+      const hLenTr = Math.hypot(tanTr.x, tanTr.z) || 1;
+      const txTr = tanTr.x / hLenTr;
+      const tzTr = tanTr.z / hLenTr;
+      const rxTr = -tzTr * agent.dir;
+      const rzTr = txTr * agent.dir;
+      agent.trailerX = pTr.x + rxTr * agent.lateralShift;
+      agent.trailerY = pTr.y;
+      agent.trailerZ = pTr.z + rzTr * agent.lateralShift;
+      agent.trailerYaw = Math.atan2(txTr * agent.dir, tzTr * agent.dir);
+      agent.trailerPitch = this.samplePitch(seg, sTr, agent.dir);
+    } else {
+      agent.trailerX = agent.x;
+      agent.trailerY = agent.y;
+      agent.trailerZ = agent.z;
+      agent.trailerYaw = agent.yaw;
+      agent.trailerPitch = agent.pitch;
+    }
   }
 
   private transitionNextSegment(agent: TrafficAgent, slotIndex: number): void {
@@ -407,7 +469,46 @@ export class TrafficSystem {
       agent.sMeters = 2;
     }
     agent.laneSlot = this.pickLaneSlot(agent.segment, agent.archetype, slotIndex);
+    agent.targetLaneSlot = agent.laneSlot;
+    agent.lateralShift = this.getLaneOffsetMeters(agent.segment, agent.laneSlot);
     agent.targetSpeedMs = this.speedForAgent(agent.segment, agent.archetype, agent.laneSlot);
+  }
+
+  private isAdjacentLaneClear(
+    agent: TrafficAgent,
+    candidateLane: 0 | 1,
+    playerCircles: readonly { x: number; z: number }[]
+  ): boolean {
+    const candLat = this.getLaneOffsetMeters(agent.segment, candidateLane);
+    const t = THREE.MathUtils.clamp(agent.sMeters / agent.segment.lengthMeters, 0, 1);
+    const p = agent.segment.curve.getPointAt(t);
+    const tan = agent.segment.curve.getTangentAt(t);
+    const hLen = Math.hypot(tan.x, tan.z) || 1;
+    const tx = (tan.x / hLen) * agent.dir;
+    const tz = (tan.z / hLen) * agent.dir;
+    const rx = -tz;
+    const rz = tx;
+    const candX = p.x + rx * candLat;
+    const candZ = p.z + rz * candLat;
+
+    for (let k = 0; k < playerCircles.length; k++) {
+      const pc = playerCircles[k]!;
+      const dx = pc.x - candX;
+      const dz = pc.z - candZ;
+      const fwd = dx * tx + dz * tz;
+      const lat = Math.abs(dx * rx + dz * rz);
+      if (Math.abs(fwd) < 35 && lat < 3.4) return false;
+    }
+    for (let j = 0; j < this.activeCount; j++) {
+      const other = this.agents[j]!;
+      if (other === agent || Math.abs(other.y - agent.y) > 5) continue;
+      const dx = other.x - candX;
+      const dz = other.z - candZ;
+      const fwd = dx * tx + dz * tz;
+      const lat = Math.abs(dx * rx + dz * rz);
+      if (Math.abs(fwd) < 35 && lat < 3.2) return false;
+    }
+    return true;
   }
 
   public update(
@@ -420,8 +521,13 @@ export class TrafficSystem {
     trailerZ: number,
     nightFactor = 0,
     rainIntensity = 0,
-    playerHorn = false
+    playerHorn = false,
+    trailerYaw = playerYaw,
+    trailerAttached = true,
+    playerSpeedMs = 0
   ): CollisionEvent | null {
+    this.hazardClockSec += dtSec;
+    const hazardFlashOn = Math.floor(this.hazardClockSec * 3.0) % 2 === 0;
     const lightsOn = nightFactor > 0.25 || rainIntensity > 0.25;
     this.headlightMat.color.setHex(lightsOn ? 0xfffbeb : 0xe2e8f0);
     let collision: CollisionEvent | null = null;
@@ -429,10 +535,24 @@ export class TrafficSystem {
       this.collisionCooldownSec = Math.max(0, this.collisionCooldownSec - dtSec);
     }
 
+    const pFwdX = Math.sin(playerYaw);
+    const pFwdZ = Math.cos(playerYaw);
+    const trFwdX = Math.sin(trailerYaw);
+    const trFwdZ = Math.cos(trailerYaw);
+    const playerCircles: { x: number; z: number }[] = [
+      { x: playerX + pFwdX * 1.9, z: playerZ + pFwdZ * 1.9 },
+      { x: playerX - pFwdX * 1.8, z: playerZ - pFwdZ * 1.8 },
+    ];
+    if (trailerAttached) {
+      playerCircles.push(
+        { x: trailerX + trFwdX * 3.2, z: trailerZ + trFwdZ * 3.2 },
+        { x: trailerX - trFwdX * 4.4, z: trailerZ - trFwdZ * 4.4 }
+      );
+    }
+
     for (let i = 0; i < this.activeCount; i++) {
       const a = this.agents[i]!;
 
-      // Dynamic Traffic Bubble: seamlessly recycle agents outside 520m radius back into 80m..480m around player
       const distSqToPlayer = (a.x - playerX) * (a.x - playerX) + (a.z - playerZ) * (a.z - playerZ);
       if (distSqToPlayer > RECYCLE_DIST_M * RECYCLE_DIST_M) {
         this.placeAgentInBubble(a, i, playerX, playerZ, playerYaw, false);
@@ -441,103 +561,196 @@ export class TrafficSystem {
       if (a.yieldTimerSec > 0) {
         a.yieldTimerSec = Math.max(0, a.yieldTimerSec - dtSec);
       }
-
-      let desiredSpeed = a.targetSpeedMs;
-      const fwdX = Math.sin(a.yaw);
-      const fwdZ = Math.cos(a.yaw);
-
-      // Stop smoothly for RED / AMBER traffic signals at approaching signalized nodes
-      const remainingToNode = a.dir === 1 ? a.segment.lengthMeters - a.sMeters : a.sMeters;
-      if (remainingToNode < 28 && remainingToNode > 7) {
-        const destNodeId = a.dir === 1 ? a.segment.def.toNodeId : a.segment.def.fromNodeId;
-        const signal = this.builtMap.getTrafficLightState(destNodeId, fwdX, fwdZ);
-        if (signal !== 'green') {
-          desiredSpeed =
-            remainingToNode < 14 ? 0 : Math.min(desiredSpeed, ((remainingToNode - 14) / 14) * 6);
-        }
+      if (a.accidentTimerSec > 0) {
+        a.accidentTimerSec = Math.max(0, a.accidentTimerSec - dtSec);
       }
 
-      // Check distance to player tractor & trailer ahead or cutting in
-      for (const [px, pz] of [
-        [playerX, playerZ],
-        [trailerX, trailerZ],
-      ] as const) {
-        const dx = px - a.x;
-        const dz = pz - a.z;
-        const forwardDot = dx * fwdX + dz * fwdZ;
-        const lateralDist = Math.abs(dx * -fwdZ + dz * fwdX);
-        if (forwardDot > 0 && forwardDot < 34 && lateralDist < 3.4) {
-          if (forwardDot < 14) desiredSpeed = 0;
-          else desiredSpeed = Math.min(desiredSpeed, ((forwardDot - 14) / 20) * a.targetSpeedMs);
-        }
-        if (playerHorn && Math.hypot(dx, dz) < 36) {
-          a.yieldTimerSec = 1.4;
-        } else if (Math.abs(forwardDot) < 12 && lateralDist < 3.2 && lateralDist > 1.8) {
-          a.yieldTimerSec = Math.max(a.yieldTimerSec, 0.7);
-        }
-      }
-
-      if (a.yieldTimerSec > 0) {
-        desiredSpeed = Math.min(desiredSpeed, a.targetSpeedMs * 0.72);
-      }
-
-      // Check distance to other AI vehicles ahead in same lane
-      for (let j = 0; j < this.activeCount; j++) {
-        if (i === j) continue;
-        const b = this.agents[j]!;
-        if (Math.abs(a.y - b.y) > 5) continue;
-        const dx = b.x - a.x;
-        const dz = b.z - a.z;
-        const forwardDot = dx * fwdX + dz * fwdZ;
-        const lateralDist = Math.abs(dx * -fwdZ + dz * fwdX);
-        if (forwardDot > 0 && forwardDot < 30 && lateralDist < 2.6) {
-          if (forwardDot < 12) desiredSpeed = 0;
-          else desiredSpeed = Math.min(desiredSpeed, b.speedMs * 0.9);
-        }
-      }
-
-      a.braking = desiredSpeed < a.speedMs - 1.1 || a.speedMs < 1.2;
-
-      // Smooth accel / braking
-      const rate = desiredSpeed < a.speedMs ? 11 : 4.5;
-      a.speedMs += (desiredSpeed - a.speedMs) * Math.min(1, dtSec * rate);
-      a.sMeters += a.dir * a.speedMs * dtSec;
-
-      if (a.sMeters >= a.segment.lengthMeters - 1 || a.sMeters <= 1) {
-        this.transitionNextSegment(a, i);
-      }
-      this.syncAgentPose(a);
-
-      // Player collision check
-      if (this.collisionCooldownSec <= 0 && Math.abs(a.y - playerY) < 4) {
-        const dPlayer = Math.hypot(a.x - playerX, a.z - playerZ);
-        if (dPlayer < 3.5) {
-          a.speedMs = 0;
-          this.collisionCooldownSec = 1.6;
-          collision = {
-            impactSpeedKmh: 26,
-            label:
-              a.archetype === 'semi'
-                ? '竞争对手半挂车'
-                : a.archetype === 'van'
-                ? '欧系厢式货车'
-                : '社会乘用车',
-          };
-        }
-      }
-
-      // Update instanced matrices for 3 distinct archetypes
       const isSemi = a.archetype === 'semi';
       const scaleZ = isSemi ? 0.9 : a.archetype === 'van' ? 1.16 : 0.96;
       const scaleY = isSemi ? 1.28 : a.archetype === 'van' ? 1.52 : 0.95;
+      const frontHalf = isSemi ? 5.15 : a.archetype === 'van' ? 2.65 : 2.3;
+      const stopDist = (a.speedMs * a.speedMs) / (2 * 5.5) + 8.0;
+
+      let desiredSpeed = a.accidentTimerSec > 0 ? 0 : a.targetSpeedMs;
+      const fwdX = Math.sin(a.yaw);
+      const fwdZ = Math.cos(a.yaw);
+
+      if (a.accidentTimerSec <= 0) {
+        // 1. Traffic lights at approaching signalized nodes
+        const remainingToNode = a.dir === 1 ? a.segment.lengthMeters - a.sMeters : a.sMeters;
+        if (remainingToNode < 32 && remainingToNode > 7) {
+          const destNodeId = a.dir === 1 ? a.segment.def.toNodeId : a.segment.def.fromNodeId;
+          const signal = this.builtMap.getTrafficLightState(destNodeId, fwdX, fwdZ);
+          if (signal !== 'green') {
+            desiredSpeed =
+              remainingToNode < 14 ? 0 : Math.min(desiredSpeed, ((remainingToNode - 14) / 18) * 7);
+          }
+        }
+
+        // 2. Predictive physical braking against all 4 player hull circles (tractor + trailer)
+        if (Math.abs(a.y - playerY) < 6) {
+          const laneBand = isSemi ? 3.2 : 2.9;
+          for (let k = 0; k < playerCircles.length; k++) {
+            const pc = playerCircles[k]!;
+            const dx = pc.x - a.x;
+            const dz = pc.z - a.z;
+            const forwardDot = dx * fwdX + dz * fwdZ;
+            const lateralDist = Math.abs(dx * -fwdZ + dz * fwdX);
+            const netGap = forwardDot - frontHalf - PLAYER_HULL_RADIUS;
+            if (lateralDist < laneBand && netGap > -4.0 && netGap < stopDist + 16) {
+              if (netGap <= 6.0) {
+                desiredSpeed = 0;
+              } else {
+                const ramp = (netGap - 6.0) / (stopDist + 10.0);
+                desiredSpeed = Math.min(desiredSpeed, ramp * a.targetSpeedMs);
+              }
+            }
+            if (playerHorn && Math.hypot(dx, dz) < 36) {
+              a.yieldTimerSec = 1.4;
+            } else if (Math.abs(forwardDot) < 12 && lateralDist < 3.4 && lateralDist > 1.8) {
+              a.yieldTimerSec = Math.max(a.yieldTimerSec, 0.7);
+            }
+          }
+        }
+
+        if (a.yieldTimerSec > 0) {
+          desiredSpeed = Math.min(desiredSpeed, a.targetSpeedMs * 0.72);
+        }
+
+        // 3. Predictive braking & motorway lane-change overtaking against leading AI vehicles
+        for (let j = 0; j < this.activeCount; j++) {
+          if (i === j) continue;
+          const b = this.agents[j]!;
+          if (Math.abs(a.y - b.y) > 5) continue;
+
+          const bIsSemi = b.archetype === 'semi';
+          const bRefX = bIsSemi ? b.trailerX : b.x;
+          const bRefZ = bIsSemi ? b.trailerZ : b.z;
+          const bRearHalf = bIsSemi ? 4.9 : 2.3;
+
+          const dx = bRefX - a.x;
+          const dz = bRefZ - a.z;
+          const forwardDot = dx * fwdX + dz * fwdZ;
+          const lateralDist = Math.abs(dx * -fwdZ + dz * fwdX);
+          const netGap = forwardDot - frontHalf - bRearHalf;
+
+          if (lateralDist < 2.65 && netGap > -2.0 && netGap < stopDist + 14) {
+            // Try clean motorway lane change around stopped accident vehicles or slower outer trucks
+            if (
+              a.segment.def.lanes >= 4 &&
+              (b.accidentTimerSec > 0 || b.targetSpeedMs < a.targetSpeedMs - 2.0) &&
+              netGap < 40
+            ) {
+              const altLane: 0 | 1 = a.targetLaneSlot === 0 ? 1 : 0;
+              if (this.isAdjacentLaneClear(a, altLane, playerCircles)) {
+                a.targetLaneSlot = altLane;
+                a.targetSpeedMs = this.speedForAgent(a.segment, a.archetype, altLane);
+              }
+            }
+
+            if (netGap <= 5.0) {
+              desiredSpeed = 0;
+            } else {
+              const ramp = Math.min(1, (netGap - 5.0) / (stopDist + 5.0));
+              desiredSpeed = Math.min(desiredSpeed, Math.max(b.speedMs * 0.92, ramp * a.targetSpeedMs));
+              if (b.speedMs < 1.0 && netGap < stopDist + 6) {
+                desiredSpeed = Math.min(desiredSpeed, ramp * a.targetSpeedMs);
+              }
+            }
+          }
+        }
+      }
+
+      a.braking = a.accidentTimerSec > 0 || desiredSpeed < a.speedMs - 0.8 || a.speedMs < 1.2;
+
+      if (a.accidentTimerSec > 0) {
+        a.speedMs = 0;
+      } else if (desiredSpeed < a.speedMs) {
+        a.speedMs = Math.max(desiredSpeed, a.speedMs - 9.5 * dtSec);
+      } else {
+        a.speedMs += (desiredSpeed - a.speedMs) * Math.min(1, dtSec * 3.2);
+      }
+
+      a.sMeters += a.dir * a.speedMs * dtSec;
+      if (a.sMeters >= a.segment.lengthMeters - 1 || a.sMeters <= 1) {
+        this.transitionNextSegment(a, i);
+      }
+      this.syncAgentPose(a, dtSec);
+
+      // 4. Multi-circle hull collision detection (covers AI semi tractor + trailer vs player tractor + trailer)
+      if (Math.abs(a.y - playerY) < 4.5) {
+        const aiFwdX = Math.sin(a.yaw);
+        const aiFwdZ = Math.cos(a.yaw);
+        const aiTrFwdX = Math.sin(a.trailerYaw);
+        const aiTrFwdZ = Math.cos(a.trailerYaw);
+        const aiCircles: { x: number; z: number; r: number }[] = isSemi
+          ? [
+              { x: a.x + aiFwdX * 3.8, z: a.z + aiFwdZ * 3.8, r: 1.3 },
+              { x: a.x + aiFwdX * 1.5, z: a.z + aiFwdZ * 1.5, r: 1.3 },
+              { x: a.trailerX + aiTrFwdX * 2.5, z: a.trailerZ + aiTrFwdZ * 2.5, r: 1.35 },
+              { x: a.trailerX - aiTrFwdX * 3.0, z: a.trailerZ - aiTrFwdZ * 3.0, r: 1.35 },
+            ]
+          : [
+              { x: a.x + aiFwdX * 1.15, z: a.z + aiFwdZ * 1.15, r: 1.15 },
+              { x: a.x - aiFwdX * 1.15, z: a.z - aiFwdZ * 1.15, r: 1.15 },
+            ];
+
+        let maxPen = 0;
+        for (let ac = 0; ac < aiCircles.length; ac++) {
+          const cA = aiCircles[ac]!;
+          for (let pc = 0; pc < playerCircles.length; pc++) {
+            const cP = playerCircles[pc]!;
+            const dist = Math.hypot(cA.x - cP.x, cA.z - cP.z);
+            const minSep = cA.r + PLAYER_HULL_RADIUS;
+            if (dist < minSep) {
+              maxPen = Math.max(maxPen, minSep - dist);
+            }
+          }
+        }
+
+        if (maxPen > 0) {
+          const relVx = aiFwdX * a.speedMs - pFwdX * playerSpeedMs;
+          const relVz = aiFwdZ * a.speedMs - pFwdZ * playerSpeedMs;
+          const relSpeedKmh = Math.hypot(relVx, relVz) * 3.6;
+
+          // Push AI cleanly out of overlap along spline so vehicles never stack or clip inside trailer
+          a.sMeters = THREE.MathUtils.clamp(
+            a.sMeters - a.dir * Math.max(maxPen + 0.9, 1.5),
+            2,
+            a.segment.lengthMeters - 2
+          );
+          a.speedMs = 0;
+          a.accidentTimerSec = 3.5;
+          this.syncAgentPose(a, dtSec);
+
+          if (relSpeedKmh > 8 && this.collisionCooldownSec <= 0) {
+            this.collisionCooldownSec = 2.5;
+            collision = {
+              impactSpeedKmh: Math.round(relSpeedKmh),
+              label:
+                a.archetype === 'semi'
+                  ? '竞争对手半挂车'
+                  : a.archetype === 'van'
+                  ? '欧系厢式货车'
+                  : '社会乘用车',
+            };
+          }
+        }
+      }
+
+      // 5. Update instanced matrices with exact road pitch & independent semi-trailer articulation
+      const updatedFwdX = Math.sin(a.yaw);
+      const updatedFwdZ = Math.cos(a.yaw);
+      const updatedTrFwdX = Math.sin(a.trailerYaw);
+      const updatedTrFwdZ = Math.cos(a.trailerYaw);
 
       const bodyCenterOff = isSemi ? 3.1 : 0;
       this.dummy.position.set(
-        a.x + fwdX * bodyCenterOff,
+        a.x + updatedFwdX * bodyCenterOff,
         a.y + 0.62 * scaleY,
-        a.z + fwdZ * bodyCenterOff
+        a.z + updatedFwdZ * bodyCenterOff
       );
-      this.dummy.rotation.set(0, a.yaw, 0);
+      this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
       this.dummy.scale.set(isSemi ? 1.05 : 1, scaleY, scaleZ);
       this.dummy.updateMatrix();
       this.bodyInst.setMatrixAt(i, this.dummy.matrix);
@@ -545,67 +758,93 @@ export class TrafficSystem {
       const cabOff = isSemi ? 3.55 : a.archetype === 'van' ? 1.55 : -0.2;
       const cabY = isSemi ? 1.98 : a.archetype === 'van' ? 1.58 : 1.35;
       const cabScaleZ = isSemi ? 0.72 : a.archetype === 'van' ? 0.58 : 1.0;
-      this.dummy.position.set(a.x + fwdX * cabOff, a.y + cabY, a.z + fwdZ * cabOff);
+      this.dummy.position.set(a.x + updatedFwdX * cabOff, a.y + cabY, a.z + updatedFwdZ * cabOff);
+      this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
       this.dummy.scale.set(isSemi ? 1.1 : 1, isSemi ? 1.38 : 1, cabScaleZ);
       this.dummy.updateMatrix();
       this.cabinInst.setMatrixAt(i, this.dummy.matrix);
 
       if (isSemi) {
-        this.dummy.position.set(a.x - fwdX * 2.95, a.y + 1.88, a.z - fwdZ * 2.95);
+        this.dummy.position.set(a.trailerX, a.trailerY + 1.88, a.trailerZ);
+        this.dummy.rotation.set(a.trailerPitch, a.trailerYaw, 0, 'YXZ');
         this.dummy.scale.set(1, 1, 1);
       } else {
         this.dummy.position.set(a.x, a.y - 20, a.z);
+        this.dummy.rotation.set(0, a.yaw, 0);
         this.dummy.scale.set(0, 0, 0);
       }
       this.dummy.updateMatrix();
       this.semiTrailerInst.setMatrixAt(i, this.dummy.matrix);
 
       const frontAxle = isSemi ? 3.8 : a.archetype === 'van' ? 1.65 : 1.35;
-      const rearAxle = isSemi ? 5.6 : a.archetype === 'van' ? 1.65 : 1.35;
-      this.dummy.position.set(a.x + fwdX * frontAxle, a.y + 0.36, a.z + fwdZ * frontAxle);
+      this.dummy.position.set(a.x + updatedFwdX * frontAxle, a.y + 0.36, a.z + updatedFwdZ * frontAxle);
+      this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
       this.dummy.scale.set(1, 1, 1);
       this.dummy.updateMatrix();
       this.wheelInst.setMatrixAt(i * 2, this.dummy.matrix);
 
-      this.dummy.position.set(a.x - fwdX * rearAxle, a.y + 0.36, a.z - fwdZ * rearAxle);
+      if (isSemi) {
+        this.dummy.position.set(a.trailerX - updatedTrFwdX * 3.1, a.trailerY + 0.36, a.trailerZ - updatedTrFwdZ * 3.1);
+        this.dummy.rotation.set(a.trailerPitch, a.trailerYaw, 0, 'YXZ');
+      } else {
+        const rearAxle = a.archetype === 'van' ? 1.65 : 1.35;
+        this.dummy.position.set(a.x - updatedFwdX * rearAxle, a.y + 0.36, a.z - updatedFwdZ * rearAxle);
+        this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
+      }
       this.dummy.updateMatrix();
       this.wheelInst.setMatrixAt(i * 2 + 1, this.dummy.matrix);
 
-      // Front headlights & dynamic brake/taillights
-      const rightX = -fwdZ;
-      const rightZ = fwdX;
-      const frontHalf = isSemi ? 5.15 : 2.3 * scaleZ;
-      const rearHalf = isSemi ? 7.8 : 2.3 * scaleZ;
-      this.tmpBrakeColor.setHex(a.braking ? 0xff2626 : lightsOn ? 0x991b1b : 0x450a0a);
+      // Front headlights & dynamic brake/hazard taillights
+      const rightX = -updatedFwdZ;
+      const rightZ = updatedFwdX;
+      const rearFwdX = isSemi ? updatedTrFwdX : updatedFwdX;
+      const rearFwdZ = isSemi ? updatedTrFwdZ : updatedFwdZ;
+      const rearRightX = -rearFwdZ;
+      const rearRightZ = rearFwdX;
+      const rearBaseX = isSemi ? a.trailerX : a.x;
+      const rearBaseY = isSemi ? a.trailerY : a.y;
+      const rearBaseZ = isSemi ? a.trailerZ : a.z;
+      const rearHalf = isSemi ? 4.82 : 2.3 * scaleZ;
+
+      if (a.accidentTimerSec > 0) {
+        this.tmpBrakeColor.setHex(hazardFlashOn ? 0xf59e0b : 0x7f1d1d);
+      } else {
+        this.tmpBrakeColor.setHex(a.braking ? 0xff2626 : lightsOn ? 0x991b1b : 0x450a0a);
+      }
 
       for (const [idxOffset, side] of [
         [0, -0.74],
         [1, 0.74],
       ] as const) {
         this.dummy.position.set(
-          a.x + fwdX * frontHalf + rightX * side,
+          a.x + updatedFwdX * frontHalf + rightX * side,
           a.y + 0.68,
-          a.z + fwdZ * frontHalf + rightZ * side
+          a.z + updatedFwdZ * frontHalf + rightZ * side
         );
-        this.dummy.rotation.set(0, a.yaw, 0);
+        this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
         this.dummy.scale.set(1, 1, 1);
         this.dummy.updateMatrix();
         this.headlightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
 
         this.dummy.position.set(
-          a.x - fwdX * rearHalf + rightX * side,
-          a.y + 0.7,
-          a.z - fwdZ * rearHalf + rightZ * side
+          rearBaseX - rearFwdX * rearHalf + rearRightX * side,
+          rearBaseY + 0.7,
+          rearBaseZ - rearFwdZ * rearHalf + rearRightZ * side
         );
+        this.dummy.rotation.set(isSemi ? a.trailerPitch : a.pitch, isSemi ? a.trailerYaw : a.yaw, 0, 'YXZ');
         this.dummy.updateMatrix();
         this.taillightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
         this.taillightInst.setColorAt(i * 2 + idxOffset, this.tmpBrakeColor);
       }
 
       if (this.shadowInst) {
-        this.dummy.position.set(a.x - fwdX * (isSemi ? 1.2 : 0), a.y + 0.032, a.z - fwdZ * (isSemi ? 1.2 : 0));
-        this.dummy.rotation.set(0, a.yaw, 0);
-        this.dummy.scale.set(1, 1, isSemi ? 2.25 : scaleZ * 0.96);
+        this.dummy.position.set(
+          isSemi ? (a.x + a.trailerX) * 0.5 : a.x,
+          a.y + 0.032,
+          isSemi ? (a.z + a.trailerZ) * 0.5 : a.z
+        );
+        this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
+        this.dummy.scale.set(1, 1, isSemi ? 2.35 : scaleZ * 0.96);
         this.dummy.updateMatrix();
         this.shadowInst.setMatrixAt(i, this.dummy.matrix);
       }

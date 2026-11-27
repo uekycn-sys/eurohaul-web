@@ -61,6 +61,9 @@ export class ParkingValidator {
       angleErrorDeg,
       speedKmh: Math.round(Math.abs(speedKmh)),
       readyToDeliver,
+      bayX: bx,
+      bayZ: bz,
+      bayHeadingRad: depot.parkingBayHeadingRad,
     };
   }
 }

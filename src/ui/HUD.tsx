@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { ParkingSquare } from 'lucide-react';
 import { MapManifest } from '../map/types';
 import { RoutePoint } from '../gameplay/NavigationSystem';
@@ -30,6 +30,117 @@ interface HUDProps {
   onExitExamToCareer: () => void;
 }
 
+const ParkingAlignmentRadar = memo(function ParkingAlignmentRadar({
+  bayX,
+  bayZ,
+  bayHeadingRad,
+  aligned,
+  readyToDeliver,
+}: {
+  bayX: number;
+  bayZ: number;
+  bayHeadingRad: number;
+  aligned: boolean;
+  readyToDeliver: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const draw = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const s = useGameStore.getState().telemetry;
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      ctx.fillStyle = '#070f1d';
+      ctx.fillRect(0, 0, w, h);
+
+      const cx = w * 0.5;
+      const cy = h * 0.52;
+      const pxPerM = 2.0;
+
+      // Bay axes in world XZ: forward = (sin h, cos h), right = (-cos h, sin h)
+      const fx = Math.sin(bayHeadingRad);
+      const fz = Math.cos(bayHeadingRad);
+      const rx = -Math.cos(bayHeadingRad);
+      const rz = Math.sin(bayHeadingRad);
+
+      const toRadar = (wx: number, wz: number): [number, number] => {
+        const dx = wx - bayX;
+        const dz = wz - bayZ;
+        const lon = dx * fx + dz * fz;
+        const lat = dx * rx + dz * rz;
+        return [cx + lat * pxPerM, cy - lon * pxPerM];
+      };
+
+      // Target parking bay box (3.8m x 14.4m)
+      ctx.strokeStyle = readyToDeliver ? '#34d399' : aligned ? '#38bdf8' : '#f59e0b';
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(cx - 1.9 * pxPerM, cy - 7.2 * pxPerM, 3.8 * pxPerM, 14.4 * pxPerM);
+      ctx.setLineDash([]);
+
+      // Bay front direction tick
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fillRect(cx - 2, cy - 7.2 * pxPerM - 2, 4, 2);
+
+      // Trailer body (centered ~3.2m ahead/behind trailer axle ref -> trailerX/Z)
+      if (s.trailerAttached) {
+        const [tx, ty] = toRadar(s.trailerX, s.trailerZ);
+        ctx.save();
+        ctx.translate(tx, ty);
+        ctx.rotate(-(s.trailerHeadingRad - bayHeadingRad));
+        ctx.fillStyle = '#94a3b8';
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.lineWidth = 1;
+        ctx.fillRect(-1.3 * pxPerM, -6.4 * pxPerM, 2.6 * pxPerM, 12.8 * pxPerM);
+        ctx.strokeRect(-1.3 * pxPerM, -6.4 * pxPerM, 2.6 * pxPerM, 12.8 * pxPerM);
+        ctx.restore();
+      }
+
+      // Tractor cab
+      const [kx, ky] = toRadar(s.truckX, s.truckZ);
+      ctx.save();
+      ctx.translate(kx, ky);
+      ctx.rotate(-(s.truckHeadingRad - bayHeadingRad));
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(-1.3 * pxPerM, -3.1 * pxPerM, 2.6 * pxPerM, 6.2 * pxPerM);
+      // Windshield front indicator
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(-1.0 * pxPerM, -3.1 * pxPerM, 2.0 * pxPerM, 1.8);
+      ctx.restore();
+    };
+
+    draw();
+    const unsub = useGameStore.subscribe((state, prev) => {
+      if (
+        state.telemetry.truckX !== prev.telemetry.truckX ||
+        state.telemetry.truckZ !== prev.telemetry.truckZ ||
+        state.telemetry.trailerX !== prev.telemetry.trailerX ||
+        state.telemetry.trailerZ !== prev.telemetry.trailerZ ||
+        state.telemetry.truckHeadingRad !== prev.telemetry.truckHeadingRad
+      ) {
+        draw();
+      }
+    });
+    return unsub;
+  }, [bayX, bayZ, bayHeadingRad, aligned, readyToDeliver]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={112}
+      height={76}
+      className="shrink-0 rounded-lg border border-slate-700/80"
+    />
+  );
+});
+
 /**
  * Modular HUD shell assembling memoized UI slices so high-frequency telemetry
  * never forces unnecessary React re-renders across unrelated UI panels.
@@ -57,6 +168,8 @@ export function HUD({
   const parkingGuide = useGameStore((s) => s.parkingGuide);
   const notifications = useGameStore((s) => s.notifications);
   const speedCameraFlashAt = useGameStore((s) => s.speedCameraFlashAt);
+  const upcomingTollLabel = useGameStore((s) => s.telemetry.upcomingTollLabel);
+  const upcomingTollDistMeters = useGameStore((s) => s.telemetry.upcomingTollDistMeters);
   const refuelFull = useGameStore((s) => s.refuelFull);
   const repairTruckFull = useGameStore((s) => s.repairTruckFull);
 
@@ -82,6 +195,23 @@ export function HUD({
         onSelectExamLevel={onSelectExamLevel}
         onExitExamToCareer={onExitExamToCareer}
       />
+
+      {gameMode === 'career' &&
+        activeModal === 'none' &&
+        upcomingTollDistMeters !== null &&
+        upcomingTollDistMeters < 120 && (
+          <div className="pointer-events-none fixed top-16 left-1/2 z-20 -translate-x-1/2">
+            <div className="flex items-center gap-2 rounded-xl border border-sky-400/60 bg-slate-950/90 px-3.5 py-1.5 text-xs font-semibold text-sky-200 shadow-xl backdrop-blur-md">
+              <span className="rounded bg-sky-500 px-1.5 py-0.5 text-[10px] font-black text-slate-950">
+                ETC
+              </span>
+              <span>
+                前方 {upcomingTollLabel ?? '高速公路收费站'} ·{' '}
+                {Math.round(upcomingTollDistMeters)}m (限速 40 km/h)
+              </span>
+            </div>
+          </div>
+        )}
 
       {visibleNotifs.length > 0 && (
         <div className="pointer-events-none fixed top-16 left-1/2 z-30 flex w-full max-w-md -translate-x-1/2 flex-col gap-2 px-4">
@@ -165,11 +295,23 @@ export function HUD({
                 : 'border-amber-500/50 bg-slate-900/90'
             }`}
           >
-            <ParkingSquare
-              className={`h-6 w-6 ${
-                parkingGuide.readyToDeliver ? 'text-emerald-400' : 'text-amber-400'
-              }`}
-            />
+            {parkingGuide.bayX !== undefined &&
+            parkingGuide.bayZ !== undefined &&
+            parkingGuide.bayHeadingRad !== undefined ? (
+              <ParkingAlignmentRadar
+                bayX={parkingGuide.bayX}
+                bayZ={parkingGuide.bayZ}
+                bayHeadingRad={parkingGuide.bayHeadingRad}
+                aligned={parkingGuide.aligned}
+                readyToDeliver={parkingGuide.readyToDeliver}
+              />
+            ) : (
+              <ParkingSquare
+                className={`h-6 w-6 ${
+                  parkingGuide.readyToDeliver ? 'text-emerald-400' : 'text-amber-400'
+                }`}
+              />
+            )}
             <div className="text-xs">
               <div className="font-bold text-white">
                 {parkingGuide.readyToDeliver

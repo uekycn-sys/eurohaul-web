@@ -17,6 +17,10 @@ export class AudioSynthesizer {
   private engineOsc1: OscillatorNode | null = null;
   private engineOsc2: OscillatorNode | null = null;
   private engineSubGain: GainNode | null = null;
+  private enginePulseOsc: OscillatorNode | null = null;
+  private enginePulseDepth: GainNode | null = null;
+  private engineModGain: GainNode | null = null;
+  private engineShaper: WaveShaperNode | null = null;
   private engineFilter: BiquadFilterNode | null = null;
   private exhaustPeakFilter: BiquadFilterNode | null = null;
   private engineGain: GainNode | null = null;
@@ -25,6 +29,13 @@ export class AudioSynthesizer {
 
   private turboOsc: OscillatorNode | null = null;
   private turboGain: GainNode | null = null;
+
+  private retarderOsc: OscillatorNode | null = null;
+  private retarderGain: GainNode | null = null;
+
+  private rumbleOsc: OscillatorNode | null = null;
+  private rumbleLfo: OscillatorNode | null = null;
+  private rumbleGain: GainNode | null = null;
 
   private hornOsc1: OscillatorNode | null = null;
   private hornOsc2: OscillatorNode | null = null;
@@ -99,7 +110,28 @@ export class AudioSynthesizer {
       data[i] = Math.random() * 2 - 1;
     }
 
-    // Multi-layer Diesel Engine (sub-harmonic + firing fundamental + harmonic + exhaust peak + injector clatter)
+    // Multi-layer Diesel Engine (sub-harmonic + firing fundamental + harmonic + warm saturation + firing-pulse LFO)
+    this.engineShaper = ctx.createWaveShaper();
+    const shaperCurve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const x = (i * 2) / 255 - 1;
+      shaperCurve[i] = Math.tanh(x * 1.85);
+    }
+    this.engineShaper.curve = shaperCurve;
+    this.engineShaper.oversample = '2x';
+
+    this.engineModGain = ctx.createGain();
+    this.engineModGain.gain.value = 0.85;
+
+    this.enginePulseOsc = ctx.createOscillator();
+    this.enginePulseOsc.type = 'sine';
+    this.enginePulseOsc.frequency.value = 32;
+    this.enginePulseDepth = ctx.createGain();
+    this.enginePulseDepth.gain.value = 0.14;
+    this.enginePulseOsc.connect(this.enginePulseDepth);
+    this.enginePulseDepth.connect(this.engineModGain.gain);
+    this.enginePulseOsc.start();
+
     this.engineFilter = ctx.createBiquadFilter();
     this.engineFilter.type = 'lowpass';
     this.engineFilter.frequency.value = 180;
@@ -129,11 +161,13 @@ export class AudioSynthesizer {
     this.engineOsc2.frequency.value = 68;
 
     this.engineSubOsc.connect(this.engineSubGain);
-    this.engineSubGain.connect(this.engineFilter);
-    this.engineOsc1.connect(this.engineFilter);
-    this.engineOsc2.connect(this.engineFilter);
+    this.engineSubGain.connect(this.engineShaper);
+    this.engineOsc1.connect(this.engineShaper);
+    this.engineOsc2.connect(this.engineShaper);
+    this.engineShaper.connect(this.engineFilter);
     this.engineFilter.connect(this.exhaustPeakFilter);
-    this.exhaustPeakFilter.connect(this.engineGain);
+    this.exhaustPeakFilter.connect(this.engineModGain);
+    this.engineModGain.connect(this.engineGain);
     this.engineGain.connect(this.exteriorBus);
 
     this.engineSubOsc.start();
@@ -164,6 +198,47 @@ export class AudioSynthesizer {
     this.turboOsc.connect(this.turboGain);
     this.turboGain.connect(this.exteriorBus);
     this.turboOsc.start();
+
+    // Dedicated hydraulic retarder turbine whine (independent from turbocharger!)
+    const retFilter = ctx.createBiquadFilter();
+    retFilter.type = 'bandpass';
+    retFilter.frequency.value = 720;
+    retFilter.Q.value = 1.8;
+    this.retarderOsc = ctx.createOscillator();
+    this.retarderOsc.type = 'triangle';
+    this.retarderOsc.frequency.value = 540;
+    this.retarderGain = ctx.createGain();
+    this.retarderGain.gain.value = 0;
+    this.retarderOsc.connect(retFilter);
+    retFilter.connect(this.retarderGain);
+    this.retarderGain.connect(this.exteriorBus);
+    this.retarderOsc.start();
+
+    // Highway edge white-line rumble strip layer
+    const rumbleFilter = ctx.createBiquadFilter();
+    rumbleFilter.type = 'lowpass';
+    rumbleFilter.frequency.value = 190;
+    const rumbleMod = ctx.createGain();
+    rumbleMod.gain.value = 0.55;
+    this.rumbleLfo = ctx.createOscillator();
+    this.rumbleLfo.type = 'square';
+    this.rumbleLfo.frequency.value = 26;
+    const rumbleLfoDepth = ctx.createGain();
+    rumbleLfoDepth.gain.value = 0.45;
+    this.rumbleLfo.connect(rumbleLfoDepth);
+    rumbleLfoDepth.connect(rumbleMod.gain);
+    this.rumbleLfo.start();
+
+    this.rumbleOsc = ctx.createOscillator();
+    this.rumbleOsc.type = 'sawtooth';
+    this.rumbleOsc.frequency.value = 72;
+    this.rumbleGain = ctx.createGain();
+    this.rumbleGain.gain.value = 0;
+    this.rumbleOsc.connect(rumbleFilter);
+    rumbleFilter.connect(rumbleMod);
+    rumbleMod.connect(this.rumbleGain);
+    this.rumbleGain.connect(this.exteriorBus);
+    this.rumbleOsc.start();
 
     // Dual-tone truck air horn
     const hornFilter = ctx.createBiquadFilter();
@@ -283,6 +358,7 @@ export class AudioSynthesizer {
     exhaustBrakeActive?: boolean;
     lowAirWarning?: boolean;
     rainIntensity?: number;
+    onRumbleStrip?: boolean;
     dtSec?: number;
   }): void {
     if (
@@ -308,6 +384,8 @@ export class AudioSynthesizer {
       this.engineGain.gain.setTargetAtTime(0, now, 0.08);
       this.injectorGain?.gain.setTargetAtTime(0, now, 0.08);
       this.turboGain.gain.setTargetAtTime(0, now, 0.08);
+      this.retarderGain?.gain.setTargetAtTime(0, now, 0.08);
+      this.rumbleGain?.gain.setTargetAtTime(0, now, 0.06);
       this.hornGain.gain.setTargetAtTime(0, now, 0.04);
       this.rainGain?.gain.setTargetAtTime(0, now, 0.12);
       this.tireGain?.gain.setTargetAtTime(0, now, 0.1);
@@ -366,13 +444,24 @@ export class AudioSynthesizer {
       this.engineSubOsc.frequency.setTargetAtTime(baseFreq * 0.5, now, 0.05);
       this.engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.05);
       this.engineOsc2.frequency.setTargetAtTime(baseFreq * (isV8 ? 1.5 : 2.02), now, 0.05);
-      this.engineSubGain.gain.setTargetAtTime(isV8 ? 0.8 : 0.5, now, 0.05);
+      this.engineSubGain.gain.setTargetAtTime(isV8 ? 0.85 : 0.52, now, 0.05);
+
+      // Cylinder firing-pulse LFO (I6: 3 pulses/rev, V8: 4 pulses/rev with characteristic deep burble)
+      if (this.enginePulseOsc && this.enginePulseDepth) {
+        const firingHz = Math.max(12, (opts.rpm / 60) * (isV8 ? 4 : 3));
+        this.enginePulseOsc.frequency.setTargetAtTime(firingHz, now, 0.04);
+        this.enginePulseDepth.gain.setTargetAtTime(
+          (isV8 ? 0.22 : 0.12) * (0.65 + opts.throttle * 0.55),
+          now,
+          0.05
+        );
+      }
 
       this.engineFilter.frequency.setTargetAtTime(
         (isV8 ? 130 : 145) +
           rpmRatio * 270 +
           opts.throttle * 185 +
-          (opts.retarderActive ? 150 : 0),
+          (opts.retarderActive ? 110 : 0),
         now,
         0.06
       );
@@ -384,7 +473,7 @@ export class AudioSynthesizer {
       this.exhaustPeakFilter.gain.setTargetAtTime(2.0 + opts.throttle * 6.5, now, 0.06);
 
       // Quiet coasting when lifting off throttle vs deep growl under load
-      const loadGain = 0.075 + opts.throttle * 0.165 + rpmRatio * 0.048 + (opts.retarderActive ? 0.045 : 0);
+      const loadGain = 0.075 + opts.throttle * 0.165 + rpmRatio * 0.048 + (opts.retarderActive ? 0.035 : 0);
       this.engineGain.gain.setTargetAtTime(loadGain, now, 0.05);
       this.injectorGain?.gain.setTargetAtTime(
         0.008 + opts.throttle * 0.02 + rpmRatio * 0.012,
@@ -392,19 +481,41 @@ export class AudioSynthesizer {
         0.05
       );
 
-      // Turbo spool whistle bound to real turboBoostNorm (or retarder whine)
+      // Turbo spool whistle bound strictly to turboBoostNorm
       const boostNorm = opts.turboBoostNorm ?? Math.max(0, rpmRatio - 0.3) * opts.throttle;
-      const turboAudible = opts.retarderActive ? 0.55 : boostNorm * (0.35 + rpmRatio * 0.65);
+      const turboAudible = boostNorm * (0.35 + rpmRatio * 0.65);
       this.turboOsc.frequency.setTargetAtTime(
-        opts.retarderActive ? 680 + rpmRatio * 520 : 1220 + boostNorm * 1450 + rpmRatio * 680,
+        1220 + boostNorm * 1450 + rpmRatio * 680,
         now,
         0.07
       );
-      this.turboGain.gain.setTargetAtTime(turboAudible * 0.032, now, 0.07);
+      this.turboGain.gain.setTargetAtTime(turboAudible * 0.03, now, 0.07);
     } else {
       this.engineGain.gain.setTargetAtTime(0, now, 0.07);
       this.injectorGain?.gain.setTargetAtTime(0, now, 0.07);
       this.turboGain.gain.setTargetAtTime(0, now, 0.06);
+    }
+
+    // Dedicated hydraulic retarder turbine whine
+    if (this.retarderOsc && this.retarderGain) {
+      if (opts.retarderActive && absKmh > 6) {
+        this.retarderOsc.frequency.setTargetAtTime(420 + absKmh * 5.2, now, 0.07);
+        this.retarderGain.gain.setTargetAtTime(0.036, now, 0.07);
+      } else {
+        this.retarderGain.gain.setTargetAtTime(0, now, 0.07);
+      }
+    }
+
+    // Highway edge white-line rumble strip vibration sound
+    if (this.rumbleOsc && this.rumbleLfo && this.rumbleGain) {
+      if (opts.onRumbleStrip && absKmh > 28) {
+        const pulseHz = Math.min(48, Math.max(16, absKmh * 0.42));
+        this.rumbleLfo.frequency.setTargetAtTime(pulseHz, now, 0.04);
+        this.rumbleOsc.frequency.setTargetAtTime(64 + Math.min(35, absKmh * 0.35), now, 0.04);
+        this.rumbleGain.gain.setTargetAtTime(0.095, now, 0.04);
+      } else {
+        this.rumbleGain.gain.setTargetAtTime(0, now, 0.05);
+      }
     }
 
     if (this.exhaustBrakeGain && this.exhaustBrakeOsc) {
@@ -753,6 +864,22 @@ export class AudioSynthesizer {
     g.connect(this.exteriorBus);
     osc.start(now);
     osc.stop(now + 0.2);
+  }
+
+  public playCabSwitchClick(): void {
+    if (!this.ctx || !this.interiorBus || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(1450, now);
+    osc.frequency.exponentialRampToValueAtTime(520, now + 0.028);
+    g.gain.setValueAtTime(0.065, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.032);
+    osc.connect(g);
+    g.connect(this.interiorBus);
+    osc.start(now);
+    osc.stop(now + 0.036);
   }
 
   public playBlinkerTick(high: boolean): void {

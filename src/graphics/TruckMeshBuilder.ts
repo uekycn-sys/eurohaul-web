@@ -29,6 +29,7 @@ export interface TruckVisualRefs {
     cabLightOn: boolean;
     trailerAttached: boolean;
     showRainGlass: boolean;
+    showCabPendant?: boolean;
   }) => void;
   getWiperAngle: () => number;
   updateWipers: (elapsedSec: number, mode: WipersMode) => void;
@@ -111,11 +112,19 @@ export class TruckMeshBuilder {
       transparent: true,
       opacity: 0.24,
     });
-    const tireMat = new THREE.MeshStandardMaterial({ color: '#1b1d22', roughness: 0.88 });
+    const tirePbr = this.textures.getTireTextures();
+    const tireMat = new THREE.MeshStandardMaterial({
+      map: tirePbr.map,
+      bumpMap: tirePbr.bumpMap,
+      bumpScale: 0.03,
+      color: '#ffffff',
+      roughness: 0.86,
+    });
     const rimMat = new THREE.MeshStandardMaterial({
-      color: '#dce3ec',
-      metalness: 0.85,
-      roughness: 0.22,
+      map: this.textures.getWheelRimTexture(),
+      color: '#ffffff',
+      metalness: 0.82,
+      roughness: 0.24,
     });
 
     // Dynamic lighting materials
@@ -245,6 +254,39 @@ export class TruckMeshBuilder {
 
     const bumperLipGeo = new THREE.BoxGeometry(2.38, 0.1, 0.52);
     tractorBatcher.add(paintMat, bumperLipGeo, { x: 0, y: 0.36, z: 2.9 });
+
+    // EU Front License Plate (M · EH 2026)
+    const plateTex = this.textures.getLicensePlateTexture('M · EH 2026');
+    const plateMat = new THREE.MeshStandardMaterial({ map: plateTex, roughness: 0.4, metalness: 0.1 });
+    const plateGeo = new THREE.PlaneGeometry(0.54, 0.13);
+    tractorBatcher.add(plateMat, plateGeo, { x: 0, y: 0.52, z: 3.13 });
+    disposables.push(plateMat, plateGeo);
+
+    // Front wheel-arch fenders & aerodynamic chassis side skirts (batched)
+    const frontFenderGeo = new THREE.BoxGeometry(0.38, 0.16, 1.38);
+    const sideSkirtGeo = new THREE.BoxGeometry(0.08, 0.44, 2.55);
+    const sideSkirtTrimGeo = new THREE.BoxGeometry(0.09, 0.08, 2.58);
+    for (const side of [-1, 1]) {
+      tractorBatcher.add(darkChassisMat, frontFenderGeo, {
+        x: side * 1.06,
+        y: 1.08,
+        z: 1.85,
+        colorHex: '#1e2736',
+      });
+      tractorBatcher.add(paintMat, sideSkirtGeo, {
+        x: side * 1.18,
+        y: 0.66,
+        z: -0.25,
+        castShadow: true,
+      });
+      tractorBatcher.add(darkChassisMat, sideSkirtTrimGeo, {
+        x: side * 1.185,
+        y: 0.42,
+        z: -0.25,
+        colorHex: '#1e2736',
+      });
+    }
+    disposables.push(frontFenderGeo, sideSkirtGeo, sideSkirtTrimGeo);
 
     const fogGeo = new THREE.BoxGeometry(0.24, 0.11, 0.08);
     for (const fx of [-0.88, 0.88]) {
@@ -494,30 +536,73 @@ export class TruckMeshBuilder {
       colorHex: '#242c38',
       layer: 1,
     });
-    const bPillarGeo = new THREE.BoxGeometry(0.1, 1.18, 0.18);
-    const roofRailGeo = new THREE.BoxGeometry(0.1, 0.12, 1.48);
-    const doorTrimGeo = new THREE.BoxGeometry(0.1, 0.36, 1.38);
+    const bPillarGeo = new THREE.BoxGeometry(0.1, 1.24, 0.22);
+    const roofRailGeo = new THREE.BoxGeometry(0.12, 0.14, 1.56);
+    const doorTrimGeo = new THREE.BoxGeometry(0.11, 0.56, 1.50);
+    const armrestGeo = new THREE.BoxGeometry(0.09, 0.08, 0.62);
+    const switchPodGeo = new THREE.BoxGeometry(0.08, 0.05, 0.22);
+    const doorHeaderTrimGeo = new THREE.BoxGeometry(0.09, 0.12, 1.48);
+    const aPillarInnerGeo = new THREE.BoxGeometry(0.09, 1.32, 0.12);
+    const cornerGussetGeo = new THREE.BoxGeometry(0.16, 0.18, 0.28);
     const sideGlassGeo = new THREE.PlaneGeometry(1.36, 0.96);
     for (const side of [-1, 1]) {
       cabBatcher.add(cabInteriorMat, bPillarGeo, {
-        x: side * 1.18,
-        y: 2.66,
+        x: side * 1.16,
+        y: 2.64,
         z: 1.44,
         colorHex: '#334155',
         layer: 1,
       });
       cabBatcher.add(cabInteriorMat, roofRailGeo, {
-        x: side * 1.18,
+        x: side * 1.16,
         y: 3.18,
         z: 2.12,
         colorHex: '#3b4656',
         layer: 1,
       });
+      // Full-height charcoal door card completely covering inner side of exterior orange door
       cabBatcher.add(cabInteriorMat, doorTrimGeo, {
-        x: side * 1.14,
-        y: 2.08,
+        x: side * 1.105,
+        y: 2.06,
         z: 2.12,
-        colorHex: '#3b4656',
+        colorHex: '#2b3442',
+        layer: 1,
+      });
+      cabBatcher.add(cabInteriorMat, armrestGeo, {
+        x: side * 1.035,
+        y: 2.04,
+        z: 2.02,
+        colorHex: '#1e2736',
+        layer: 1,
+      });
+      cabBatcher.add(cabInteriorMat, switchPodGeo, {
+        x: side * 1.03,
+        y: 2.09,
+        z: 2.28,
+        colorHex: '#475569',
+        layer: 1,
+      });
+      cabBatcher.add(cabInteriorMat, doorHeaderTrimGeo, {
+        x: side * 1.13,
+        y: 3.16,
+        z: 2.12,
+        colorHex: '#27303f',
+        layer: 1,
+      });
+      cabBatcher.add(cabInteriorMat, aPillarInnerGeo, {
+        x: side * 1.14,
+        y: 2.63,
+        z: 2.83,
+        rotX: -0.08,
+        rotY: side * 0.22,
+        colorHex: '#252e3d',
+        layer: 1,
+      });
+      cabBatcher.add(cabInteriorMat, cornerGussetGeo, {
+        x: side * 1.12,
+        y: 3.21,
+        z: 2.82,
+        colorHex: '#27303f',
         layer: 1,
       });
       const sideGlass = new THREE.Mesh(sideGlassGeo, glassMat);
@@ -526,9 +611,23 @@ export class TruckMeshBuilder {
       sideGlass.layers.set(1);
       cabSuspensionGroup.add(sideGlass);
     }
+    disposables.push(armrestGeo, switchPodGeo, doorHeaderTrimGeo, aPillarInnerGeo, cornerGussetGeo);
 
     const spoilerGeo = new THREE.BoxGeometry(2.36, 0.44, 0.96);
     cabBatcher.add(paintMat, spoilerGeo, { x: 0, y: 3.56, z: 1.08, rotX: 0.22 });
+
+    // Aerodynamic roof fairing wedge + twin chrome roof air horns
+    const roofFairingGeo = new THREE.BoxGeometry(2.34, 0.20, 0.72);
+    cabBatcher.add(paintMat, roofFairingGeo, { x: 0, y: 3.45, z: 2.24, rotX: 0.24 });
+    const airHornBodyGeo = new THREE.CylinderGeometry(0.055, 0.025, 0.56, 10);
+    airHornBodyGeo.rotateX(Math.PI / 2);
+    const airHornBellGeo = new THREE.CylinderGeometry(0.072, 0.055, 0.14, 10);
+    airHornBellGeo.rotateX(Math.PI / 2);
+    for (const hx of [-0.78, 0.78]) {
+      cabBatcher.add(metalMat, airHornBodyGeo, { x: hx, y: 3.49, z: 2.38, colorHex: '#e2e8f0' });
+      cabBatcher.add(metalMat, airHornBellGeo, { x: hx, y: 3.49, z: 2.71, colorHex: '#f8fafc' });
+    }
+    disposables.push(roofFairingGeo, airHornBodyGeo, airHornBellGeo);
 
     const lightboxGeo = new THREE.BoxGeometry(1.42, 0.22, 0.14);
     const lightboxMat = new THREE.MeshStandardMaterial({
@@ -553,21 +652,21 @@ export class TruckMeshBuilder {
       cabBatcher.add(sideMarkerMat, markerGeo, { x: mx, y: 3.29, z: 3.05 });
     }
 
-    // Symmetrical angled matte-charcoal A-pillars with clear diagonal sightline
-    const pillarGeo = new THREE.BoxGeometry(0.056, 1.24, 0.085);
+    // Symmetrical angled matte-charcoal A-pillars with seamless header transition
+    const pillarGeo = new THREE.BoxGeometry(0.085, 1.32, 0.115);
     for (const side of [-1, 1]) {
       cabBatcher.add(darkChassisMat, pillarGeo, {
-        x: side * 1.185,
-        y: 2.61,
-        z: 2.86,
+        x: side * 1.16,
+        y: 2.64,
+        z: 2.85,
         rotX: -0.08,
-        rotY: side * 0.25,
-        colorHex: '#283242',
+        rotY: side * 0.22,
+        colorHex: '#252e3d',
       });
     }
 
-    const sideLowerDoorGeo = new THREE.BoxGeometry(0.12, 0.48, 1.45);
-    for (const sx of [-1.17, 1.17]) {
+    const sideLowerDoorGeo = new THREE.BoxGeometry(0.08, 0.48, 1.45);
+    for (const sx of [-1.20, 1.20]) {
       cabBatcher.add(paintMat, sideLowerDoorGeo, { x: sx, y: 2.08, z: 2.12 });
     }
 
@@ -577,6 +676,22 @@ export class TruckMeshBuilder {
     windshield.rotation.x = -0.08;
     windshield.layers.set(1);
     cabSuspensionGroup.add(windshield);
+
+    // Interior upper windshield dark sunband strip
+    const sunbandGeo = new THREE.PlaneGeometry(2.26, 0.16);
+    const sunbandMat = new THREE.MeshBasicMaterial({
+      color: '#0f172a',
+      transparent: true,
+      opacity: 0.45,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const sunbandMesh = new THREE.Mesh(sunbandGeo, sunbandMat);
+    sunbandMesh.position.set(0, 3.12, 2.885);
+    sunbandMesh.rotation.x = -0.08;
+    sunbandMesh.layers.set(1);
+    cabSuspensionGroup.add(sunbandMesh);
+    disposables.push(sunbandGeo, sunbandMat);
 
     // Dynamic interior raindrop layer inside windshield (Layer 1, active when raining in 1st-person)
     const rainGlassGeo = new THREE.PlaneGeometry(2.24, 1.18);
@@ -613,14 +728,14 @@ export class TruckMeshBuilder {
       wiperPivots.push(pivot);
     }
 
-    // European aerodynamic twin-arm vertical side mirrors with live 3D mirror glass (Layer 1) & blindspot pod
+    // European aerodynamic twin-arm vertical side mirrors with 1:1 main mirror + wide-angle blindspot mirror (0 extra RT)
     const mirrorArmGeo = new THREE.BoxGeometry(0.24, 0.022, 0.028);
-    const mirrorHousingGeo = new THREE.BoxGeometry(0.185, 0.43, 0.11);
-    const mirrorCapGeo = new THREE.BoxGeometry(0.175, 0.41, 0.035);
-    const blindMirrorGeo = new THREE.BoxGeometry(0.15, 0.14, 0.09);
+    const mirrorHousingGeo = new THREE.BoxGeometry(0.23, 0.42, 0.11);
+    const mirrorCapGeo = new THREE.BoxGeometry(0.22, 0.40, 0.035);
+    const blindMirrorGeo = new THREE.BoxGeometry(0.22, 0.16, 0.09);
 
-    const makeDoorMirrorGeo = (uMin: number, uMax: number) => {
-      const geo = new THREE.PlaneGeometry(0.165, 0.39);
+    const makeDoorMirrorGeo = (w: number, h: number, uMin: number, uMax: number) => {
+      const geo = new THREE.PlaneGeometry(w, h);
       const uvAttr = geo.attributes.uv as THREE.BufferAttribute;
       for (let i = 0; i < uvAttr.count; i++) {
         uvAttr.setX(i, uvAttr.getX(i) > 0.5 ? uMax : uMin);
@@ -628,10 +743,13 @@ export class TruckMeshBuilder {
       uvAttr.needsUpdate = true;
       return geo;
     };
-    const leftMirrorGlassGeo = makeDoorMirrorGeo(0.34, 1.0);
-    const rightMirrorGlassGeo = makeDoorMirrorGeo(0.0, 0.66);
+    const leftMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.38, 0.46, 0.81);
+    const rightMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.38, 0.19, 0.54);
+    const leftBlindGlassGeo = makeDoorMirrorGeo(0.20, 0.14, 0.12, 0.96);
+    const rightBlindGlassGeo = makeDoorMirrorGeo(0.20, 0.14, 0.04, 0.88);
     const leftDoorMirrorMat = new THREE.MeshBasicMaterial({ color: '#e0f2fe' });
     const rightDoorMirrorMat = new THREE.MeshBasicMaterial({ color: '#e0f2fe' });
+    disposables.push(leftBlindGlassGeo, rightBlindGlassGeo);
 
     for (const side of [-1, 1]) {
       cabBatcher.add(metalMat, mirrorArmGeo, {
@@ -663,7 +781,7 @@ export class TruckMeshBuilder {
       });
       cabBatcher.add(darkChassisMat, blindMirrorGeo, {
         x: side * 1.44,
-        y: 2.22,
+        y: 2.21,
         z: 2.83,
         rotY: side * -0.12,
         colorHex: '#1e2634',
@@ -677,6 +795,15 @@ export class TruckMeshBuilder {
       mirrorMesh.rotation.y = Math.PI + side * -0.1;
       mirrorMesh.layers.set(1);
       cabSuspensionGroup.add(mirrorMesh);
+
+      const blindMesh = new THREE.Mesh(
+        side > 0 ? leftBlindGlassGeo : rightBlindGlassGeo,
+        side > 0 ? leftDoorMirrorMat : rightDoorMirrorMat
+      );
+      blindMesh.position.set(side * 1.44, 2.21, 2.782);
+      blindMesh.rotation.y = Math.PI + side * -0.12;
+      blindMesh.layers.set(1);
+      cabSuspensionGroup.add(blindMesh);
     }
 
     const dashTex = this.textures.getDynamicDashboardTexture();
@@ -698,34 +825,111 @@ export class TruckMeshBuilder {
       layer: 1,
     });
 
-    const cowlGeo = new THREE.BoxGeometry(2.18, 0.08, 0.38);
+    const cowlGeo = new THREE.BoxGeometry(2.18, 0.08, 0.44);
     cabBatcher.add(cabInteriorMat, cowlGeo, {
       x: 0,
       y: 2.18,
-      z: 2.72,
+      z: 2.70,
       colorHex: '#4c586b',
       layer: 1,
     });
 
-    // Dynamic glowing instrument cluster aligned inside upper steering wheel opening (Layer 1: skipped by mirrors)
-    const clusterGeo = new THREE.PlaneGeometry(0.68, 0.22);
+    // Recessed Instrument Cluster Binnacle Hood (eliminates glare/bleed & frames cluster)
+    const hoodTopGeo = new THREE.BoxGeometry(0.76, 0.05, 0.26);
+    const hoodSideGeo = new THREE.BoxGeometry(0.04, 0.25, 0.24);
+    const hoodBackGeo = new THREE.BoxGeometry(0.74, 0.25, 0.04);
+    cabBatcher.add(cabInteriorMat, hoodTopGeo, {
+      x: 0.58,
+      y: 2.46,
+      z: 2.56,
+      rotX: -0.14,
+      colorHex: '#1f2735',
+      layer: 1,
+    });
+    for (const hs of [-0.36, 0.36]) {
+      cabBatcher.add(cabInteriorMat, hoodSideGeo, {
+        x: 0.58 + hs,
+        y: 2.34,
+        z: 2.55,
+        colorHex: '#1f2735',
+        layer: 1,
+      });
+    }
+    cabBatcher.add(cabInteriorMat, hoodBackGeo, {
+      x: 0.58,
+      y: 2.34,
+      z: 2.63,
+      colorHex: '#171e2a',
+      layer: 1,
+    });
+    disposables.push(hoodTopGeo, hoodSideGeo, hoodBackGeo);
+
+    // AC vent grilles, center switch row (hazard red switch + park brake valve), passenger grab handle
+    const ventGeo = new THREE.BoxGeometry(0.14, 0.08, 0.04);
+    for (const vx of [1.02, 0.24, -0.14, -0.82]) {
+      cabBatcher.add(cabInteriorMat, ventGeo, {
+        x: vx,
+        y: 2.16,
+        z: 2.46,
+        colorHex: '#1b2230',
+        layer: 1,
+      });
+    }
+    const switchBankGeo = new THREE.BoxGeometry(0.28, 0.07, 0.05);
+    cabBatcher.add(cabInteriorMat, switchBankGeo, {
+      x: 0.05,
+      y: 2.14,
+      z: 2.34,
+      rotY: -0.24,
+      colorHex: '#1b2230',
+      layer: 1,
+    });
+    const hazardBtnGeo = new THREE.BoxGeometry(0.036, 0.028, 0.03);
+    cabBatcher.add(brakeMat, hazardBtnGeo, {
+      x: 0.11,
+      y: 2.145,
+      z: 2.31,
+      rotY: -0.24,
+      layer: 1,
+    });
+    const parkValveGeo = new THREE.CylinderGeometry(0.018, 0.014, 0.075, 8);
+    cabBatcher.add(cabInteriorMat, parkValveGeo, {
+      x: -0.03,
+      y: 2.15,
+      z: 2.32,
+      rotX: -0.45,
+      colorHex: '#e11d48',
+      layer: 1,
+    });
+    const grabHandleGeo = new THREE.BoxGeometry(0.38, 0.035, 0.045);
+    cabBatcher.add(cabInteriorMat, grabHandleGeo, {
+      x: -0.58,
+      y: 2.21,
+      z: 2.38,
+      colorHex: '#252f3f',
+      layer: 1,
+    });
+    disposables.push(ventGeo, switchBankGeo, hazardBtnGeo, parkValveGeo, grabHandleGeo);
+
+    // Dynamic glowing instrument cluster recessed inside hooded binnacle (Layer 1: skipped by mirrors)
+    const clusterGeo = new THREE.PlaneGeometry(0.66, 0.21);
     const clusterMat = new THREE.MeshBasicMaterial({ map: dashTex });
     const cluster = new THREE.Mesh(clusterGeo, clusterMat);
-    cluster.position.set(0.58, 2.33, 2.36);
+    cluster.position.set(0.58, 2.34, 2.54);
     cluster.rotation.y = Math.PI;
-    cluster.rotation.x = 0.16;
+    cluster.rotation.x = 0.22;
     cluster.layers.set(1);
     cabSuspensionGroup.add(cluster);
 
-    // Live SatNav GPS unit mounted cleanly on left A-pillar dash corner (Layer 1: skipped by mirrors)
+    // Embedded Euro-Truck SatNav mounted on right center console, angled toward driver (Layer 1)
     const gpsTex = this.textures.getDynamicCabGpsTexture();
     const gpsGroup = new THREE.Group();
-    gpsGroup.position.set(0.95, 2.41, 2.42);
-    gpsGroup.rotation.y = Math.PI - 0.34;
-    const gpsBezelGeo = new THREE.BoxGeometry(0.36, 0.23, 0.04);
+    gpsGroup.position.set(0.05, 2.31, 2.52);
+    gpsGroup.rotation.y = Math.PI - 0.28;
+    const gpsBezelGeo = new THREE.BoxGeometry(0.33, 0.22, 0.04);
     const gpsBezel = new THREE.Mesh(gpsBezelGeo, wiperMat);
     gpsBezel.layers.set(1);
-    const gpsGeo = new THREE.PlaneGeometry(0.32, 0.19);
+    const gpsGeo = new THREE.PlaneGeometry(0.30, 0.19);
     const gpsMat = new THREE.MeshBasicMaterial({ map: gpsTex });
     const gpsMesh = new THREE.Mesh(gpsGeo, gpsMat);
     gpsMesh.position.z = 0.025;
@@ -746,32 +950,33 @@ export class TruckMeshBuilder {
     }
 
     // 4-Spoke European Multi-Function Steering Wheel (LHD on +X = 0.58, Layer 1)
-    const steeringColumnGeo = new THREE.CylinderGeometry(0.055, 0.065, 0.28, 10);
-    steeringColumnGeo.rotateX(Math.PI / 2 - 0.36);
+    // Positive rotation.x tilts top rim forward toward windshield so dashboard is 100% unobstructed!
+    const steeringColumnGeo = new THREE.CylinderGeometry(0.052, 0.064, 0.36, 10);
+    steeringColumnGeo.rotateX(Math.PI / 2 + 0.50);
     cabBatcher.add(cabInteriorMat, steeringColumnGeo, {
       x: 0.58,
-      y: 2.17,
-      z: 2.27,
+      y: 2.07,
+      z: 2.29,
       colorHex: '#3b4656',
       layer: 1,
     });
 
     const wheelGroup = new THREE.Group();
     const steeringWheel = new THREE.Group();
-    steeringWheel.position.set(0.58, 2.22, 2.18);
-    steeringWheel.rotation.x = -0.42;
-    const rimTorusGeo = new THREE.TorusGeometry(0.21, 0.026, 8, 24);
-    const spokeGeo = new THREE.BoxGeometry(0.39, 0.042, 0.022);
-    const spokeLowerGeo = new THREE.BoxGeometry(0.055, 0.19, 0.022);
-    const hubGeo = new THREE.CylinderGeometry(0.065, 0.065, 0.045, 14);
+    steeringWheel.position.set(0.58, 2.15, 2.14);
+    steeringWheel.rotation.x = 0.50;
+    const rimTorusGeo = new THREE.TorusGeometry(0.20, 0.024, 8, 24);
+    const spokeGeo = new THREE.BoxGeometry(0.37, 0.04, 0.02);
+    const spokeLowerGeo = new THREE.BoxGeometry(0.052, 0.18, 0.02);
+    const hubGeo = new THREE.CylinderGeometry(0.062, 0.062, 0.042, 14);
     hubGeo.rotateX(Math.PI / 2);
-    const wheelBadgeGeo = new THREE.CylinderGeometry(0.026, 0.026, 0.05, 12);
+    const wheelBadgeGeo = new THREE.CylinderGeometry(0.025, 0.025, 0.048, 12);
     wheelBadgeGeo.rotateX(Math.PI / 2);
     const wheelMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.52, metalness: 0.25 });
     const swBatcher = new GeometryBatcher();
     swBatcher.add(wheelMat, rimTorusGeo, { colorHex: '#4c586b', layer: 1 });
     swBatcher.add(wheelMat, spokeGeo, { colorHex: '#3b4656', layer: 1 });
-    swBatcher.add(wheelMat, spokeLowerGeo, { y: -0.1, colorHex: '#cbd5e1', layer: 1 });
+    swBatcher.add(wheelMat, spokeLowerGeo, { y: -0.095, colorHex: '#cbd5e1', layer: 1 });
     swBatcher.add(wheelMat, hubGeo, { colorHex: '#3b4656', layer: 1 });
     swBatcher.add(wheelMat, wheelBadgeGeo, { colorHex: '#e2e8f0', layer: 1 });
     swBatcher.flush(steeringWheel, disposables);
@@ -783,7 +988,7 @@ export class TruckMeshBuilder {
     const stalkTipGeo = new THREE.BoxGeometry(0.03, 0.022, 0.024);
     const stalkMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.55 });
     const leftStalkPivot = new THREE.Group();
-    leftStalkPivot.position.set(0.64, 2.21, 2.24);
+    leftStalkPivot.position.set(0.64, 2.13, 2.22);
     const lRod = new THREE.Mesh(stalkRodGeo, stalkMat);
     lRod.position.set(0.07, 0, 0);
     lRod.layers.set(1);
@@ -794,7 +999,7 @@ export class TruckMeshBuilder {
     leftStalkPivot.layers.set(1);
 
     const rightStalkPivot = new THREE.Group();
-    rightStalkPivot.position.set(0.52, 2.21, 2.24);
+    rightStalkPivot.position.set(0.52, 2.13, 2.22);
     const rRod = new THREE.Mesh(stalkRodGeo, stalkMat);
     rRod.position.set(-0.07, 0, 0);
     rRod.layers.set(1);
@@ -805,27 +1010,32 @@ export class TruckMeshBuilder {
     rightStalkPivot.layers.set(1);
     cabSuspensionGroup.add(leftStalkPivot, rightStalkPivot);
 
-    // Hanging ETS2 Cab Pennant (pendulum driven by cabRoll / cabPitch)
+    // Compact Deep-Crimson Gold-Trimmed ETS2 Cab Pennant (pendulum driven by cabRoll / cabPitch)
     const cabPendantPivot = new THREE.Group();
-    cabPendantPivot.position.set(0, 3.17, 2.72);
-    const cordGeo = new THREE.BoxGeometry(0.008, 0.07, 0.008);
-    const cordMat = new THREE.MeshBasicMaterial({ color: '#cbd5e1' });
-    const pennantGeo = new THREE.ConeGeometry(0.05, 0.09, 3);
+    cabPendantPivot.position.set(0.20, 3.16, 2.76);
+    const cordGeo = new THREE.BoxGeometry(0.005, 0.038, 0.005);
+    const cordMat = new THREE.MeshBasicMaterial({ color: '#facc15' });
+    const pennantGeo = new THREE.ConeGeometry(0.026, 0.048, 3);
     pennantGeo.rotateX(Math.PI);
     const pennantMat = new THREE.MeshStandardMaterial({
-      color: '#d97706',
-      emissive: '#92400e',
+      color: '#991b1b',
+      emissive: '#450a0a',
       emissiveIntensity: 0.25,
       roughness: 0.5,
     });
     const cordMesh = new THREE.Mesh(cordGeo, cordMat);
-    cordMesh.position.y = -0.035;
+    cordMesh.position.y = -0.019;
     cordMesh.layers.set(1);
     const pennantMesh = new THREE.Mesh(pennantGeo, pennantMat);
-    pennantMesh.position.y = -0.095;
+    pennantMesh.position.y = -0.056;
     pennantMesh.layers.set(1);
-    cabPendantPivot.add(cordMesh, pennantMesh);
+    const goldTrimGeo = new THREE.BoxGeometry(0.048, 0.005, 0.006);
+    const goldTrimMesh = new THREE.Mesh(goldTrimGeo, cordMat);
+    goldTrimMesh.position.y = -0.034;
+    goldTrimMesh.layers.set(1);
+    cabPendantPivot.add(cordMesh, pennantMesh, goldTrimMesh);
     cabSuspensionGroup.add(cabPendantPivot);
+    disposables.push(goldTrimGeo);
 
     // Night Cab Ambient Accent Strips + Toggleable Overhead Dome Lamp (zero dynamic lights!)
     const ambientStripMat = new THREE.MeshStandardMaterial({
@@ -1485,7 +1695,9 @@ export class TruckMeshBuilder {
       cabLightOn: boolean;
       trailerAttached: boolean;
       showRainGlass: boolean;
+      showCabPendant?: boolean;
     }): void => {
+      cabPendantPivot.visible = opts.showCabPendant ?? true;
       const safeDt = Math.min(0.033, Math.max(0.001, opts.dtSec));
       const leftTarget = opts.leftBlinker ? 0.24 : opts.rightBlinker ? -0.24 : 0;
       leftStalkPivot.rotation.z += (leftTarget - leftStalkPivot.rotation.z) * Math.min(1, safeDt * 18);

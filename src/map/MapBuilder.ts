@@ -55,6 +55,11 @@ export interface SurfaceQueryResult {
   guardrailPushX: number;
   guardrailPushZ: number;
   guardrailHit: boolean;
+  roadHalfWidth?: number;
+  medianBarrierHit?: boolean;
+  medianPushX?: number;
+  medianPushZ?: number;
+  medianPenetration?: number;
 }
 
 export interface BuiltMap {
@@ -68,6 +73,7 @@ export interface BuiltMap {
   getHeightAt: (x: number, z: number) => number;
   querySurface: (x: number, z: number, out: SurfaceQueryResult) => void;
   getTrafficLightState: (nodeId: string, approachDirX: number, approachDirZ: number) => SignalState;
+  getUpcomingTollBooth: (x: number, z: number, yaw: number) => { label: string; distMeters: number } | null;
   highlightDestinationDepot: (depotId: string | null) => void;
   setDestinationBayAligned: (aligned: boolean) => void;
   evaluateTollBooths: (
@@ -298,9 +304,9 @@ export class MapBuilder {
         }
       }
 
-      // Smoothly isolate road corridors (0 elevation offset within 32m of centerline)
-      const rollFactor =
-        THREE.MathUtils.clamp((nearest.dist - 32) / 105, 0, 1) * apronClearance;
+      // Smoothly isolate road corridors using cubic smoothstep (28m..150m) to eliminate steep dirt ledges
+      const uRoll = THREE.MathUtils.clamp((nearest.dist - 28) / 122, 0, 1);
+      const rollFactor = uRoll * uRoll * (3 - 2 * uRoll) * apronClearance;
 
       const broadNoise = fbmNoise2D(vx * 0.0022 + 12.3, vz * 0.0022 + 7.1, 4);
       const ridgeNoise = 1 - Math.abs(valueNoise2D(vx * 0.0048 + 3.1, vz * 0.0048 - 5.4) * 2 - 1);
@@ -367,16 +373,17 @@ export class MapBuilder {
         tmpVertCol.copy(colMeadow);
       }
 
-      // Transition to grey-brown rock on cliffs or mid-elevation slopes
-      const rockByHeight = THREE.MathUtils.clamp((vy - 28) / 36, 0, 1);
-      const rockBySlope = THREE.MathUtils.clamp((0.86 - slopeUp) / 0.2, 0, 1);
+      // Transition to stratified grey-brown rock & alpine scree on slopes/mid-altitude
+      const strataBand = Math.sin(vy * 0.35 + vx * 0.02) * 0.08;
+      const rockByHeight = THREE.MathUtils.clamp((vy - 24) / 34 + strataBand, 0, 1);
+      const rockBySlope = THREE.MathUtils.clamp((0.88 - slopeUp) / 0.18, 0, 1);
       const rockFactor = Math.max(rockByHeight, rockBySlope);
       tmpVertCol.lerp(colRock, rockFactor);
 
-      // Transition to natural snow cap above 72m on non-vertical faces
+      // Transition to natural snow cap above 65m with wind-blown snowline variation
       const snowNoise = (valueNoise2D(vx * 0.015, vz * 0.015) - 0.5) * 18;
-      const snowByHeight = THREE.MathUtils.clamp((vy + snowNoise - 68) / 34, 0, 1);
-      const snowSlopeMask = THREE.MathUtils.clamp((slopeUp - 0.52) / 0.26, 0, 1);
+      const snowByHeight = THREE.MathUtils.clamp((vy + snowNoise - 64) / 30, 0, 1);
+      const snowSlopeMask = THREE.MathUtils.clamp((slopeUp - 0.48) / 0.28, 0, 1);
       tmpVertCol.lerp(colSnow, snowByHeight * snowSlopeMask);
 
       vertColors[i * 3] = tmpVertCol.r;
@@ -620,7 +627,72 @@ export class MapBuilder {
     });
     disposables.push(worldVertexMat, junctionMat);
 
+    const portalSignGeo = new THREE.PlaneGeometry(11.4, 1.35);
+    const portalBeamGeo = new THREE.BoxGeometry(15.6, 1.45, 0.72);
+    const portalPillarGeo = new THREE.BoxGeometry(0.65, 6.2, 0.65);
+    disposables.push(portalSignGeo, portalBeamGeo, portalPillarGeo);
+
     for (const node of manifest.nodes) {
+      if (node.kind === 'city_entry') {
+        // Industrial Logistics Entrance Portal Arch bridging spur road into freight yard (no oversized grey road disc!)
+        const spurSeg = segments.find(
+          (s) => s.def.fromNodeId === node.id || s.def.toNodeId === node.id
+        );
+        const spurTan = spurSeg
+          ? spurSeg.curve.getTangentAt(spurSeg.def.fromNodeId === node.id ? 0.05 : 0.95)
+          : new THREE.Vector3(1, 0, 0);
+        const sDir = spurSeg && spurSeg.def.toNodeId === node.id ? -1 : 1;
+        const hLen = Math.hypot(spurTan.x, spurTan.z) || 1;
+        const tx = (spurTan.x / hLen) * sDir;
+        const tz = (spurTan.z / hLen) * sDir;
+        const rx = -tz;
+        const rz = tx;
+        const rotY = Math.atan2(tx, tz);
+        const halfSpan = ((spurSeg?.def.width ?? 13) * 0.5) + 1.1;
+
+        for (const side of [-1, 1]) {
+          batcher.add(worldVertexMat, portalPillarGeo, {
+            x: node.position[0] + rx * side * halfSpan,
+            y: node.position[1] + 3.0,
+            z: node.position[2] + rz * side * halfSpan,
+            rotY,
+            colorHex: '#334155',
+            layer: 1,
+          });
+        }
+        batcher.add(worldVertexMat, portalBeamGeo, {
+          x: node.position[0],
+          y: node.position[1] + 6.1,
+          z: node.position[2],
+          rotY,
+          colorHex: '#1e3a8a',
+          layer: 1,
+        });
+        const archTex = this.textures.getHighwayGantryTexture(
+          'YARD',
+          'EUROHAUL LOGISTICS',
+          'ENTRY · 30 km/h',
+          'motorway'
+        );
+        const archMat = new THREE.MeshStandardMaterial({
+          map: archTex,
+          roughness: 0.45,
+          metalness: 0.1,
+          side: THREE.FrontSide,
+        });
+        const archSign = new THREE.Mesh(portalSignGeo, archMat);
+        archSign.position.set(
+          node.position[0] + tx * 0.38,
+          node.position[1] + 6.1,
+          node.position[2] + tz * 0.38
+        );
+        archSign.rotation.y = rotY;
+        archSign.layers.set(1);
+        root.add(archSign);
+        disposables.push(archMat);
+        continue;
+      }
+
       const radius = node.kind === 'roundabout' ? 18 : node.kind === 'intersection' ? 12.5 : 10.5;
       const discGeo = new THREE.CylinderGeometry(radius, radius + 1.5, 0.35, 20);
       batcher.add(junctionMat, discGeo, {
@@ -643,7 +715,7 @@ export class MapBuilder {
       }
     }
 
-    // 3b. Batched European Cantilever Traffic Lights at signalized junctions
+    // 3b. Curbside Cantilever Traffic Lights aligned strictly to incoming road shoulders
     interface TrafficSignalStateGroup {
       nodeId: string;
       phaseOffset: number;
@@ -677,26 +749,62 @@ export class MapBuilder {
       const housingMat = new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.6 });
       disposables.push(poleGeo, armGeo, headGeo, lensGeo, steelMat, housingMat);
 
-      const perAxisLensCount = signalNodes.length * 2;
-      const nsRedInst = new THREE.InstancedMesh(lensGeo, nsRedMat, perAxisLensCount);
-      const nsAmberInst = new THREE.InstancedMesh(lensGeo, nsAmberMat, perAxisLensCount);
-      const nsGreenInst = new THREE.InstancedMesh(lensGeo, nsGreenMat, perAxisLensCount);
-      const ewRedInst = new THREE.InstancedMesh(lensGeo, ewRedMat, perAxisLensCount);
-      const ewAmberInst = new THREE.InstancedMesh(lensGeo, ewAmberMat, perAxisLensCount);
-      const ewGreenInst = new THREE.InstancedMesh(lensGeo, ewGreenMat, perAxisLensCount);
+      const nsPlacements: { cx: number; cy: number; cz: number; rotY: number }[] = [];
+      const ewPlacements: { cx: number; cy: number; cz: number; rotY: number }[] = [];
+
+      for (let i = 0; i < signalNodes.length; i++) {
+        const node = signalNodes[i]!;
+        signalNodesList.push({ nodeId: node.id, phaseOffset: 0 });
+        for (const seg of segments) {
+          const isTo = seg.def.toNodeId === node.id;
+          const isFrom = seg.def.fromNodeId === node.id && !seg.def.oneWay;
+          if (!isTo && !isFrom) continue;
+          const sTarget = isTo ? Math.max(0, seg.lengthMeters - 14.0) : Math.min(seg.lengthMeters, 14.0);
+          const tVal = THREE.MathUtils.clamp(sTarget / seg.lengthMeters, 0.02, 0.98);
+          const pt = seg.curve.getPointAt(tVal);
+          const tan = seg.curve.getTangentAt(tVal);
+          const hLen = Math.hypot(tan.x, tan.z) || 1;
+          const dirSign = isTo ? 1 : -1;
+          const inTx = (tan.x / hLen) * dirSign;
+          const inTz = (tan.z / hLen) * dirSign;
+          const rx = -inTz;
+          const rz = inTx;
+          const shoulderOffset = seg.def.width * 0.5 + 1.8;
+          const cx = pt.x + rx * shoulderOffset;
+          const cz = pt.z + rz * shoulderOffset;
+          const rotY = Math.atan2(inTx, inTz);
+          const isNs = Math.abs(inTz) >= Math.abs(inTx);
+          (isNs ? nsPlacements : ewPlacements).push({ cx, cy: pt.y, cz, rotY });
+        }
+      }
+
+      const nsRedInst = new THREE.InstancedMesh(lensGeo, nsRedMat, Math.max(1, nsPlacements.length));
+      const nsAmberInst = new THREE.InstancedMesh(lensGeo, nsAmberMat, Math.max(1, nsPlacements.length));
+      const nsGreenInst = new THREE.InstancedMesh(lensGeo, nsGreenMat, Math.max(1, nsPlacements.length));
+      const ewRedInst = new THREE.InstancedMesh(lensGeo, ewRedMat, Math.max(1, ewPlacements.length));
+      const ewAmberInst = new THREE.InstancedMesh(lensGeo, ewAmberMat, Math.max(1, ewPlacements.length));
+      const ewGreenInst = new THREE.InstancedMesh(lensGeo, ewGreenMat, Math.max(1, ewPlacements.length));
+      nsRedInst.count = nsPlacements.length;
+      nsAmberInst.count = nsPlacements.length;
+      nsGreenInst.count = nsPlacements.length;
+      ewRedInst.count = ewPlacements.length;
+      ewAmberInst.count = ewPlacements.length;
+      ewGreenInst.count = ewPlacements.length;
 
       const tmpObj = new THREE.Object3D();
       const tmpChild = new THREE.Object3D();
       tmpObj.add(tmpChild);
 
-      for (let i = 0; i < signalNodes.length; i++) {
-        const node = signalNodes[i]!;
-        signalNodesList.push({ nodeId: node.id, phaseOffset: 0 });
-        const [nx, ny, nz] = node.position;
-
-        const addSignalCorner = (cx: number, cz: number, rotY: number, isNs: boolean) => {
-          tmpObj.position.set(cx, ny, cz);
-          tmpObj.rotation.set(0, rotY, 0);
+      const populateSignals = (
+        list: { cx: number; cy: number; cz: number; rotY: number }[],
+        redInst: THREE.InstancedMesh,
+        amberInst: THREE.InstancedMesh,
+        greenInst: THREE.InstancedMesh
+      ) => {
+        for (let idx = 0; idx < list.length; idx++) {
+          const p = list[idx]!;
+          tmpObj.position.set(p.cx, p.cy, p.cz);
+          tmpObj.rotation.set(0, p.rotY, 0);
           tmpObj.updateMatrixWorld(true);
 
           tmpChild.position.set(0, 2.9, 0);
@@ -712,29 +820,24 @@ export class MapBuilder {
           tmpChild.updateMatrixWorld();
           batcher.add(housingMat, headGeo, { matrix: tmpChild.matrixWorld });
 
-          const lensSides = [0.19, -0.19] as const;
-          for (let sIdx = 0; sIdx < lensSides.length; sIdx++) {
-            const sideZ = lensSides[sIdx]!;
-            const instIdx = i * 2 + sIdx;
-            tmpChild.rotation.set(0, sideZ > 0 ? 0 : Math.PI, 0);
+          // Lens faces -Z (toward approaching traffic along +Z)
+          tmpChild.rotation.set(0, Math.PI, 0);
+          tmpChild.position.set(4.1, 5.62, -0.19);
+          tmpChild.updateMatrixWorld();
+          redInst.setMatrixAt(idx, tmpChild.matrixWorld);
 
-            tmpChild.position.set(4.1, 5.62, sideZ);
-            tmpChild.updateMatrixWorld();
-            (isNs ? nsRedInst : ewRedInst).setMatrixAt(instIdx, tmpChild.matrixWorld);
+          tmpChild.position.set(4.1, 5.2, -0.19);
+          tmpChild.updateMatrixWorld();
+          amberInst.setMatrixAt(idx, tmpChild.matrixWorld);
 
-            tmpChild.position.set(4.1, 5.2, sideZ);
-            tmpChild.updateMatrixWorld();
-            (isNs ? nsAmberInst : ewAmberInst).setMatrixAt(instIdx, tmpChild.matrixWorld);
+          tmpChild.position.set(4.1, 4.78, -0.19);
+          tmpChild.updateMatrixWorld();
+          greenInst.setMatrixAt(idx, tmpChild.matrixWorld);
+        }
+      };
 
-            tmpChild.position.set(4.1, 4.78, sideZ);
-            tmpChild.updateMatrixWorld();
-            (isNs ? nsGreenInst : ewGreenInst).setMatrixAt(instIdx, tmpChild.matrixWorld);
-          }
-        };
-
-        addSignalCorner(nx - 10.5, nz - 10.5, 0, true);
-        addSignalCorner(nx + 10.5, nz + 10.5, Math.PI / 2, false);
-      }
+      populateSignals(nsPlacements, nsRedInst, nsAmberInst, nsGreenInst);
+      populateSignals(ewPlacements, ewRedInst, ewAmberInst, ewGreenInst);
 
       // Add crisp white stop-lines on all incoming approaches to signalized junctions
       const stopLineMat = new THREE.MeshStandardMaterial({
@@ -778,15 +881,26 @@ export class MapBuilder {
       }
     }
 
-    // 4. InstancedMesh Highway Infrastructure: Guardrails, Delineators, Noise Barriers, Street Lights, Gantries
+    // 4. InstancedMesh Highway Infrastructure: Slope-Matched Guardrails, Delineators, Noise Barriers, Street Lights, Gantries
     const dummy = new THREE.Object3D();
-    const railTransforms: { x: number; y: number; z: number; rotY: number }[] = [];
+    const railTransforms: { x: number; y: number; z: number; rotY: number; pitch: number; scaleZ: number }[] = [];
     const delineatorTransforms: { x: number; y: number; z: number; rotY: number; isRight: boolean }[] = [];
-    const noiseBarrierTransforms: { x: number; y: number; z: number; rotY: number }[] = [];
+    const noiseBarrierTransforms: { x: number; y: number; z: number; rotY: number; pitch: number; scaleZ: number }[] = [];
     const lightTransforms: { x: number; y: number; z: number; rotY: number }[] = [];
 
     for (const seg of segments) {
       const halfW = seg.def.width * 0.5;
+      const computeSlopePitch = (idx: number): { pitch: number; scaleZ: number } => {
+        const pPrev = seg.samples[Math.max(0, idx - 1)]!;
+        const pNext = seg.samples[Math.min(seg.samples.length - 1, idx + 1)]!;
+        const dH = Math.hypot(pNext.x - pPrev.x, pNext.z - pPrev.z) || 1;
+        const dy = pNext.y - pPrev.y;
+        return {
+          pitch: -Math.atan2(dy, dH),
+          scaleZ: Math.hypot(dH, dy) / dH,
+        };
+      };
+
       if (seg.def.hasGuardrails) {
         const isDividedMotorway = seg.def.roadClass === 'motorway' && seg.def.lanes >= 4;
         for (let i = 2; i < seg.samples.length - 2; i += 2) {
@@ -794,12 +908,13 @@ export class MapBuilder {
           const rx = -s.tz;
           const rz = s.tx;
           const rotY = Math.atan2(s.tx, s.tz);
-          railTransforms.push({ x: s.x - rx * (halfW + 0.75), y: s.y, z: s.z - rz * (halfW + 0.75), rotY });
-          railTransforms.push({ x: s.x + rx * (halfW + 0.75), y: s.y, z: s.z + rz * (halfW + 0.75), rotY });
+          const { pitch, scaleZ } = computeSlopePitch(i);
+          railTransforms.push({ x: s.x - rx * (halfW + 0.75), y: s.y, z: s.z - rz * (halfW + 0.75), rotY, pitch, scaleZ });
+          railTransforms.push({ x: s.x + rx * (halfW + 0.75), y: s.y, z: s.z + rz * (halfW + 0.75), rotY, pitch, scaleZ });
 
           // Slim low central double-wave barrier along 4-lane European motorways (reuses railInst, 0 extra DC)
           if (isDividedMotorway && i >= 4 && i < seg.samples.length - 4) {
-            railTransforms.push({ x: s.x, y: s.y - 0.14, z: s.z, rotY });
+            railTransforms.push({ x: s.x, y: s.y - 0.14, z: s.z, rotY, pitch, scaleZ });
           }
 
           if (i % 4 === 2) {
@@ -814,11 +929,14 @@ export class MapBuilder {
           const rx = -s.tz;
           const rz = s.tx;
           const rotY = Math.atan2(s.tx, s.tz);
+          const { pitch, scaleZ } = computeSlopePitch(i);
           noiseBarrierTransforms.push({
             x: s.x + rx * (halfW + 2.4),
             y: s.y,
             z: s.z + rz * (halfW + 2.4),
             rotY,
+            pitch,
+            scaleZ,
           });
         }
       }
@@ -839,7 +957,7 @@ export class MapBuilder {
       }
     }
 
-    // Continuous Guardrails (12m step -> 12.6m rail beams so zero floating gaps)
+    // Continuous Slope-Aligned Guardrails (12m step -> 12.6m rail beams so zero floating gaps)
     if (railTransforms.length > 0) {
       const guardrailPostGeo = new THREE.BoxGeometry(0.14, 0.78, 0.14);
       const guardrailPostMat = new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.65, roughness: 0.4 });
@@ -858,6 +976,8 @@ export class MapBuilder {
         postInst.setMatrixAt(i, dummy.matrix);
 
         dummy.position.set(tf.x, tf.y + 0.62, tf.z);
+        dummy.rotation.set(tf.pitch, tf.rotY, 0, 'YXZ');
+        dummy.scale.set(1, 1, tf.scaleZ);
         dummy.updateMatrix();
         railInst.setMatrixAt(i, dummy.matrix);
       }
@@ -906,7 +1026,7 @@ export class MapBuilder {
       root.add(delinPostInst, delinReflectInst);
     }
 
-    // Continuous Acoustic Noise Barriers (12m step -> 12.4m panels)
+    // Continuous Slope-Aligned Acoustic Noise Barriers (12m step -> 12.4m panels)
     let noiseBarrierInst: THREE.InstancedMesh | null = null;
     if (noiseBarrierTransforms.length > 0) {
       const nbGeo = new THREE.BoxGeometry(0.24, 3.2, 12.4);
@@ -916,8 +1036,8 @@ export class MapBuilder {
       for (let i = 0; i < noiseBarrierTransforms.length; i++) {
         const tf = noiseBarrierTransforms[i]!;
         dummy.position.set(tf.x, tf.y + 1.55, tf.z);
-        dummy.rotation.set(0, tf.rotY, 0);
-        dummy.scale.set(1, 1, 1);
+        dummy.rotation.set(tf.pitch, tf.rotY, 0, 'YXZ');
+        dummy.scale.set(1, 1, tf.scaleZ);
         dummy.updateMatrix();
         noiseBarrierInst.setMatrixAt(i, dummy.matrix);
       }
@@ -966,14 +1086,16 @@ export class MapBuilder {
       root.add(poleInst, headInst);
     }
 
-    // Overhead Motorway Gantries (batched steel truss + procedural Euro sign faces)
+    // Overhead Motorway Gantries (batched steel truss + single-sided Euro sign faces with aluminum backing)
     if (manifest.gantries && manifest.gantries.length > 0) {
       const gantryList = manifest.gantries;
       const gPostGeo = new THREE.CylinderGeometry(0.2, 0.24, 7.4, 8);
       const gBeamGeo = new THREE.BoxGeometry(20, 0.48, 0.52);
       const gSteelMat = new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.65, roughness: 0.38 });
       const signGeo = new THREE.PlaneGeometry(8.6, 3.2);
-      disposables.push(gPostGeo, gBeamGeo, gSteelMat, signGeo);
+      const signBackGeo = new THREE.BoxGeometry(8.66, 3.26, 0.14);
+      const signBackMat = new THREE.MeshStandardMaterial({ color: '#64748b', metalness: 0.5, roughness: 0.55 });
+      disposables.push(gPostGeo, gBeamGeo, gSteelMat, signGeo, signBackGeo, signBackMat);
 
       const gantryPostInst = new THREE.InstancedMesh(gPostGeo, gSteelMat, gantryList.length * 2);
       const gantryBeamInst = new THREE.InstancedMesh(gBeamGeo, gSteelMat, gantryList.length);
@@ -986,9 +1108,11 @@ export class MapBuilder {
         const p = seg.curve.getPointAt(t);
         const tan = seg.curve.getTangentAt(t);
         const len = Math.hypot(tan.x, tan.z) || 1;
-        const rx = -tan.z / len;
-        const rz = tan.x / len;
-        const rotY = Math.atan2(tan.x, tan.z);
+        const tx = tan.x / len;
+        const tz = tan.z / len;
+        const rx = -tz;
+        const rz = tx;
+        const rotY = Math.atan2(tx, tz);
         const halfSpan = seg.def.width * 0.5 + 1.4;
 
         dummy.position.set(p.x - rx * halfSpan, p.y + 3.7, p.z - rz * halfSpan);
@@ -1006,6 +1130,15 @@ export class MapBuilder {
         dummy.updateMatrix();
         gantryBeamInst.setMatrixAt(i, dummy.matrix);
 
+        // Aluminum structural backing box (batched, no reverse mirrored lettering!)
+        batcher.add(signBackMat, signBackGeo, {
+          x: p.x + tx * 0.08,
+          y: p.y + 7.1,
+          z: p.z + tz * 0.08,
+          rotY,
+          layer: 1,
+        });
+
         const signTex = this.textures.getHighwayGantryTexture(
           g.routeCode,
           g.destinationLabel,
@@ -1016,11 +1149,11 @@ export class MapBuilder {
           map: signTex,
           roughness: 0.45,
           metalness: 0.1,
-          side: THREE.DoubleSide,
+          side: THREE.FrontSide,
         });
         const signMesh = new THREE.Mesh(signGeo, signMat);
-        signMesh.position.set(p.x, p.y + 7.1, p.z);
-        signMesh.rotation.y = rotY;
+        signMesh.position.set(p.x - tx * 0.01, p.y + 7.1, p.z - tz * 0.01);
+        signMesh.rotation.y = rotY + Math.PI;
         signMesh.layers.set(1);
         root.add(signMesh);
         disposables.push(signMat);
@@ -1512,6 +1645,11 @@ export class MapBuilder {
         out.speedLimitKmh = bestSeg.def.speedLimitKmh;
         out.nearestSegmentId = bestSeg.def.id;
         out.roadDist = dist;
+        out.roadHalfWidth = halfW;
+        out.medianBarrierHit = false;
+        out.medianPushX = 0;
+        out.medianPushZ = 0;
+        out.medianPenetration = 0;
 
         if (bestSeg.def.hasGuardrails && dist > halfW + 0.35 && dist < halfW + 4.8) {
           const dx = p0.x - x;
@@ -1525,15 +1663,45 @@ export class MapBuilder {
           out.guardrailPushX = 0;
           out.guardrailPushZ = 0;
         }
+
+        // 4-lane divided motorway central median steel barrier check (outside junction nodes)
+        if (
+          bestSeg.def.roadClass === 'motorway' &&
+          bestSeg.def.lanes >= 4 &&
+          bestSeg.def.hasGuardrails
+        ) {
+          const fn = nodeMap.get(bestSeg.def.fromNodeId);
+          const tn = nodeMap.get(bestSeg.def.toNodeId);
+          const distFromNode = fn ? Math.hypot(x - fn.position[0], z - fn.position[2]) : 999;
+          const distToNode = tn ? Math.hypot(x - tn.position[0], z - tn.position[2]) : 999;
+          if (distFromNode > 26 && distToNode > 26) {
+            const rx = -p0.tz;
+            const rz = p0.tx;
+            const signedLat = (x - p0.x) * rx + (z - p0.z) * rz;
+            const medianHalf = 1.45;
+            if (Math.abs(signedLat) < medianHalf) {
+              const pushSide = signedLat >= 0 ? 1 : -1;
+              out.medianBarrierHit = true;
+              out.medianPushX = rx * pushSide;
+              out.medianPushZ = rz * pushSide;
+              out.medianPenetration = medianHalf - Math.abs(signedLat);
+            }
+          }
+        }
       } else {
         out.groundY = terrainY;
         out.onRoad = false;
         out.speedLimitKmh = 60;
         out.nearestSegmentId = null;
         out.roadDist = 999;
+        out.roadHalfWidth = 0;
         out.guardrailHit = false;
         out.guardrailPushX = 0;
         out.guardrailPushZ = 0;
+        out.medianBarrierHit = false;
+        out.medianPushX = 0;
+        out.medianPushZ = 0;
+        out.medianPenetration = 0;
       }
 
       for (const city of manifest.cities) {
@@ -1718,6 +1886,30 @@ export class MapBuilder {
       }
     };
 
+    const getUpcomingTollBooth = (
+      x: number,
+      z: number,
+      yaw: number
+    ): { label: string; distMeters: number } | null => {
+      const fwdX = Math.sin(yaw);
+      const fwdZ = Math.cos(yaw);
+      let best: { label: string; distMeters: number } | null = null;
+      let bestDist = 120;
+      for (let i = 0; i < tollBooths.length; i++) {
+        const tb = tollBooths[i]!;
+        const dx = tb.x - x;
+        const dz = tb.z - z;
+        const d = Math.hypot(dx, dz);
+        if (d < 6 || d >= bestDist) continue;
+        const dot = (dx * fwdX + dz * fwdZ) / d;
+        if (dot > 0.45) {
+          bestDist = d;
+          best = { label: tb.label, distMeters: Math.round(d) };
+        }
+      }
+      return best;
+    };
+
     const dispose = (): void => {
       for (const d of disposables) {
         d.dispose();
@@ -1735,6 +1927,7 @@ export class MapBuilder {
       getHeightAt,
       querySurface,
       getTrafficLightState,
+      getUpcomingTollBooth,
       highlightDestinationDepot,
       setDestinationBayAligned,
       evaluateTollBooths,
@@ -1774,8 +1967,24 @@ export class MapBuilder {
     });
     const tollLightMat = new THREE.MeshBasicMaterial({ color: '#22c55e' });
     const whFrontMats = new Map<string, THREE.MeshStandardMaterial>();
+    const officeFacadeMat = new THREE.MeshStandardMaterial({
+      map: this.textures.getBuildingFacadeTexture('office'),
+      roughness: 0.72,
+    });
+    const warehouseBlockMat = new THREE.MeshStandardMaterial({
+      map: this.textures.getBuildingFacadeTexture('warehouse'),
+      roughness: 0.7,
+    });
 
-    disposables.push(ringPadVertexMat, stationFuelTrimMat, stationHubTrimMat, lakeMat, tollLightMat);
+    disposables.push(
+      ringPadVertexMat,
+      stationFuelTrimMat,
+      stationHubTrimMat,
+      lakeMat,
+      tollLightMat,
+      officeFacadeMat,
+      warehouseBlockMat
+    );
 
     return {
       worldVertexMat,
@@ -1785,6 +1994,8 @@ export class MapBuilder {
       lakeMat,
       tollLightMat,
       whFrontMats,
+      officeFacadeMat,
+      warehouseBlockMat,
     };
   }
 
@@ -1951,13 +2162,10 @@ export class MapBuilder {
 
     const [ox, oy, oz] = depot.officePosition;
     const officeGeo = new THREE.BoxGeometry(6.5, 4.2, 5.0);
-    const officeColor =
-      depot.type === 'port' ? '#1e3a8a' : depot.type === 'factory' ? '#334155' : '#3f6212';
-    batcher.add(sharedMats.worldVertexMat, officeGeo, {
+    batcher.add(sharedMats.officeFacadeMat, officeGeo, {
       x: ox + 5.8,
       y: oy + 2.1,
       z: oz,
-      colorHex: officeColor,
       receiveShadow: true,
     });
     disposables.push(officeGeo);
@@ -2168,11 +2376,10 @@ export class MapBuilder {
     if (lm.kind === 'warehouse_block') {
       const [sx, sy, sz] = lm.scale ?? [44, 12, 24];
       const geo = new THREE.BoxGeometry(sx, sy, sz);
-      batcher.add(sharedMats.worldVertexMat, geo, {
+      batcher.add(sharedMats.warehouseBlockMat, geo, {
         x,
         y: y + sy * 0.5,
         z,
-        colorHex: lm.color ?? '#475569',
         receiveShadow: true,
       });
       disposables.push(geo);
@@ -2424,21 +2631,24 @@ export class MapBuilder {
     const dummy = new THREE.Object3D();
     const tmpColor = new THREE.Color();
 
-    // 1. Nordic Spruce (Trunk + Lower Tier + Upper Tier)
+    // 1. Nordic Spruce (Trunk + 3 Layered Foliage Cones)
     const trunkGeo = new THREE.CylinderGeometry(0.24, 0.4, 3.4, 6);
     const trunkMat = new THREE.MeshStandardMaterial({ color: '#5c4033', roughness: 0.92 });
-    const spruceLowGeo = new THREE.ConeGeometry(2.35, 5.2, 7);
-    const spruceHighGeo = new THREE.ConeGeometry(1.65, 4.6, 7);
+    const spruceLowGeo = new THREE.ConeGeometry(2.45, 4.8, 7);
+    const spruceMidGeo = new THREE.ConeGeometry(1.95, 4.4, 7);
+    const spruceHighGeo = new THREE.ConeGeometry(1.35, 3.8, 7);
     const spruceMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.88, flatShading: true });
-    disposables.push(trunkGeo, trunkMat, spruceLowGeo, spruceHighGeo, spruceMat);
+    disposables.push(trunkGeo, trunkMat, spruceLowGeo, spruceMidGeo, spruceHighGeo, spruceMat);
 
     let spruceTrunkInst: THREE.InstancedMesh | null = null;
     let spruceLowInst: THREE.InstancedMesh | null = null;
+    let spruceMidInst: THREE.InstancedMesh | null = null;
     let spruceHighInst: THREE.InstancedMesh | null = null;
 
     if (spruceSpots.length > 0) {
       spruceTrunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, spruceSpots.length);
       spruceLowInst = new THREE.InstancedMesh(spruceLowGeo, spruceMat, spruceSpots.length);
+      spruceMidInst = new THREE.InstancedMesh(spruceMidGeo, spruceMat, spruceSpots.length);
       spruceHighInst = new THREE.InstancedMesh(spruceHighGeo, spruceMat, spruceSpots.length);
 
       for (let i = 0; i < spruceSpots.length; i++) {
@@ -2449,41 +2659,52 @@ export class MapBuilder {
         dummy.updateMatrix();
         spruceTrunkInst.setMatrixAt(i, dummy.matrix);
 
-        dummy.position.set(t.x, t.y + 4.8 * t.scale, t.z);
+        dummy.position.set(t.x, t.y + 4.4 * t.scale, t.z);
         dummy.updateMatrix();
         spruceLowInst.setMatrixAt(i, dummy.matrix);
 
-        dummy.position.set(t.x, t.y + 7.6 * t.scale, t.z);
+        dummy.position.set(t.x, t.y + 6.7 * t.scale, t.z);
+        dummy.updateMatrix();
+        spruceMidInst.setMatrixAt(i, dummy.matrix);
+
+        dummy.position.set(t.x, t.y + 8.8 * t.scale, t.z);
         dummy.updateMatrix();
         spruceHighInst.setMatrixAt(i, dummy.matrix);
 
-        tmpColor.setHSL(0.37 + ((i % 7) - 3) * 0.012, 0.36, 0.22 + (i % 5) * 0.02);
+        tmpColor.setHSL(0.37 + ((i % 7) - 3) * 0.012, 0.36, 0.21 + (i % 5) * 0.02);
         spruceLowInst.setColorAt(i, tmpColor);
+        spruceMidInst.setColorAt(i, tmpColor);
         spruceHighInst.setColorAt(i, tmpColor);
       }
       spruceTrunkInst.instanceMatrix.needsUpdate = true;
       spruceLowInst.instanceMatrix.needsUpdate = true;
+      spruceMidInst.instanceMatrix.needsUpdate = true;
       spruceHighInst.instanceMatrix.needsUpdate = true;
       if (spruceLowInst.instanceColor) spruceLowInst.instanceColor.needsUpdate = true;
+      if (spruceMidInst.instanceColor) spruceMidInst.instanceColor.needsUpdate = true;
       if (spruceHighInst.instanceColor) spruceHighInst.instanceColor.needsUpdate = true;
       spruceTrunkInst.layers.set(1);
-      root.add(spruceTrunkInst, spruceLowInst, spruceHighInst);
+      root.add(spruceTrunkInst, spruceLowInst, spruceMidInst, spruceHighInst);
     }
 
-    // 2. Broadleaf Oak (Trunk + Rounded Crown)
-    const oakGeo = new THREE.IcosahedronGeometry(2.6, 1);
+    // 2. Broadleaf Oak (Trunk + Dual-Cluster Asymmetric Crown)
+    const oakGeo = new THREE.IcosahedronGeometry(2.5, 1);
+    const oakSubGeo = new THREE.IcosahedronGeometry(1.75, 1);
     const oakMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.88, flatShading: true });
-    disposables.push(oakGeo, oakMat);
+    disposables.push(oakGeo, oakSubGeo, oakMat);
 
     let oakTrunkInst: THREE.InstancedMesh | null = null;
     let oakInst: THREE.InstancedMesh | null = null;
+    let oakSubInst: THREE.InstancedMesh | null = null;
     if (oakSpots.length > 0) {
       oakTrunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, oakSpots.length);
       oakInst = new THREE.InstancedMesh(oakGeo, oakMat, oakSpots.length);
+      oakSubInst = new THREE.InstancedMesh(oakSubGeo, oakMat, oakSpots.length);
       for (let i = 0; i < oakSpots.length; i++) {
         const t = oakSpots[i]!;
+        const yaw = (i * 1.1) % Math.PI;
         dummy.position.set(t.x, t.y + 1.6 * t.scale, t.z);
-        dummy.rotation.set(0, (i * 1.1) % Math.PI, 0);
+        dummy.rotation.set(0, yaw, 0);
         dummy.scale.set(t.scale, t.scale, t.scale);
         dummy.updateMatrix();
         oakTrunkInst.setMatrixAt(i, dummy.matrix);
@@ -2493,14 +2714,26 @@ export class MapBuilder {
         dummy.updateMatrix();
         oakInst.setMatrixAt(i, dummy.matrix);
 
+        dummy.position.set(
+          t.x + Math.cos(yaw) * 1.25 * t.scale,
+          t.y + 4.2 * t.scale,
+          t.z + Math.sin(yaw) * 1.25 * t.scale
+        );
+        dummy.scale.set(t.scale * 0.95, t.scale * 0.85, t.scale * 0.95);
+        dummy.updateMatrix();
+        oakSubInst.setMatrixAt(i, dummy.matrix);
+
         tmpColor.setHSL(0.28 + ((i % 6) - 2) * 0.015, 0.38, 0.3 + (i % 4) * 0.025);
         oakInst.setColorAt(i, tmpColor);
+        oakSubInst.setColorAt(i, tmpColor);
       }
       oakTrunkInst.instanceMatrix.needsUpdate = true;
       oakInst.instanceMatrix.needsUpdate = true;
+      oakSubInst.instanceMatrix.needsUpdate = true;
       if (oakInst.instanceColor) oakInst.instanceColor.needsUpdate = true;
+      if (oakSubInst.instanceColor) oakSubInst.instanceColor.needsUpdate = true;
       oakTrunkInst.layers.set(1);
-      root.add(oakTrunkInst, oakInst);
+      root.add(oakTrunkInst, oakInst, oakSubInst);
     }
 
     // 3. Roadside Bushes / Shrubs
@@ -2528,7 +2761,10 @@ export class MapBuilder {
     let cottageRoofInst: THREE.InstancedMesh | null = null;
     if (cottageSpots.length > 0) {
       const wallGeo = new THREE.BoxGeometry(9.5, 5.2, 7.0);
-      const wallMat = new THREE.MeshStandardMaterial({ color: '#ede9df', roughness: 0.8 });
+      const wallMat = new THREE.MeshStandardMaterial({
+        map: this.textures.getBuildingFacadeTexture('cottage'),
+        roughness: 0.8,
+      });
       const roofGeo = new THREE.ConeGeometry(7.2, 3.8, 4);
       roofGeo.rotateY(Math.PI / 4);
       const roofMat = new THREE.MeshStandardMaterial({ color: '#b44835', roughness: 0.72, flatShading: true });
@@ -2582,16 +2818,18 @@ export class MapBuilder {
 
     return (ratio: number, isLowSpec = false) => {
       const r = THREE.MathUtils.clamp(ratio, 0.1, 1);
-      if (spruceTrunkInst && spruceLowInst && spruceHighInst) {
+      if (spruceTrunkInst && spruceLowInst && spruceMidInst && spruceHighInst) {
         const c = Math.floor(spruceSpots.length * r);
         spruceTrunkInst.count = c;
         spruceLowInst.count = c;
+        spruceMidInst.count = isLowSpec ? 0 : c;
         spruceHighInst.count = c;
       }
-      if (oakTrunkInst && oakInst) {
+      if (oakTrunkInst && oakInst && oakSubInst) {
         const c = Math.floor(oakSpots.length * r);
         oakTrunkInst.count = c;
         oakInst.count = c;
+        oakSubInst.count = isLowSpec ? 0 : c;
       }
       if (bushInst) {
         bushInst.count = isLowSpec ? 0 : Math.floor(bushSpots.length * r);

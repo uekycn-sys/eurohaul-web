@@ -24,12 +24,25 @@ export interface DashboardDrawState {
   brakeTempC?: number;
 }
 
+export interface CabGpsRoadPolyline {
+  points: { x: number; z: number }[];
+  isMotorway: boolean;
+}
+
 export interface CabGpsDrawState {
   speedKmh: number;
   speedLimitKmh: number;
   distanceMeters: number;
   hasActiveJob: boolean;
   instruction: string;
+  truckX?: number;
+  truckZ?: number;
+  truckHeadingRad?: number;
+  turnDir?: 'straight' | 'left' | 'right' | 'arrive';
+  turnDistMeters?: number | null;
+  roadPolylines?: CabGpsRoadPolyline[];
+  routePoints?: { x: number; z: number }[];
+  destPoint?: { x: number; z: number } | null;
 }
 
 /**
@@ -344,22 +357,16 @@ export class ProceduralTextures {
       bCtx.stroke();
     }
 
-    // Subtle yellow diagonal hazard stripe along one slab edge
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, size, 18 * s);
-    ctx.clip();
-    ctx.fillStyle = 'rgba(245, 158, 11, 0.52)';
-    for (let x = -size; x < size * 2; x += 28 * s) {
+    // Subtle curved yard tire scuff marks (clean industrial concrete without repeated hazard stripes)
+    ctx.strokeStyle = 'rgba(28, 32, 38, 0.22)';
+    ctx.lineWidth = 4 * s;
+    for (let i = 0; i < 4; i++) {
+      const sy = (80 + i * 110) * s;
       ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x + 14 * s, 0);
-      ctx.lineTo(x + 2 * s, 18 * s);
-      ctx.lineTo(x - 12 * s, 18 * s);
-      ctx.closePath();
-      ctx.fill();
+      ctx.moveTo(20 * s, sy);
+      ctx.quadraticCurveTo(size * 0.5, sy + (i % 2 === 0 ? 18 : -18) * s, size - 20 * s, sy + 6 * s);
+      ctx.stroke();
     }
-    ctx.restore();
 
     const map = new THREE.CanvasTexture(albedoCanvas);
     map.wrapS = THREE.RepeatWrapping;
@@ -832,8 +839,8 @@ export class ProceduralTextures {
     if (this.gpsTexture) return this.gpsTexture;
 
     this.gpsCanvas = document.createElement('canvas');
-    this.gpsCanvas.width = 256;
-    this.gpsCanvas.height = 160;
+    this.gpsCanvas.width = 320;
+    this.gpsCanvas.height = 200;
     this.gpsCtx = this.gpsCanvas.getContext('2d')!;
     this.gpsTexture = new THREE.CanvasTexture(this.gpsCanvas);
     this.gpsTexture.colorSpace = THREE.SRGBColorSpace;
@@ -849,71 +856,201 @@ export class ProceduralTextures {
 
   public updateDynamicCabGps(state: CabGpsDrawState): void {
     if (!this.gpsCtx || !this.gpsTexture) return;
-    const distBucket = Math.round(state.distanceMeters / 50);
-    const key = `${state.speedKmh}_${state.speedLimitKmh}_${distBucket}_${state.hasActiveJob}_${state.instruction}`;
+    const qx = Math.round((state.truckX ?? 0) / 4);
+    const qz = Math.round((state.truckZ ?? 0) / 4);
+    const qh = Math.round((state.truckHeadingRad ?? 0) * 12);
+    const distBucket = Math.round(state.distanceMeters / 30);
+    const turnDir = state.turnDir ?? 'straight';
+    const turnDistBucket =
+      state.turnDistMeters !== null && state.turnDistMeters !== undefined
+        ? Math.round(state.turnDistMeters / 10)
+        : 'n';
+    const key = `${qx}_${qz}_${qh}_${state.speedKmh}_${state.speedLimitKmh}_${distBucket}_${state.hasActiveJob}_${state.instruction}_${turnDir}_${turnDistBucket}`;
     if (key === this.lastGpsKey) return;
     this.lastGpsKey = key;
 
+    const w = 320;
+    const h = 200;
     const ctx = this.gpsCtx;
     ctx.fillStyle = '#09111f';
-    ctx.fillRect(0, 0, 256, 160);
+    ctx.fillRect(0, 0, w, h);
 
-    // Stylized GPS road ribbon
-    ctx.strokeStyle = state.hasActiveJob ? '#a855f7' : '#38bdf8';
-    ctx.lineWidth = 14;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(128, 152);
-    ctx.quadraticCurveTo(128, 92, state.instruction.includes('左') ? 82 : state.instruction.includes('右') ? 174 : 128, 28);
-    ctx.stroke();
+    // Subtle map grid backdrop
+    ctx.strokeStyle = 'rgba(51, 65, 85, 0.25)';
+    ctx.lineWidth = 1;
+    for (let gx = 40; gx < w; gx += 40) {
+      ctx.beginPath();
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx, h - 40);
+      ctx.stroke();
+    }
+    for (let gy = 40; gy < h - 40; gy += 40) {
+      ctx.beginPath();
+      ctx.moveTo(0, gy);
+      ctx.lineTo(w, gy);
+      ctx.stroke();
+    }
 
-    // Player chevron
+    const cx = w * 0.5;
+    const cy = 118;
+
+    if (
+      state.roadPolylines &&
+      state.roadPolylines.length > 0 &&
+      state.truckX !== undefined &&
+      state.truckZ !== undefined &&
+      state.truckHeadingRad !== undefined
+    ) {
+      const tx = state.truckX;
+      const tz = state.truckZ;
+      const sinY = Math.sin(state.truckHeadingRad);
+      const cosY = Math.cos(state.truckHeadingRad);
+      const rightX = -cosY;
+      const rightZ = sinY;
+      const scale = Math.max(0.18, Math.min(0.36, 0.36 - (Math.min(100, state.speedKmh) / 100) * 0.17));
+
+      const toGps = (wx: number, wz: number): [number, number] => {
+        const dx = wx - tx;
+        const dz = wz - tz;
+        const lateral = dx * rightX + dz * rightZ;
+        const forward = dx * sinY + dz * cosY;
+        return [cx + lateral * scale, cy - forward * scale];
+      };
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, w, 160);
+      ctx.clip();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      // Nearby road network segments
+      for (let i = 0; i < state.roadPolylines.length; i++) {
+        const poly = state.roadPolylines[i]!;
+        if (poly.points.length < 2) continue;
+        ctx.strokeStyle = poly.isMotorway ? '#475569' : '#334155';
+        ctx.lineWidth = poly.isMotorway ? 7.5 : 5;
+        ctx.beginPath();
+        for (let p = 0; p < poly.points.length; p++) {
+          const [gx, gy] = toGps(poly.points[p]!.x, poly.points[p]!.z);
+          if (p === 0) ctx.moveTo(gx, gy);
+          else ctx.lineTo(gx, gy);
+        }
+        ctx.stroke();
+      }
+
+      // Active purple GPS route ribbon
+      if (state.routePoints && state.routePoints.length > 1) {
+        ctx.strokeStyle = '#c084fc';
+        ctx.lineWidth = 5.5;
+        ctx.beginPath();
+        for (let i = 0; i < state.routePoints.length; i++) {
+          const [gx, gy] = toGps(state.routePoints[i]!.x, state.routePoints[i]!.z);
+          if (i === 0) ctx.moveTo(gx, gy);
+          else ctx.lineTo(gx, gy);
+        }
+        ctx.stroke();
+      }
+
+      if (state.destPoint) {
+        const [dx, dy] = toGps(state.destPoint.x, state.destPoint.z);
+        ctx.fillStyle = '#10b981';
+        ctx.beginPath();
+        ctx.arc(dx, dy, 6.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#f8fafc';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else {
+      // Fallback stylized ribbon (e.g. A2 exam or initial preview)
+      ctx.strokeStyle = state.hasActiveJob ? '#a855f7' : '#38bdf8';
+      ctx.lineWidth = 14;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx, 158);
+      ctx.quadraticCurveTo(
+        cx,
+        92,
+        turnDir === 'left' ? 104 : turnDir === 'right' ? 216 : cx,
+        32
+      );
+      ctx.stroke();
+    }
+
+    // Player amber chevron
     ctx.fillStyle = '#f59e0b';
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.moveTo(128, 112);
-    ctx.lineTo(140, 136);
-    ctx.lineTo(128, 130);
-    ctx.lineTo(116, 136);
+    ctx.moveTo(cx, cy - 10);
+    ctx.lineTo(cx + 8, cy + 8);
+    ctx.lineTo(cx, cy + 4);
+    ctx.lineTo(cx - 8, cy + 8);
     ctx.closePath();
     ctx.fill();
+    ctx.stroke();
+
+    // Top-left next turn badge
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+    ctx.fillRect(10, 10, 58, 46);
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(10, 10, 58, 46);
+    ctx.fillStyle = turnDir === 'arrive' ? '#34d399' : turnDir === 'straight' ? '#38bdf8' : '#fbbf24';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const turnGlyph =
+      turnDir === 'left' ? '↰' : turnDir === 'right' ? '↱' : turnDir === 'arrive' ? '⚑' : '↑';
+    ctx.fillText(turnGlyph, 39, 26);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText(
+      state.turnDistMeters != null ? `${state.turnDistMeters}m` : `${state.speedKmh}km/h`,
+      39,
+      45
+    );
 
     // Speed limit circle (inset safely from right edge)
-    ctx.fillStyle = '#ffffff';
+    const speeding = state.speedKmh > state.speedLimitKmh + 5;
+    ctx.fillStyle = speeding ? '#dc2626' : '#ffffff';
     ctx.beginPath();
-    ctx.arc(216, 36, 20, 0, Math.PI * 2);
+    ctx.arc(282, 34, 21, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#dc2626';
+    ctx.strokeStyle = speeding ? '#fecaca' : '#dc2626';
     ctx.lineWidth = 4.5;
     ctx.stroke();
-    ctx.fillStyle = '#0f172a';
+    ctx.fillStyle = speeding ? '#ffffff' : '#0f172a';
     ctx.font = 'bold 15px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(state.speedLimitKmh), 216, 37);
+    ctx.fillText(String(state.speedLimitKmh), 282, 35);
 
-    // Bottom bar distance + guidance (generous margins & strict ellipsis so text never clips right edge)
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
-    ctx.fillRect(0, 120, 256, 40);
+    // Bottom bar distance + guidance
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
+    ctx.fillRect(0, 160, w, 40);
 
     const distText = state.hasActiveJob
       ? `${(state.distanceMeters / 1000).toFixed(1)}km`
       : 'SATNAV';
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 12px monospace';
     const distWidth = ctx.measureText(distText).width;
-    const badgeW = Math.ceil(distWidth) + 12;
-    const badgeX = 256 - badgeW - 10;
+    const badgeW = Math.ceil(distWidth) + 14;
+    const badgeX = w - badgeW - 10;
 
-    ctx.fillStyle = state.hasActiveJob ? 'rgba(16, 185, 129, 0.16)' : 'rgba(148, 163, 184, 0.14)';
-    ctx.fillRect(badgeX, 128, badgeW, 24);
+    ctx.fillStyle = state.hasActiveJob ? 'rgba(16, 185, 129, 0.18)' : 'rgba(148, 163, 184, 0.14)';
+    ctx.fillRect(badgeX, 168, badgeW, 24);
     ctx.fillStyle = state.hasActiveJob ? '#34d399' : '#94a3b8';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(distText, badgeX + badgeW / 2, 140);
+    ctx.fillText(distText, badgeX + badgeW / 2, 180);
 
     ctx.fillStyle = '#e2e8f0';
-    ctx.font = 'bold 10px sans-serif';
+    ctx.font = 'bold 12px sans-serif';
     ctx.textAlign = 'left';
-    const maxInstrWidth = Math.max(40, badgeX - 16);
+    const maxInstrWidth = Math.max(40, badgeX - 18);
     let instr = state.instruction.trim();
     if (!state.hasActiveJob && instr.includes('自由')) {
       instr = '自由漫游 · 货场接单';
@@ -924,7 +1061,7 @@ export class ProceduralTextures {
       }
       instr = `${instr}…`;
     }
-    ctx.fillText(instr, 10, 139);
+    ctx.fillText(instr, 10, 180);
 
     this.gpsTexture.needsUpdate = true;
   }
@@ -1486,8 +1623,8 @@ export class ProceduralTextures {
   public getWindshieldRainTexture(): THREE.CanvasTexture {
     if (this.rainTexture) return this.rainTexture;
     this.rainCanvas = document.createElement('canvas');
-    this.rainCanvas.width = 256;
-    this.rainCanvas.height = 128;
+    this.rainCanvas.width = 512;
+    this.rainCanvas.height = 256;
     this.rainCtx = this.rainCanvas.getContext('2d')!;
     this.rainTexture = new THREE.CanvasTexture(this.rainCanvas);
     this.rainTexture.colorSpace = THREE.SRGBColorSpace;
@@ -1498,47 +1635,49 @@ export class ProceduralTextures {
     dtSec: number,
     rainIntensity: number,
     wiperAngleRad: number,
-    wipersMode: WipersMode
+    wipersMode: WipersMode,
+    speedKmh = 0
   ): void {
     if (!this.rainCtx || !this.rainTexture) return;
     if (rainIntensity < 0.05) {
       if (this.rainDrops.length > 0) {
         this.rainDrops.length = 0;
-        this.rainCtx.clearRect(0, 0, 256, 128);
+        this.rainCtx.clearRect(0, 0, 512, 256);
         this.rainTexture.needsUpdate = true;
       }
       this.prevWiperAngle = wiperAngleRad;
       return;
     }
 
-    // Spawn raindrops proportional to rain intensity (max ~95 active drops)
-    const maxDrops = Math.round(18 + rainIntensity * 77);
-    const spawnBudget = rainIntensity * 110 * dtSec;
+    // Spawn raindrops proportional to rain intensity (max ~155 active drops)
+    const maxDrops = Math.round(28 + rainIntensity * 127);
+    const spawnBudget = rainIntensity * 175 * dtSec;
     const spawnCount = Math.floor(spawnBudget) + (Math.random() < spawnBudget % 1 ? 1 : 0);
     for (let i = 0; i < spawnCount && this.rainDrops.length < maxDrops; i++) {
       this.rainDrops.push({
-        x: Math.random() * 256,
-        y: Math.random() * 124,
-        r: 1.4 + Math.random() * 2.2,
-        vy: 5 + Math.random() * 11,
+        x: Math.random() * 512,
+        y: Math.random() * 248,
+        r: 2.2 + Math.random() * 3.4,
+        vy: 10 + Math.random() * 20,
       });
     }
 
     // Advance & wipe drops in the swept wiper arc
-    const minAng = Math.min(this.prevWiperAngle, wiperAngleRad) - 0.08;
-    const maxAng = Math.max(this.prevWiperAngle, wiperAngleRad) + 0.08;
+    const minAng = Math.min(this.prevWiperAngle, wiperAngleRad) - 0.09;
+    const maxAng = Math.max(this.prevWiperAngle, wiperAngleRad) + 0.09;
     const wiperSweeping = wipersMode > 0 && Math.abs(wiperAngleRad - this.prevWiperAngle) > 0.002;
+    const speedFlowScale = 1 + Math.min(2.2, Math.abs(speedKmh) / 42);
 
     // Two wiper pivots in windshield local coordinates (2.24m x 1.18m centered at y=2.62)
     // u = (1.12 - worldX) / 2.24, v = (3.21 - worldY) / 1.18
-    const pivotYs = 128; // y=2.03 -> bottom edge
-    const pivotXs = [((1.12 - 0.52) / 2.24) * 256, ((1.12 - -0.18) / 2.24) * 256];
-    const bladeRadiusPx = (0.76 / 1.18) * 128;
+    const pivotYs = 256; // y=2.03 -> bottom edge
+    const pivotXs = [((1.12 - 0.52) / 2.24) * 512, ((1.12 - -0.18) / 2.24) * 512];
+    const bladeRadiusPx = (0.76 / 1.18) * 256;
 
     for (let i = this.rainDrops.length - 1; i >= 0; i--) {
       const d = this.rainDrops[i]!;
-      d.y += d.vy * dtSec;
-      if (d.y > 128) {
+      d.y += d.vy * speedFlowScale * dtSec;
+      if (d.y > 256) {
         this.rainDrops.splice(i, 1);
         continue;
       }
@@ -1549,7 +1688,7 @@ export class ProceduralTextures {
           const dx = d.x - pivotXs[p]!; // +dx points right (-worldX)
           const dy = pivotYs - d.y; // +dy points up (+worldY)
           const dist = Math.hypot(dx, dy);
-          if (dist >= 16 && dist <= bladeRadiusPx) {
+          if (dist >= 28 && dist <= bladeRadiusPx) {
             const bladeTheta = -Math.atan2(dy, dx); // matches pivot.rotation.z in [-1.5..-0.02]
             if (bladeTheta >= minAng && bladeTheta <= maxAng) {
               wiped = true;
@@ -1565,24 +1704,282 @@ export class ProceduralTextures {
     this.prevWiperAngle = wiperAngleRad;
 
     this.rainAccumSec += dtSec;
-    if (this.rainAccumSec < 0.05) return;
+    if (this.rainAccumSec < 0.045) return;
     this.rainAccumSec = 0;
 
     const ctx = this.rainCtx;
-    ctx.clearRect(0, 0, 256, 128);
+    ctx.clearRect(0, 0, 512, 256);
+    const streakLen = Math.min(18, (Math.abs(speedKmh) / 90) * 14);
     for (let i = 0; i < this.rainDrops.length; i++) {
       const d = this.rainDrops[i]!;
-      ctx.fillStyle = 'rgba(203, 213, 225, 0.42)';
+      // Speed-reactive water streak tail above droplet
+      if (streakLen > 2) {
+        const grad = ctx.createLinearGradient(d.x, d.y - streakLen, d.x, d.y);
+        grad.addColorStop(0, 'rgba(226, 232, 240, 0)');
+        grad.addColorStop(1, 'rgba(226, 232, 240, 0.45)');
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = Math.max(1.2, d.r * 0.65);
+        ctx.beginPath();
+        ctx.moveTo(d.x, d.y - streakLen);
+        ctx.lineTo(d.x, d.y);
+        ctx.stroke();
+      }
+
+      // Translucent droplet body + crisp refraction rim
+      ctx.fillStyle = 'rgba(203, 213, 225, 0.46)';
       ctx.beginPath();
       ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.55)';
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+
+      // Bright top-left specular highlight
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.86)';
       ctx.beginPath();
-      ctx.arc(d.x - d.r * 0.3, d.y - d.r * 0.3, Math.max(0.6, d.r * 0.35), 0, Math.PI * 2);
+      ctx.arc(d.x - d.r * 0.32, d.y - d.r * 0.32, Math.max(0.9, d.r * 0.36), 0, Math.PI * 2);
       ctx.fill();
     }
     this.rainTexture.needsUpdate = true;
+  }
+
+  public getTireTextures(): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } {
+    const mapKey = 'tire_tread_map';
+    const bumpKey = 'tire_tread_bump';
+    const existingMap = this.cache.get(mapKey);
+    const existingBump = this.cache.get(bumpKey);
+    if (existingMap && existingBump) {
+      return { map: existingMap, bumpMap: existingBump };
+    }
+
+    const w = 256;
+    const h = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d')!;
+
+    const bumpCanvas = document.createElement('canvas');
+    bumpCanvas.width = w;
+    bumpCanvas.height = h;
+    const bCtx = bumpCanvas.getContext('2d')!;
+
+    ctx.fillStyle = '#1b1f26';
+    ctx.fillRect(0, 0, w, h);
+    bCtx.fillStyle = 'rgb(155, 155, 155)';
+    bCtx.fillRect(0, 0, w, h);
+
+    // 4 deep longitudinal highway tread grooves
+    for (const gy of [56, 102, 154, 200]) {
+      ctx.fillStyle = '#0d1015';
+      ctx.fillRect(0, gy - 5, w, 10);
+      bCtx.fillStyle = 'rgb(45, 45, 45)';
+      bCtx.fillRect(0, gy - 5, w, 10);
+    }
+
+    // Angled shoulder tread lugs
+    ctx.fillStyle = '#101318';
+    bCtx.fillStyle = 'rgb(65, 65, 65)';
+    for (let x = 0; x < w; x += 16) {
+      ctx.fillRect(x, 8, 6, 40);
+      ctx.fillRect(x + 8, 208, 6, 40);
+      bCtx.fillRect(x, 8, 6, 40);
+      bCtx.fillRect(x + 8, 208, 6, 40);
+    }
+
+    const map = new THREE.CanvasTexture(canvas);
+    map.wrapS = THREE.RepeatWrapping;
+    map.wrapT = THREE.RepeatWrapping;
+    map.repeat.set(6, 1);
+    map.colorSpace = THREE.SRGBColorSpace;
+    map.anisotropy = this.anisotropy;
+
+    const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+    bumpMap.wrapS = THREE.RepeatWrapping;
+    bumpMap.wrapT = THREE.RepeatWrapping;
+    bumpMap.repeat.set(6, 1);
+    bumpMap.anisotropy = this.anisotropy;
+
+    this.cache.set(mapKey, map);
+    this.cache.set(bumpKey, bumpMap);
+    return { map, bumpMap };
+  }
+
+  public getWheelRimTexture(): THREE.CanvasTexture {
+    const key = 'wheel_rim_lug_albedo';
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+
+    const grad = ctx.createRadialGradient(128, 128, 18, 128, 128, 126);
+    grad.addColorStop(0, '#475569');
+    grad.addColorStop(0.28, '#cbd5e1');
+    grad.addColorStop(0.85, '#e2e8f0');
+    grad.addColorStop(1, '#94a3b8');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+
+    // Ventilation cutouts around outer dish
+    ctx.fillStyle = '#1e293b';
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(128 + Math.cos(a) * 92, 128 + Math.sin(a) * 92, 10, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 10 chrome lug nuts around bolt circle
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2 + 0.31;
+      const lx = 128 + Math.cos(a) * 56;
+      const ly = 128 + Math.sin(a) * 56;
+      ctx.fillStyle = '#334155';
+      ctx.beginPath();
+      ctx.arc(lx, ly, 7.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f8fafc';
+      ctx.beginPath();
+      ctx.arc(lx - 1, ly - 1, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Center hub cap
+    ctx.fillStyle = '#1e293b';
+    ctx.beginPath();
+    ctx.arc(128, 128, 30, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getLicensePlateTexture(plateText = 'M · EH 2026'): THREE.CanvasTexture {
+    const key = `eu_plate_${plateText}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, 256, 64);
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, 252, 60);
+
+    // Blue EU strip with 'D'
+    ctx.fillStyle = '#1d4ed8';
+    ctx.fillRect(4, 4, 34, 56);
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.arc(21, 20, 8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('D', 21, 46);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 30px monospace';
+    ctx.fillText(plateText, 146, 34);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getBuildingFacadeTexture(kind: 'warehouse' | 'office' | 'cottage'): THREE.CanvasTexture {
+    const key = `facade_${kind}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    if (kind === 'cottage') {
+      ctx.fillStyle = '#ede9df';
+      ctx.fillRect(0, 0, 256, 256);
+      // Timber framing + warm lit windows + door
+      ctx.fillStyle = '#5c4033';
+      ctx.fillRect(0, 0, 256, 16);
+      ctx.fillRect(0, 122, 256, 10);
+      for (const wx of [34, 162]) {
+        for (const wy of [40, 152]) {
+          ctx.fillStyle = '#334155';
+          ctx.fillRect(wx - 3, wy - 3, 62, 52);
+          ctx.fillStyle = '#fef3c7';
+          ctx.fillRect(wx, wy, 56, 46);
+          ctx.fillStyle = '#334155';
+          ctx.fillRect(wx + 26, wy, 4, 46);
+          ctx.fillRect(wx, wy + 21, 56, 4);
+        }
+      }
+      ctx.fillStyle = '#7c2d12';
+      ctx.fillRect(108, 168, 40, 88);
+    } else if (kind === 'office') {
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(0, 0, 256, 256);
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(0, 0, 256, 28);
+      for (let row = 0; row < 2; row++) {
+        for (let col = 0; col < 3; col++) {
+          const wx = 24 + col * 76;
+          const wy = 46 + row * 72;
+          ctx.fillStyle = '#93c5fd';
+          ctx.fillRect(wx, wy, 56, 44);
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.35)';
+          ctx.fillRect(wx, wy, 56, 12);
+        }
+      }
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(98, 192, 60, 64);
+    } else {
+      ctx.fillStyle = '#64748b';
+      ctx.fillRect(0, 0, 256, 256);
+      for (let x = 0; x < 256; x += 12) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.14)';
+        ctx.fillRect(x, 0, 4, 256);
+      }
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(0, 0, 256, 26);
+      // Clerestory warehouse windows
+      for (let x = 18; x < 230; x += 56) {
+        ctx.fillStyle = '#bae6fd';
+        ctx.fillRect(x, 42, 42, 28);
+      }
+      // Industrial roller door
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(88, 120, 80, 136);
+      for (let y = 134; y < 252; y += 16) {
+        ctx.fillStyle = '#475569';
+        ctx.fillRect(92, y, 72, 4);
+      }
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
   }
 
   public dispose(): void {

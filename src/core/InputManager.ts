@@ -26,6 +26,9 @@ export interface InputActions {
   onRest?: () => void;
   onCycleWipers?: () => void;
   onToggleFullscreen?: () => void;
+  onCycleMirrors?: () => void;
+  onCycleAdvisorMode?: () => void;
+  onToggleSeatAdjust?: () => void;
   onEscape?: () => void;
 }
 
@@ -168,22 +171,29 @@ export class InputManager {
       : 3.2 + Math.min(3.0, absSpeed * 0.04);
 
     if (targetSteer !== 0) {
+      const isCounterSteer =
+        this.rawSteer !== 0 && Math.sign(targetSteer) !== Math.sign(this.rawSteer);
       if (targetSteer !== this.lastSteerDir) {
         this.steerHoldSec = 0;
         this.lastSteerDir = targetSteer;
       } else {
         this.steerHoldSec += dtSec;
       }
-      const holdRamp =
-        absSpeed < 22
-          ? Math.min(1.0, Math.max(0.55, 0.55 + this.steerHoldSec * 1.8))
-          : Math.min(1.0, Math.max(0.28, 0.28 + this.steerHoldSec * 1.6));
+      const holdRamp = isCounterSteer
+        ? 1.85
+        : absSpeed < 22
+        ? Math.min(1.0, Math.max(0.55, 0.55 + this.steerHoldSec * 1.8))
+        : Math.min(1.0, Math.max(0.28, 0.28 + this.steerHoldSec * 1.6));
+      const prevSign = Math.sign(this.rawSteer);
       const diff = targetSteer - this.rawSteer;
       const step = Math.sign(diff) * speedSteerSpeed * holdRamp * dtSec;
       if (Math.abs(diff) <= Math.abs(step)) {
         this.rawSteer = targetSteer;
       } else {
         this.rawSteer += step;
+      }
+      if (prevSign !== 0 && Math.sign(this.rawSteer) !== prevSign) {
+        this.steerHoldSec = 0;
       }
     } else {
       this.steerHoldSec = 0;
@@ -236,6 +246,21 @@ export class InputManager {
     }
     if (e.code === 'KeyM') {
       this.actions.onToggleMap?.();
+      return;
+    }
+    if (e.code === 'F2') {
+      e.preventDefault();
+      this.actions.onCycleMirrors?.();
+      return;
+    }
+    if (e.code === 'F3') {
+      e.preventDefault();
+      this.actions.onCycleAdvisorMode?.();
+      return;
+    }
+    if (e.code === 'F4') {
+      e.preventDefault();
+      this.actions.onToggleSeatAdjust?.();
       return;
     }
     if (e.code === 'F7') {

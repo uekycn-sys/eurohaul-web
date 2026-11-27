@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   CameraMode,
+  MirrorDisplayMode,
   QUALITY_SPECS,
   QualityPreset,
   SignalState,
@@ -8,7 +9,7 @@ import {
   getMaxFuelLiters,
   useGameStore,
 } from '../store/useGameStore';
-import { ProceduralTextures } from '../graphics/ProceduralTextures';
+import { CabGpsRoadPolyline, ProceduralTextures } from '../graphics/ProceduralTextures';
 import { EnvironmentSystem } from '../graphics/EnvironmentSystem';
 import { MapRegistry } from '../map/MapRegistry';
 import { BuiltMap, MapBuilder } from '../map/MapBuilder';
@@ -118,6 +119,8 @@ export class GameEngine {
   private lastPaintHex = '';
   private viewportWidth = 1280;
   private viewportHeight = 720;
+  private cabRoadPolylines: CabGpsRoadPolyline[] = [];
+  private cabGpsAccumSec = 0;
   private readonly tempVecA = new THREE.Vector3();
   private readonly tempVecB = new THREE.Vector3();
 
@@ -191,6 +194,7 @@ export class GameEngine {
     const manifest = MapRegistry.getMapById(store.selectedMapId);
     this.builtMap = this.mapBuilder.build(manifest);
     this.scene.add(this.builtMap.root);
+    this.rebuildCabRoadPolylines();
 
     this.truckMeshBuilder = new TruckMeshBuilder(this.textures);
     this.lastPaintHex = store.paintHex;
@@ -223,26 +227,67 @@ export class GameEngine {
       onToggleLeftBlinker: () => this.physics.toggleLeftBlinker(),
       onToggleRightBlinker: () => this.physics.toggleRightBlinker(),
       onToggleHazards: () => this.physics.toggleHazards(),
-      onCycleHeadlights: () => this.physics.cycleHeadlights(),
+      onCycleHeadlights: () => {
+        this.physics.cycleHeadlights();
+        this.audio.playCabSwitchClick();
+      },
       onToggleParkingBrake: () => this.physics.toggleParkingBrake(),
-      onToggleCruiseControl: () =>
-        this.physics.toggleCruiseControl(useGameStore.getState().speedLimiterEnabled),
-      onCruiseIncrease: () =>
-        this.physics.adjustCruiseControl(5, useGameStore.getState().speedLimiterEnabled),
-      onCruiseDecrease: () =>
-        this.physics.adjustCruiseControl(-5, useGameStore.getState().speedLimiterEnabled),
-      onCycleRetarder: () => this.physics.cycleRetarder(),
+      onToggleCruiseControl: () => {
+        this.physics.toggleCruiseControl(useGameStore.getState().speedLimiterEnabled);
+        this.audio.playCabSwitchClick();
+      },
+      onCruiseIncrease: () => {
+        this.physics.adjustCruiseControl(5, useGameStore.getState().speedLimiterEnabled);
+        this.audio.playCabSwitchClick();
+      },
+      onCruiseDecrease: () => {
+        this.physics.adjustCruiseControl(-5, useGameStore.getState().speedLimiterEnabled);
+        this.audio.playCabSwitchClick();
+      },
+      onCycleRetarder: () => {
+        this.physics.cycleRetarder();
+        this.audio.playCabSwitchClick();
+      },
       onToggleTrailer: () => this.handleToggleTrailer(),
       onToggleIgnition: () => this.handleToggleIgnition(),
       onToggleExhaustBrake: () => this.handleToggleExhaustBrake(),
       onToggleDiffLock: () => this.handleToggleDiffLock(),
       onToggleCabLight: () => {
         this.physics.cabLightOn = !this.physics.cabLightOn;
+        this.audio.playCabSwitchClick();
       },
       onToggleRescueModal: () => {
         const s = useGameStore.getState();
         if (s.gamePhase !== 'playing' || s.gameMode === 'a2_exam') return;
         s.setActiveModal(s.activeModal === 'rescue' ? 'none' : 'rescue');
+      },
+      onCycleMirrors: () => {
+        const s = useGameStore.getState();
+        if (s.gamePhase !== 'playing') return;
+        s.cycleMirrorDisplayMode();
+        this.audio.playCabSwitchClick();
+        const mode = useGameStore.getState().mirrorDisplayMode;
+        s.pushNotification(
+          'info',
+          mode === 'both'
+            ? '电子后视镜: 左右双镜'
+            : mode === 'right_only'
+            ? '电子后视镜: 仅右上角右镜 (ETS2沉浸)'
+            : '电子后视镜: 已关闭',
+          '按 F2 循环切换 [双镜 → 仅右镜 → 关闭]'
+        );
+      },
+      onCycleAdvisorMode: () => {
+        const s = useGameStore.getState();
+        if (s.gamePhase !== 'playing' || s.gameMode === 'a2_exam') return;
+        s.cycleAdvisorDisplayMode();
+        this.audio.playCabSwitchClick();
+      },
+      onToggleSeatAdjust: () => {
+        const s = useGameStore.getState();
+        if (s.gamePhase !== 'playing') return;
+        s.toggleSeatAdjustOpen();
+        this.audio.playCabSwitchClick();
       },
       onCenterSteering: () =>
         useGameStore.getState().pushNotification('info', '方向盘正在回正', '前轮自动回正至直线行驶位置'),
@@ -289,7 +334,9 @@ export class GameEngine {
       },
       onEscape: () => {
         const s = useGameStore.getState();
-        if (s.activeModal !== 'none') {
+        if (s.seatAdjustOpen) {
+          s.setSeatAdjustOpen(false);
+        } else if (s.activeModal !== 'none') {
           s.setActiveModal('none');
         } else if (s.gamePhase === 'playing') {
           s.setGamePhase('menu');
@@ -366,6 +413,7 @@ export class GameEngine {
 
   private handleToggleExhaustBrake(): void {
     const active = this.physics.toggleExhaustBrake();
+    this.audio.playCabSwitchClick();
     useGameStore
       .getState()
       .pushNotification(
@@ -377,6 +425,7 @@ export class GameEngine {
 
   private handleToggleDiffLock(): void {
     const active = this.physics.toggleDiffLock();
+    this.audio.playCabSwitchClick();
     useGameStore
       .getState()
       .pushNotification(
@@ -660,8 +709,22 @@ export class GameEngine {
   public cycleWipers(): void {
     this.wipersMode = ((this.wipersMode + 1) % 3) as WipersMode;
     this.wipersManualOverride = true;
+    this.audio.playCabSwitchClick();
     const label = this.wipersMode === 0 ? '关闭' : this.wipersMode === 1 ? '标准间歇' : '高速强扫';
     useGameStore.getState().pushNotification('info', `雨刮器: ${label}`, '按 P 键循环切换雨刷档位');
+  }
+
+  private rebuildCabRoadPolylines(): void {
+    this.cabRoadPolylines = this.builtMap.segments.map((seg) => {
+      const pts: { x: number; z: number }[] = [];
+      for (let i = 0; i < seg.samples.length; i += 3) {
+        const s = seg.samples[i]!;
+        pts.push({ x: s.x, z: s.z });
+      }
+      const last = seg.samples[seg.samples.length - 1];
+      if (last) pts.push({ x: last.x, z: last.z });
+      return { points: pts, isMotorway: seg.def.roadClass === 'motorway' };
+    });
   }
 
   public loadMap(mapId: string): void {
@@ -676,6 +739,7 @@ export class GameEngine {
     this.builtMap.setFoliageDensity(spec.foliageDensity, preset === 'mobile_fast');
     this.builtMap.setPbrDetailEnabled(preset !== 'mobile_fast');
     this.scene.add(this.builtMap.root);
+    this.rebuildCabRoadPolylines();
 
     this.traffic = new TrafficSystem(
       this.builtMap,
@@ -829,13 +893,15 @@ export class GameEngine {
       cabLightOn: this.physics.cabLightOn,
       trailerAttached: this.physics.trailerAttached,
       showRainGlass: isCabRainVisible,
+      showCabPendant: store.showCabPendant,
     });
     if (isPlayingActive && store.cameraMode === 1) {
       this.textures.updateWindshieldRain(
         frameDtSec,
         this.env.rainIntensity,
         this.truckVisuals.getWiperAngle(),
-        this.wipersMode
+        this.wipersMode,
+        Math.abs(this.physics.speedMs) * 3.6
       );
     }
 
@@ -847,7 +913,13 @@ export class GameEngine {
       this.truckVisuals,
       store.gamePhase === 'menu',
       store.cabMotionEnabled,
-      quickLookDir
+      quickLookDir,
+      {
+        fovDeg: store.cabFovDeg,
+        seatOffsetZ: store.seatOffsetZ,
+        seatOffsetY: store.seatOffsetY,
+        steeringCameraEnabled: store.steeringCameraEnabled,
+      }
     );
 
     const effectiveRetarderActive =
@@ -883,6 +955,7 @@ export class GameEngine {
       exhaustBrakeActive: effectiveExhaustActive,
       lowAirWarning: this.physics.lowAirWarning,
       rainIntensity: this.env.rainIntensity,
+      onRumbleStrip: this.physics.onRumbleStrip,
       dtSec: frameDtSec,
     });
 
@@ -904,14 +977,19 @@ export class GameEngine {
     }
 
     this.telemetryAccumSec += frameDtSec;
+    this.cabGpsAccumSec += frameDtSec;
     if (this.telemetryAccumSec >= this.telemetryIntervalSec) {
       this.telemetryAccumSec = 0;
       this.syncTelemetry();
     }
 
     this.frameIndex += 1;
+    const hudMirrorMode: MirrorDisplayMode =
+      store.gamePhase === 'playing' && store.activeModal === 'none'
+        ? store.mirrorDisplayMode
+        : 'off';
     this.renderFrame(
-      store.gamePhase === 'playing' && store.activeModal === 'none' && store.mirrorsEnabled,
+      hudMirrorMode,
       store.gamePhase === 'playing' &&
         store.activeModal === 'none' &&
         store.cameraMode === 1 &&
@@ -957,20 +1035,24 @@ export class GameEngine {
     }
   }
 
-  private renderFrame(renderHudMirrors: boolean, render3dCabMirrors: boolean, nowMs: number): void {
+  private renderFrame(hudMirrorMode: MirrorDisplayMode, render3dCabMirrors: boolean, nowMs: number): void {
     const w = this.viewportWidth;
     const h = this.viewportHeight;
     this.renderer.info.reset();
 
-    // Odd/even alternating side mirror pass, capped at max 20Hz per mirror (or ~8Hz for 3D door mirrors only)
-    const canShowHudMirrors = renderHudMirrors && w >= 640;
-    const shouldRenderMirrorRt = canShowHudMirrors || render3dCabMirrors;
-    const mirrorMinIntervalMs = canShowHudMirrors
-      ? Math.max(50, this.mirrorUpdateInterval * 16.6)
-      : Math.max(120, this.mirrorUpdateInterval * 32);
-    if (shouldRenderMirrorRt) {
-      const renderLeft = this.frameIndex % 2 === 0 && nowMs - this.lastLeftMirrorMs >= mirrorMinIntervalMs;
-      const renderRight = !renderLeft && this.frameIndex % 2 === 1 && nowMs - this.lastRightMirrorMs >= mirrorMinIntervalMs;
+    // Odd/even alternating side mirror pass (~16-20Hz per mirror, keeping 3D cab door mirrors smooth even if HUD mirrors are off)
+    const canShowHudMirrors = hudMirrorMode !== 'off' && w >= 640;
+    const needLeftRt = (canShowHudMirrors && hudMirrorMode === 'both') || render3dCabMirrors;
+    const needRightRt = canShowHudMirrors || render3dCabMirrors;
+    const mirrorMinIntervalMs = Math.max(50, this.mirrorUpdateInterval * 16.6);
+    if (needLeftRt || needRightRt) {
+      const renderLeft =
+        needLeftRt && this.frameIndex % 2 === 0 && nowMs - this.lastLeftMirrorMs >= mirrorMinIntervalMs;
+      const renderRight =
+        needRightRt &&
+        !renderLeft &&
+        this.frameIndex % 2 === 1 &&
+        nowMs - this.lastRightMirrorMs >= mirrorMinIntervalMs;
 
       if (renderLeft || renderRight) {
         this.truckVisuals.tractorRoot.updateMatrixWorld(true);
@@ -1018,7 +1100,7 @@ export class GameEngine {
     this.renderer.render(this.scene, this.camera);
 
     if (canShowHudMirrors) {
-      // Blit cached 16:10 mirror textures into top-corner viewports (2 quad draws total)
+      // Blit cached 16:10 mirror textures into top-corner viewports (1 or 2 quad draws)
       const mirrorW = 196;
       const mirrorH = 122;
       const marginX = 18;
@@ -1027,10 +1109,12 @@ export class GameEngine {
 
       this.renderer.setScissorTest(true);
 
-      this.mirrorBlitMat.map = this.mirrorRtLeft.texture;
-      this.renderer.setViewport(marginX, scissorY, mirrorW, mirrorH);
-      this.renderer.setScissor(marginX, scissorY, mirrorW, mirrorH);
-      this.renderer.render(this.mirrorBlitScene, this.mirrorBlitCam);
+      if (hudMirrorMode === 'both') {
+        this.mirrorBlitMat.map = this.mirrorRtLeft.texture;
+        this.renderer.setViewport(marginX, scissorY, mirrorW, mirrorH);
+        this.renderer.setScissor(marginX, scissorY, mirrorW, mirrorH);
+        this.renderer.render(this.mirrorBlitScene, this.mirrorBlitCam);
+      }
 
       const rightX = w - marginX - mirrorW;
       this.mirrorBlitMat.map = this.mirrorRtRight.texture;
@@ -1165,7 +1249,10 @@ export class GameEngine {
           this.physics.trailerZ,
           this.env.nightFactor,
           this.env.rainIntensity,
-          this.input.horn
+          this.input.horn,
+          this.physics.trailerYaw,
+          this.physics.trailerAttached,
+          this.physics.speedMs
         );
 
         const impact = this.physics.lastCollision ?? trafficCollision;
@@ -1249,7 +1336,11 @@ export class GameEngine {
         this.physics.trailerX,
         this.physics.trailerZ,
         this.env.nightFactor,
-        this.env.rainIntensity
+        this.env.rainIntensity,
+        false,
+        this.physics.trailerYaw,
+        this.physics.trailerAttached,
+        this.physics.speedMs
       );
     }
 
@@ -1429,19 +1520,27 @@ export class GameEngine {
       this.builtMap.setDestinationBayAligned(parkingGuide.aligned);
     }
 
-    if (this.physics.instantFuelLPer100Km > 2) {
-      this.avgConsumptionLPer100Km +=
-        (this.physics.instantFuelLPer100Km - this.avgConsumptionLPer100Km) * 0.06;
+    if (this.physics.instantFuelLPer100Km > 2 && Math.abs(this.physics.speedMs) > 4) {
+      const clampedInst = THREE.MathUtils.clamp(this.physics.instantFuelLPer100Km, 20, 68);
+      this.avgConsumptionLPer100Km = THREE.MathUtils.clamp(
+        this.avgConsumptionLPer100Km + (clampedInst - this.avgConsumptionLPer100Km) * 0.008,
+        25,
+        52
+      );
     }
     const estFuelRangeKm = Math.round(
-      (store.fuelLiters / Math.max(18, this.avgConsumptionLPer100Km)) * 100
+      (store.fuelLiters / Math.max(25, this.avgConsumptionLPer100Km)) * 100
     );
+
+    const upcomingToll = isA2Exam
+      ? null
+      : this.builtMap.getUpcomingTollBooth(this.physics.x, this.physics.z, this.physics.yaw);
 
     if (isA2Exam && this.examController) {
       store.setA2ExamState(this.examController.getSnapshot());
     }
 
-    // Update 3D cockpit instrument cluster & SatNav CanvasTexture cleanly when in 1st-person view
+    // Update 3D cockpit instrument cluster & live SatNav CanvasTexture (~6 Hz) in 1st-person view
     if (store.cameraMode === 1 && store.gamePhase === 'playing') {
       const maxFuel = getMaxFuelLiters(store.tankTier);
       this.textures.updateDynamicDashboard({
@@ -1460,15 +1559,28 @@ export class GameEngine {
         retarderLevel: this.physics.retarderLevel,
         brakeTempC: this.physics.brakeTempC,
       });
-      this.textures.updateDynamicCabGps({
-        speedKmh: Math.round(kmh),
-        speedLimitKmh: this.physics.speedLimitKmh,
-        distanceMeters: guidance.distanceMeters,
-        hasActiveJob: Boolean(store.activeJob),
-        instruction: isA2Exam
-          ? this.examController?.instruction ?? '中国 A2 驾考模拟'
-          : guidance.instruction,
-      });
+      if (this.cabGpsAccumSec >= 0.16) {
+        this.cabGpsAccumSec = 0;
+        this.textures.updateDynamicCabGps({
+          speedKmh: Math.round(kmh),
+          speedLimitKmh: this.physics.speedLimitKmh,
+          distanceMeters: guidance.distanceMeters,
+          hasActiveJob: Boolean(store.activeJob),
+          instruction: isA2Exam
+            ? this.examController?.instruction ?? '中国 A2 驾考模拟'
+            : guidance.instruction,
+          truckX: this.physics.x,
+          truckZ: this.physics.z,
+          truckHeadingRad: this.physics.yaw,
+          turnDir: guidance.nextTurnDir,
+          turnDistMeters: guidance.nextTurnDistMeters,
+          roadPolylines: isA2Exam ? [] : this.cabRoadPolylines,
+          routePoints: guidance.routePoints,
+          destPoint: activeDest
+            ? { x: activeDest.parkingBayPosition[0], z: activeDest.parkingBayPosition[2] }
+            : null,
+        });
+      }
     }
 
     store.updateTelemetry({
@@ -1533,6 +1645,8 @@ export class GameEngine {
       navTurnDir: guidance.nextTurnDir,
       navTurnDistMeters: guidance.nextTurnDistMeters,
       estFuelRangeKm,
+      upcomingTollLabel: upcomingToll?.label ?? null,
+      upcomingTollDistMeters: upcomingToll?.distMeters ?? null,
     });
   }
 }

@@ -44,6 +44,8 @@ export const RouteAdvisor = memo(function RouteAdvisor({
 
   const advisorTab = useGameStore((s) => s.advisorTab);
   const setAdvisorTab = useGameStore((s) => s.setAdvisorTab);
+  const advisorDisplayMode = useGameStore((s) => s.advisorDisplayMode);
+  const cycleAdvisorDisplayMode = useGameStore((s) => s.cycleAdvisorDisplayMode);
   const activeJob = useGameStore((s) => s.activeJob);
   const setActiveModal = useGameStore((s) => s.setActiveModal);
   const engineTier = useGameStore((s) => s.engineTier);
@@ -75,7 +77,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
 
   // Draw rotating 2D Route Advisor Minimap directly via store subscription (zero React re-renders!)
   useEffect(() => {
-    if (advisorTab !== 'nav') return;
+    if (advisorDisplayMode !== 'full' || advisorTab !== 'nav') return;
 
     const drawMinimap = () => {
       const canvas = minimapRef.current;
@@ -203,7 +205,70 @@ export const RouteAdvisor = memo(function RouteAdvisor({
       }
     });
     return unsub;
-  }, [advisorTab, mapManifest, getRoutePoints, zoomMode]);
+  }, [advisorDisplayMode, advisorTab, mapManifest, getRoutePoints, zoomMode]);
+
+  if (advisorDisplayMode === 'hidden') {
+    return (
+      <button
+        type="button"
+        onClick={cycleAdvisorDisplayMode}
+        className={`fixed z-20 flex items-center gap-1.5 rounded-xl border border-slate-700/85 bg-slate-950/90 px-3 py-1.5 text-xs font-semibold text-slate-200 shadow-lg backdrop-blur-md transition hover:border-amber-400/60 hover:text-white ${
+          mobileControlsEnabled ? 'right-3 top-14' : 'right-3 bottom-3'
+        }`}
+        title="展开 Route Advisor [F3]"
+      >
+        <ArrowUp className="h-3.5 w-3.5 text-purple-400" />
+        <span>导航 [F3]</span>
+      </button>
+    );
+  }
+
+  if (advisorDisplayMode === 'mini') {
+    const distLabel =
+      navDistanceMeters >= 1000
+        ? `${(navDistanceMeters / 1000).toFixed(1)}km`
+        : `${Math.round(navDistanceMeters)}m`;
+    return (
+      <div
+        className={`fixed z-20 flex items-center gap-2 rounded-xl border border-slate-700/85 bg-slate-950/92 px-3 py-2 text-xs shadow-2xl backdrop-blur-md ${
+          mobileControlsEnabled ? 'right-3 top-14' : 'right-3 bottom-3'
+        }`}
+      >
+        <span
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 text-[10px] font-black ${
+            isSpeeding
+              ? 'border-rose-500 bg-rose-950 text-rose-200 animate-pulse'
+              : 'border-rose-600 bg-white text-slate-950'
+          }`}
+        >
+          {speedLimitKmh}
+        </span>
+        {navTurnDir === 'left' ? (
+          <CornerUpLeft className="h-4 w-4 shrink-0 text-purple-400" />
+        ) : navTurnDir === 'right' ? (
+          <CornerUpRight className="h-4 w-4 shrink-0 text-purple-400" />
+        ) : navTurnDir === 'arrive' ? (
+          <Flag className="h-4 w-4 shrink-0 text-emerald-400" />
+        ) : (
+          <ArrowUp className="h-4 w-4 shrink-0 text-sky-400" />
+        )}
+        <div className="max-w-[155px] truncate font-medium text-slate-100">
+          {navInstruction}
+        </div>
+        <span className="font-mono text-[11px] font-semibold text-amber-300">
+          {distLabel} · {formatEta(navEtaSeconds)}
+        </span>
+        <button
+          type="button"
+          onClick={cycleAdvisorDisplayMode}
+          className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-slate-300 hover:border-amber-400/60 hover:text-white"
+          title="切换导航栏模式 [F3]"
+        >
+          F3
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -223,28 +288,38 @@ export const RouteAdvisor = memo(function RouteAdvisor({
           : undefined
       }
     >
-      <div className="grid grid-cols-4 border-b border-slate-800 text-[11px] font-semibold">
-        {(
-          [
-            ['nav', '导航'],
-            ['cargo', '货物'],
-            ['truck', '车况'],
-            ['controls', '按键'],
-          ] as [AdvisorTab, string][]
-        ).map(([tab, label]) => (
-          <button
-            key={tab}
-            type="button"
-            onClick={() => setAdvisorTab(tab)}
-            className={`py-1.5 transition ${
-              advisorTab === tab
-                ? 'border-b-2 border-amber-400 text-amber-300'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="flex items-center border-b border-slate-800 text-[11px] font-semibold">
+        <div className="grid flex-1 grid-cols-4">
+          {(
+            [
+              ['nav', '导航'],
+              ['cargo', '货物'],
+              ['truck', '车况'],
+              ['controls', '按键'],
+            ] as [AdvisorTab, string][]
+          ).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setAdvisorTab(tab)}
+              className={`py-1.5 transition ${
+                advisorTab === tab
+                  ? 'border-b-2 border-amber-400 text-amber-300'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={cycleAdvisorDisplayMode}
+          className="mr-1.5 rounded border border-slate-700/80 bg-slate-900 px-1.5 py-0.5 text-[9.5px] font-semibold text-slate-400 hover:border-amber-400/60 hover:text-white"
+          title="切换迷你导航 / 隐藏导航 [F3]"
+        >
+          F3
+        </button>
       </div>
 
       <div className="p-2.5">
@@ -499,6 +574,9 @@ export const RouteAdvisor = memo(function RouteAdvisor({
             </span>
             <span>
               <b className="text-amber-300">M / Enter</b> 全图 / 交互
+            </span>
+            <span>
+              <b className="text-amber-300">F2 / F3 / F4</b> 镜/导航/座椅
             </span>
           </div>
         )}

@@ -9,6 +9,7 @@ import {
   Volume2,
 } from 'lucide-react';
 import {
+  MirrorDisplayMode,
   MobileSteeringStyle,
   QUALITY_SPECS,
   QualityPreset,
@@ -54,8 +55,21 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
   const setShowDrawCalls = useGameStore((s) => s.setShowDrawCalls);
   const cabMotionEnabled = useGameStore((s) => s.cabMotionEnabled);
   const setCabMotionEnabled = useGameStore((s) => s.setCabMotionEnabled);
-  const mirrorsEnabled = useGameStore((s) => s.mirrorsEnabled);
-  const setMirrorsEnabled = useGameStore((s) => s.setMirrorsEnabled);
+  const mirrorDisplayMode = useGameStore((s) => s.mirrorDisplayMode);
+  const setMirrorDisplayMode = useGameStore((s) => s.setMirrorDisplayMode);
+  const seatAdjustOpen = useGameStore((s) => s.seatAdjustOpen);
+  const setSeatAdjustOpen = useGameStore((s) => s.setSeatAdjustOpen);
+  const cabFovDeg = useGameStore((s) => s.cabFovDeg);
+  const setCabFovDeg = useGameStore((s) => s.setCabFovDeg);
+  const seatOffsetZ = useGameStore((s) => s.seatOffsetZ);
+  const setSeatOffsetZ = useGameStore((s) => s.setSeatOffsetZ);
+  const seatOffsetY = useGameStore((s) => s.seatOffsetY);
+  const setSeatOffsetY = useGameStore((s) => s.setSeatOffsetY);
+  const resetSeatAdjust = useGameStore((s) => s.resetSeatAdjust);
+  const steeringCameraEnabled = useGameStore((s) => s.steeringCameraEnabled);
+  const setSteeringCameraEnabled = useGameStore((s) => s.setSteeringCameraEnabled);
+  const showCabPendant = useGameStore((s) => s.showCabPendant);
+  const setShowCabPendant = useGameStore((s) => s.setShowCabPendant);
   const speedLimiterEnabled = useGameStore((s) => s.speedLimiterEnabled);
   const setSpeedLimiterEnabled = useGameStore((s) => s.setSpeedLimiterEnabled);
   const realisticSteeringReturn = useGameStore((s) => s.realisticSteeringReturn);
@@ -81,6 +95,112 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
 
   return (
     <>
+      {seatAdjustOpen && activeModal === 'none' && (
+        <div className="fixed bottom-24 left-4 z-30 w-80 rounded-2xl border border-amber-500/45 bg-slate-950/92 p-4 shadow-2xl backdrop-blur-md">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="flex items-center gap-1.5 text-sm font-bold text-amber-300">
+              <Gauge className="h-4 w-4" />
+              F4 座椅与视野微调
+            </h3>
+            <button
+              type="button"
+              onClick={() => setSeatAdjustOpen(false)}
+              className="rounded-md bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 hover:text-white"
+            >
+              关闭 [F4]
+            </button>
+          </div>
+
+          <div className="space-y-3 text-xs">
+            <div>
+              <div className="mb-1 flex justify-between text-slate-300">
+                <span>驾驶室视野 (FOV)</span>
+                <span className="font-mono font-semibold text-amber-300">{cabFovDeg}°</span>
+              </div>
+              <input
+                type="range"
+                min={58}
+                max={82}
+                step={1}
+                value={cabFovDeg}
+                onChange={(e) => setCabFovDeg(Number(e.target.value))}
+                className="w-full accent-amber-400"
+              />
+            </div>
+
+            <div>
+              <div className="mb-1 flex justify-between text-slate-300">
+                <span>座椅前后偏移 (Z)</span>
+                <span className="font-mono font-semibold text-sky-300">
+                  {seatOffsetZ >= 0 ? '+' : ''}
+                  {Math.round(seatOffsetZ * 100)} cm
+                </span>
+              </div>
+              <input
+                type="range"
+                min={-0.2}
+                max={0.15}
+                step={0.01}
+                value={seatOffsetZ}
+                onChange={(e) => setSeatOffsetZ(Number(e.target.value))}
+                className="w-full accent-sky-400"
+              />
+            </div>
+
+            <div>
+              <div className="mb-1 flex justify-between text-slate-300">
+                <span>座椅高低调节 (Y)</span>
+                <span className="font-mono font-semibold text-emerald-300">
+                  {seatOffsetY >= 0 ? '+' : ''}
+                  {Math.round(seatOffsetY * 100)} cm
+                </span>
+              </div>
+              <input
+                type="range"
+                min={-0.12}
+                max={0.12}
+                step={0.01}
+                value={seatOffsetY}
+                onChange={(e) => setSeatOffsetY(Number(e.target.value))}
+                className="w-full accent-emerald-400"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-0.5">
+              <span className="text-slate-300">转向随动视角</span>
+              <button
+                type="button"
+                onClick={() => setSteeringCameraEnabled(!steeringCameraEnabled)}
+                className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold ${
+                  steeringCameraEnabled
+                    ? 'bg-emerald-500 text-slate-950'
+                    : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                {steeringCameraEnabled ? '已开启' : '已关闭'}
+              </button>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={resetSeatAdjust}
+                className="flex-1 rounded-lg border border-slate-700 bg-slate-800 py-1.5 text-[11px] font-semibold text-slate-200 hover:bg-slate-700"
+              >
+                恢复默认
+              </button>
+              <button
+                type="button"
+                onClick={() => setSeatAdjustOpen(false)}
+                className="flex-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-slate-950 hover:bg-amber-400"
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeModal === 'settings' && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
           <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
@@ -180,16 +300,73 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
                 </button>
               </div>
 
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-slate-300">电子画中画后视镜 [F2]</span>
+                <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-0.5">
+                  {(
+                    [
+                      ['both', '双镜'],
+                      ['right_only', '仅右镜'],
+                      ['off', '关闭'],
+                    ] as [MirrorDisplayMode, string][]
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setMirrorDisplayMode(mode)}
+                      className={`rounded-md px-2 py-1 text-[11px] font-semibold transition ${
+                        mirrorDisplayMode === mode
+                          ? 'bg-emerald-500 text-slate-950'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="flex items-center justify-between">
-                <span className="text-slate-300">电子画中画后视镜 (20Hz交替)</span>
+                <span className="text-slate-300">转向随动视角 (过弯微偏视野)</span>
                 <button
                   type="button"
-                  onClick={() => setMirrorsEnabled(!mirrorsEnabled)}
+                  onClick={() => setSteeringCameraEnabled(!steeringCameraEnabled)}
                   className={`rounded-lg px-3 py-1 font-semibold ${
-                    mirrorsEnabled ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                    steeringCameraEnabled
+                      ? 'bg-emerald-500 text-slate-950'
+                      : 'bg-slate-800 text-slate-400'
                   }`}
                 >
-                  {mirrorsEnabled ? '已开启' : '已关闭'}
+                  {steeringCameraEnabled ? '已开启' : '已关闭'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">驾驶室风挡小挂旗</span>
+                <button
+                  type="button"
+                  onClick={() => setShowCabPendant(!showCabPendant)}
+                  className={`rounded-lg px-3 py-1 font-semibold ${
+                    showCabPendant
+                      ? 'bg-emerald-500 text-slate-950'
+                      : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  {showCabPendant ? '显示' : '隐藏'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">驾驶室座椅 / FOV 微调 [F4]</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveModal('none');
+                    setSeatAdjustOpen(true);
+                  }}
+                  className="rounded-lg border border-amber-500/50 bg-amber-500/15 px-3 py-1 font-semibold text-amber-300 hover:bg-amber-500/25"
+                >
+                  实时调节
                 </button>
               </div>
 
