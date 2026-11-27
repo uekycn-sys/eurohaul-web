@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { BuiltMap, CompiledRoadSegment } from '../map/MapBuilder';
 import { CollisionEvent } from './TruckPhysics';
+import {
+  createSedanGeometries,
+  createSemiTractorGeometries,
+  createSemiTrailerGeometries,
+  createVanGeometries,
+} from '../graphics/VehicleModelFactory';
 
 type TrafficArchetype = 'sedan' | 'van' | 'semi';
 
@@ -14,6 +20,7 @@ interface TrafficAgent {
   speedMs: number;
   targetSpeedMs: number;
   archetype: TrafficArchetype;
+  archetypeSlot: number;
   isTruck: boolean;
   colorHex: string;
   braking: boolean;
@@ -53,10 +60,14 @@ export class TrafficSystem {
   private readonly nodeConnections = new Map<string, CompiledRoadSegment[]>();
   private readonly roadPool: CompiledRoadSegment[];
 
-  private readonly bodyInst: THREE.InstancedMesh;
-  private readonly cabinInst: THREE.InstancedMesh;
-  private readonly semiTrailerInst: THREE.InstancedMesh;
-  private readonly wheelInst: THREE.InstancedMesh;
+  private readonly sedanPaintInst: THREE.InstancedMesh;
+  private readonly sedanDetailInst: THREE.InstancedMesh;
+  private readonly vanPaintInst: THREE.InstancedMesh;
+  private readonly vanDetailInst: THREE.InstancedMesh;
+  private readonly semiCabPaintInst: THREE.InstancedMesh;
+  private readonly semiCabDetailInst: THREE.InstancedMesh;
+  private readonly semiTrailerPaintInst: THREE.InstancedMesh;
+  private readonly semiTrailerDetailInst: THREE.InstancedMesh;
   private readonly headlightInst: THREE.InstancedMesh;
   private readonly taillightInst: THREE.InstancedMesh;
   private readonly shadowInst: THREE.InstancedMesh | null = null;
@@ -96,47 +107,82 @@ export class TrafficSystem {
     const arterial = builtMap.segments.filter((s) => s.def.roadClass !== 'urban');
     this.roadPool = arterial.length > 0 ? arterial : builtMap.segments;
 
-    const bodyGeo = new THREE.BoxGeometry(2.1, 1.05, 4.6);
-    const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.38 });
-    const cabinGeo = new THREE.BoxGeometry(1.85, 0.72, 2.3);
-    const cabinMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.3, metalness: 0.25 });
-    const semiTrailerGeo = new THREE.BoxGeometry(2.36, 2.65, 9.6);
-    const semiTrailerMat = new THREE.MeshStandardMaterial({ roughness: 0.46, metalness: 0.2 });
-    const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 2.18, 10);
-    wheelGeo.rotateZ(Math.PI / 2);
-    const wheelMat = new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.9 });
-    const lampGeo = new THREE.BoxGeometry(0.34, 0.16, 0.08);
+    let maxSedan = 0;
+    let maxVan = 0;
+    let maxSemi = 0;
+    for (let i = 0; i < this.maxCapacity; i++) {
+      if (i % 5 === 0) maxSemi++;
+      else if (i % 3 === 0) maxVan++;
+      else maxSedan++;
+    }
+    maxSedan = Math.max(1, maxSedan);
+    maxVan = Math.max(1, maxVan);
+    maxSemi = Math.max(1, maxSemi);
+
+    const sedanGeos = createSedanGeometries();
+    const vanGeos = createVanGeometries();
+    const semiCabGeos = createSemiTractorGeometries();
+    const semiTrailerGeos = createSemiTrailerGeometries();
+
+    const paintMat = new THREE.MeshStandardMaterial({
+      roughness: 0.32,
+      metalness: 0.46,
+      envMapIntensity: 1.05,
+    });
+    const trailerPaintMat = new THREE.MeshStandardMaterial({
+      roughness: 0.46,
+      metalness: 0.18,
+    });
+    const detailMat = new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.52,
+      metalness: 0.28,
+      vertexColors: true,
+    });
+    const lampGeo = new THREE.BoxGeometry(0.28, 0.12, 0.06);
     this.headlightMat = new THREE.MeshBasicMaterial({ color: '#fef9c3' });
     this.taillightMat = new THREE.MeshBasicMaterial({ color: '#ffffff' });
 
     this.disposables.push(
-      bodyGeo,
-      bodyMat,
-      cabinGeo,
-      cabinMat,
-      semiTrailerGeo,
-      semiTrailerMat,
-      wheelGeo,
-      wheelMat,
+      sedanGeos.paintGeo,
+      sedanGeos.detailGeo,
+      vanGeos.paintGeo,
+      vanGeos.detailGeo,
+      semiCabGeos.paintGeo,
+      semiCabGeos.detailGeo,
+      semiTrailerGeos.paintGeo,
+      semiTrailerGeos.detailGeo,
+      paintMat,
+      trailerPaintMat,
+      detailMat,
       lampGeo,
       this.headlightMat,
       this.taillightMat
     );
 
-    this.bodyInst = new THREE.InstancedMesh(bodyGeo, bodyMat, this.maxCapacity);
-    this.bodyInst.castShadow = true;
-    this.bodyInst.frustumCulled = false;
-    this.cabinInst = new THREE.InstancedMesh(cabinGeo, cabinMat, this.maxCapacity);
-    this.cabinInst.frustumCulled = false;
-    this.semiTrailerInst = new THREE.InstancedMesh(semiTrailerGeo, semiTrailerMat, this.maxCapacity);
-    this.semiTrailerInst.castShadow = true;
-    this.semiTrailerInst.frustumCulled = false;
-    this.wheelInst = new THREE.InstancedMesh(wheelGeo, wheelMat, this.maxCapacity * 2);
-    this.wheelInst.frustumCulled = false;
-    this.headlightInst = new THREE.InstancedMesh(lampGeo, this.headlightMat, this.maxCapacity * 2);
-    this.headlightInst.frustumCulled = false;
-    this.taillightInst = new THREE.InstancedMesh(lampGeo, this.taillightMat, this.maxCapacity * 2);
-    this.taillightInst.frustumCulled = false;
+    const makeInst = (
+      geo: THREE.BufferGeometry,
+      mat: THREE.Material,
+      cap: number,
+      castShadow = false
+    ) => {
+      const inst = new THREE.InstancedMesh(geo, mat, cap);
+      inst.castShadow = castShadow;
+      inst.frustumCulled = false;
+      return inst;
+    };
+
+    this.sedanPaintInst = makeInst(sedanGeos.paintGeo, paintMat, maxSedan, true);
+    this.sedanDetailInst = makeInst(sedanGeos.detailGeo, detailMat, maxSedan, false);
+    this.vanPaintInst = makeInst(vanGeos.paintGeo, paintMat, maxVan, true);
+    this.vanDetailInst = makeInst(vanGeos.detailGeo, detailMat, maxVan, false);
+    this.semiCabPaintInst = makeInst(semiCabGeos.paintGeo, paintMat, maxSemi, true);
+    this.semiCabDetailInst = makeInst(semiCabGeos.detailGeo, detailMat, maxSemi, false);
+    this.semiTrailerPaintInst = makeInst(semiTrailerGeos.paintGeo, trailerPaintMat, maxSemi, true);
+    this.semiTrailerDetailInst = makeInst(semiTrailerGeos.detailGeo, detailMat, maxSemi, false);
+
+    this.headlightInst = makeInst(lampGeo, this.headlightMat, this.maxCapacity * 2, false);
+    this.taillightInst = makeInst(lampGeo, this.taillightMat, this.maxCapacity * 2, false);
 
     if (shadowTexture) {
       const shadowGeo = new THREE.PlaneGeometry(2.9, 5.8);
@@ -150,8 +196,7 @@ export class TrafficSystem {
         polygonOffsetFactor: -2,
         polygonOffsetUnits: -2,
       });
-      this.shadowInst = new THREE.InstancedMesh(shadowGeo, shadowMat, this.maxCapacity);
-      this.shadowInst.frustumCulled = false;
+      this.shadowInst = makeInst(shadowGeo, shadowMat, this.maxCapacity, false);
       this.disposables.push(shadowGeo, shadowMat);
       builtMap.root.add(this.shadowInst);
     }
@@ -161,10 +206,14 @@ export class TrafficSystem {
     this.setActiveCount(this.activeCount);
     this.syncInstanceMatrices(false, false);
     builtMap.root.add(
-      this.bodyInst,
-      this.cabinInst,
-      this.semiTrailerInst,
-      this.wheelInst,
+      this.sedanPaintInst,
+      this.sedanDetailInst,
+      this.vanPaintInst,
+      this.vanDetailInst,
+      this.semiCabPaintInst,
+      this.semiCabDetailInst,
+      this.semiTrailerPaintInst,
+      this.semiTrailerDetailInst,
       this.headlightInst,
       this.taillightInst
     );
@@ -172,10 +221,23 @@ export class TrafficSystem {
 
   public setActiveCount(count: number): void {
     this.activeCount = Math.max(0, Math.min(this.maxCapacity, Math.round(count)));
-    this.bodyInst.count = this.activeCount;
-    this.cabinInst.count = this.activeCount;
-    this.semiTrailerInst.count = this.activeCount;
-    this.wheelInst.count = this.activeCount * 2;
+    let sedanCount = 0;
+    let vanCount = 0;
+    let semiCount = 0;
+    for (let i = 0; i < this.activeCount; i++) {
+      const arch = this.agents[i]?.archetype;
+      if (arch === 'semi') semiCount++;
+      else if (arch === 'van') vanCount++;
+      else sedanCount++;
+    }
+    this.sedanPaintInst.count = sedanCount;
+    this.sedanDetailInst.count = sedanCount;
+    this.vanPaintInst.count = vanCount;
+    this.vanDetailInst.count = vanCount;
+    this.semiCabPaintInst.count = semiCount;
+    this.semiCabDetailInst.count = semiCount;
+    this.semiTrailerPaintInst.count = semiCount;
+    this.semiTrailerDetailInst.count = semiCount;
     this.headlightInst.count = this.activeCount * 2;
     this.taillightInst.count = this.activeCount * 2;
     if (this.shadowInst) {
@@ -212,10 +274,15 @@ export class TrafficSystem {
 
   private spawnAgents(count: number, focusX: number, focusZ: number, focusYaw: number): void {
     const tmpColor = new THREE.Color();
+    let sedanIdx = 0;
+    let vanIdx = 0;
+    let semiIdx = 0;
 
     for (let i = 0; i < count; i++) {
       const archetype: TrafficArchetype =
         i % 5 === 0 ? 'semi' : i % 3 === 0 ? 'van' : 'sedan';
+      const archetypeSlot =
+        archetype === 'semi' ? semiIdx++ : archetype === 'van' ? vanIdx++ : sedanIdx++;
       const colorHex =
         archetype === 'semi'
           ? SEMI_COLORS[i % SEMI_COLORS.length]!
@@ -235,6 +302,7 @@ export class TrafficSystem {
         speedMs: 14,
         targetSpeedMs: 14,
         archetype,
+        archetypeSlot,
         isTruck: archetype !== 'sedan',
         colorHex,
         braking: false,
@@ -255,15 +323,21 @@ export class TrafficSystem {
       this.agents.push(agent);
 
       tmpColor.set(colorHex);
-      this.bodyInst.setColorAt(i, tmpColor);
-      tmpColor.set(TRAILER_COLORS[i % TRAILER_COLORS.length]!);
-      this.semiTrailerInst.setColorAt(i, tmpColor);
+      if (archetype === 'semi') {
+        this.semiCabPaintInst.setColorAt(archetypeSlot, tmpColor);
+        tmpColor.set(TRAILER_COLORS[i % TRAILER_COLORS.length]!);
+        this.semiTrailerPaintInst.setColorAt(archetypeSlot, tmpColor);
+      } else if (archetype === 'van') {
+        this.vanPaintInst.setColorAt(archetypeSlot, tmpColor);
+      } else {
+        this.sedanPaintInst.setColorAt(archetypeSlot, tmpColor);
+      }
     }
-    if (this.bodyInst.instanceColor) {
-      this.bodyInst.instanceColor.needsUpdate = true;
-    }
-    if (this.semiTrailerInst.instanceColor) {
-      this.semiTrailerInst.instanceColor.needsUpdate = true;
+    if (this.sedanPaintInst.instanceColor) this.sedanPaintInst.instanceColor.needsUpdate = true;
+    if (this.vanPaintInst.instanceColor) this.vanPaintInst.instanceColor.needsUpdate = true;
+    if (this.semiCabPaintInst.instanceColor) this.semiCabPaintInst.instanceColor.needsUpdate = true;
+    if (this.semiTrailerPaintInst.instanceColor) {
+      this.semiTrailerPaintInst.instanceColor.needsUpdate = true;
     }
   }
 
@@ -791,65 +865,47 @@ export class TrafficSystem {
     for (let i = 0; i < this.activeCount; i++) {
       const a = this.agents[i]!;
       const isSemi = a.archetype === 'semi';
-      const scaleZ = isSemi ? 0.9 : a.archetype === 'van' ? 1.16 : 0.96;
-      const scaleY = isSemi ? 1.28 : a.archetype === 'van' ? 1.52 : 0.95;
-      const frontHalf = isSemi ? 5.15 : a.archetype === 'van' ? 2.65 : 2.3;
+      const isVan = a.archetype === 'van';
 
-      // 5. Update instanced matrices with exact road pitch & independent semi-trailer articulation
+      // Update instanced matrices with exact road pitch & independent semi-trailer articulation
       const updatedFwdX = Math.sin(a.yaw);
       const updatedFwdZ = Math.cos(a.yaw);
       const updatedTrFwdX = Math.sin(a.trailerYaw);
       const updatedTrFwdZ = Math.cos(a.trailerYaw);
 
-      const bodyCenterOff = isSemi ? 3.1 : 0;
-      this.dummy.position.set(
-        a.x + updatedFwdX * bodyCenterOff,
-        a.y + 0.62 * scaleY,
-        a.z + updatedFwdZ * bodyCenterOff
-      );
-      this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
-      this.dummy.scale.set(isSemi ? 1.05 : 1, scaleY, scaleZ);
-      this.dummy.updateMatrix();
-      this.bodyInst.setMatrixAt(i, this.dummy.matrix);
-
-      const cabOff = isSemi ? 3.55 : a.archetype === 'van' ? 1.55 : -0.2;
-      const cabY = isSemi ? 1.98 : a.archetype === 'van' ? 1.58 : 1.35;
-      const cabScaleZ = isSemi ? 0.72 : a.archetype === 'van' ? 0.58 : 1.0;
-      this.dummy.position.set(a.x + updatedFwdX * cabOff, a.y + cabY, a.z + updatedFwdZ * cabOff);
-      this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
-      this.dummy.scale.set(isSemi ? 1.1 : 1, isSemi ? 1.38 : 1, cabScaleZ);
-      this.dummy.updateMatrix();
-      this.cabinInst.setMatrixAt(i, this.dummy.matrix);
-
       if (isSemi) {
-        this.dummy.position.set(a.trailerX, a.trailerY + 1.88, a.trailerZ);
+        this.dummy.position.set(
+          a.x + updatedFwdX * 3.1,
+          a.y,
+          a.z + updatedFwdZ * 3.1
+        );
+        this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
+        this.dummy.scale.set(1, 1, 1);
+        this.dummy.updateMatrix();
+        this.semiCabPaintInst.setMatrixAt(a.archetypeSlot, this.dummy.matrix);
+        this.semiCabDetailInst.setMatrixAt(a.archetypeSlot, this.dummy.matrix);
+
+        this.dummy.position.set(a.trailerX, a.trailerY, a.trailerZ);
         this.dummy.rotation.set(a.trailerPitch, a.trailerYaw, 0, 'YXZ');
         this.dummy.scale.set(1, 1, 1);
-      } else {
-        this.dummy.position.set(a.x, a.y - 20, a.z);
-        this.dummy.rotation.set(0, a.yaw, 0);
-        this.dummy.scale.set(0, 0, 0);
-      }
-      this.dummy.updateMatrix();
-      this.semiTrailerInst.setMatrixAt(i, this.dummy.matrix);
-
-      const frontAxle = isSemi ? 3.8 : a.archetype === 'van' ? 1.65 : 1.35;
-      this.dummy.position.set(a.x + updatedFwdX * frontAxle, a.y + 0.36, a.z + updatedFwdZ * frontAxle);
-      this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
-      this.dummy.scale.set(1, 1, 1);
-      this.dummy.updateMatrix();
-      this.wheelInst.setMatrixAt(i * 2, this.dummy.matrix);
-
-      if (isSemi) {
-        this.dummy.position.set(a.trailerX - updatedTrFwdX * 3.1, a.trailerY + 0.36, a.trailerZ - updatedTrFwdZ * 3.1);
-        this.dummy.rotation.set(a.trailerPitch, a.trailerYaw, 0, 'YXZ');
-      } else {
-        const rearAxle = a.archetype === 'van' ? 1.65 : 1.35;
-        this.dummy.position.set(a.x - updatedFwdX * rearAxle, a.y + 0.36, a.z - updatedFwdZ * rearAxle);
+        this.dummy.updateMatrix();
+        this.semiTrailerPaintInst.setMatrixAt(a.archetypeSlot, this.dummy.matrix);
+        this.semiTrailerDetailInst.setMatrixAt(a.archetypeSlot, this.dummy.matrix);
+      } else if (isVan) {
+        this.dummy.position.set(a.x, a.y, a.z);
         this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
+        this.dummy.scale.set(1, 1, 1);
+        this.dummy.updateMatrix();
+        this.vanPaintInst.setMatrixAt(a.archetypeSlot, this.dummy.matrix);
+        this.vanDetailInst.setMatrixAt(a.archetypeSlot, this.dummy.matrix);
+      } else {
+        this.dummy.position.set(a.x, a.y, a.z);
+        this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
+        this.dummy.scale.set(1, 1, 1);
+        this.dummy.updateMatrix();
+        this.sedanPaintInst.setMatrixAt(a.archetypeSlot, this.dummy.matrix);
+        this.sedanDetailInst.setMatrixAt(a.archetypeSlot, this.dummy.matrix);
       }
-      this.dummy.updateMatrix();
-      this.wheelInst.setMatrixAt(i * 2 + 1, this.dummy.matrix);
 
       // Front headlights & dynamic brake/hazard taillights
       const rightX = -updatedFwdZ;
@@ -861,7 +917,13 @@ export class TrafficSystem {
       const rearBaseX = isSemi ? a.trailerX : a.x;
       const rearBaseY = isSemi ? a.trailerY : a.y;
       const rearBaseZ = isSemi ? a.trailerZ : a.z;
-      const rearHalf = isSemi ? 4.82 : 2.3 * scaleZ;
+
+      const frontDist = isSemi ? 5.16 : isVan ? 2.68 : 2.24;
+      const frontY = isSemi ? 0.78 : isVan ? 0.78 : 0.60;
+      const frontSide = isSemi ? 0.92 : isVan ? 0.74 : 0.66;
+      const rearDist = isSemi ? 5.06 : isVan ? 2.68 : 2.24;
+      const rearY = isSemi ? 0.72 : isVan ? 0.92 : 0.68;
+      const rearSide = isSemi ? 0.92 : isVan ? 0.78 : 0.66;
 
       if (a.accidentTimerSec > 0) {
         this.tmpBrakeColor.setHex(hazardFlashOn ? 0xf59e0b : 0x7f1d1d);
@@ -869,14 +931,14 @@ export class TrafficSystem {
         this.tmpBrakeColor.setHex(a.braking ? 0xff2626 : lightsOn ? 0x991b1b : 0x450a0a);
       }
 
-      for (const [idxOffset, side] of [
-        [0, -0.74],
-        [1, 0.74],
+      for (const [idxOffset, sideSign] of [
+        [0, -1],
+        [1, 1],
       ] as const) {
         this.dummy.position.set(
-          a.x + updatedFwdX * frontHalf + rightX * side,
-          a.y + 0.68,
-          a.z + updatedFwdZ * frontHalf + rightZ * side
+          a.x + updatedFwdX * frontDist + rightX * (sideSign * frontSide),
+          a.y + frontY,
+          a.z + updatedFwdZ * frontDist + rightZ * (sideSign * frontSide)
         );
         this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
         this.dummy.scale.set(1, 1, 1);
@@ -884,9 +946,9 @@ export class TrafficSystem {
         this.headlightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
 
         this.dummy.position.set(
-          rearBaseX - rearFwdX * rearHalf + rearRightX * side,
-          rearBaseY + 0.7,
-          rearBaseZ - rearFwdZ * rearHalf + rearRightZ * side
+          rearBaseX - rearFwdX * rearDist + rearRightX * (sideSign * rearSide),
+          rearBaseY + rearY,
+          rearBaseZ - rearFwdZ * rearDist + rearRightZ * (sideSign * rearSide)
         );
         this.dummy.rotation.set(isSemi ? a.trailerPitch : a.pitch, isSemi ? a.trailerYaw : a.yaw, 0, 'YXZ');
         this.dummy.updateMatrix();
@@ -901,16 +963,20 @@ export class TrafficSystem {
           isSemi ? (a.z + a.trailerZ) * 0.5 : a.z
         );
         this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
-        this.dummy.scale.set(1, 1, isSemi ? 2.35 : scaleZ * 0.96);
+        this.dummy.scale.set(isSemi ? 1.08 : 0.94, 1, isSemi ? 2.35 : isVan ? 1.12 : 0.94);
         this.dummy.updateMatrix();
         this.shadowInst.setMatrixAt(i, this.dummy.matrix);
       }
     }
 
-    this.bodyInst.instanceMatrix.needsUpdate = true;
-    this.cabinInst.instanceMatrix.needsUpdate = true;
-    this.semiTrailerInst.instanceMatrix.needsUpdate = true;
-    this.wheelInst.instanceMatrix.needsUpdate = true;
+    this.sedanPaintInst.instanceMatrix.needsUpdate = true;
+    this.sedanDetailInst.instanceMatrix.needsUpdate = true;
+    this.vanPaintInst.instanceMatrix.needsUpdate = true;
+    this.vanDetailInst.instanceMatrix.needsUpdate = true;
+    this.semiCabPaintInst.instanceMatrix.needsUpdate = true;
+    this.semiCabDetailInst.instanceMatrix.needsUpdate = true;
+    this.semiTrailerPaintInst.instanceMatrix.needsUpdate = true;
+    this.semiTrailerDetailInst.instanceMatrix.needsUpdate = true;
     this.headlightInst.instanceMatrix.needsUpdate = true;
     this.taillightInst.instanceMatrix.needsUpdate = true;
     if (this.taillightInst.instanceColor) {
@@ -922,10 +988,14 @@ export class TrafficSystem {
   }
 
   public dispose(): void {
-    this.bodyInst.dispose();
-    this.cabinInst.dispose();
-    this.semiTrailerInst.dispose();
-    this.wheelInst.dispose();
+    this.sedanPaintInst.dispose();
+    this.sedanDetailInst.dispose();
+    this.vanPaintInst.dispose();
+    this.vanDetailInst.dispose();
+    this.semiCabPaintInst.dispose();
+    this.semiCabDetailInst.dispose();
+    this.semiTrailerPaintInst.dispose();
+    this.semiTrailerDetailInst.dispose();
     this.headlightInst.dispose();
     this.taillightInst.dispose();
     this.shadowInst?.dispose();

@@ -11,6 +11,11 @@ import {
 import { ProceduralTextures } from '../graphics/ProceduralTextures';
 import { EnvironmentSystem } from '../graphics/EnvironmentSystem';
 import { GeometryBatcher } from '../graphics/GeometryBatcher';
+import {
+  createSedanGeometries,
+  createVanGeometries,
+  mergeNormalizedParts,
+} from '../graphics/VehicleModelFactory';
 import { SignalState } from '../store/useGameStore';
 
 export interface RoadSamplePoint {
@@ -957,11 +962,39 @@ export class MapBuilder {
       }
     }
 
-    // Continuous Slope-Aligned Guardrails (12m step -> 12.6m rail beams so zero floating gaps)
+    // Continuous Slope-Aligned Corrugated W-Beam Guardrails (12m step -> 12.6m rail beams so zero floating gaps)
     if (railTransforms.length > 0) {
-      const guardrailPostGeo = new THREE.BoxGeometry(0.14, 0.78, 0.14);
+      const postShaftGeo = new THREE.BoxGeometry(0.13, 0.78, 0.13);
+      const postSpacerGeo = new THREE.BoxGeometry(0.16, 0.22, 0.16);
+      const spacerMat = new THREE.Matrix4().makeTranslation(0, 0.22, 0);
+      const guardrailPostGeo = mergeNormalizedParts(
+        [{ geo: postShaftGeo }, { geo: postSpacerGeo, matrix: spacerMat }],
+        false
+      );
+      postShaftGeo.dispose();
+      postSpacerGeo.dispose();
+
+      const wShape = new THREE.Shape();
+      wShape.moveTo(-0.04, -0.14);
+      wShape.lineTo(0.035, -0.09);
+      wShape.lineTo(-0.015, 0);
+      wShape.lineTo(0.035, 0.09);
+      wShape.lineTo(-0.04, 0.14);
+      wShape.lineTo(-0.065, 0.14);
+      wShape.lineTo(0.01, 0.09);
+      wShape.lineTo(-0.04, 0);
+      wShape.lineTo(0.01, -0.09);
+      wShape.lineTo(-0.065, -0.14);
+      wShape.closePath();
+      const guardrailRailGeo = new THREE.ExtrudeGeometry(wShape, {
+        depth: 12.6,
+        bevelEnabled: false,
+        steps: 1,
+      });
+      guardrailRailGeo.translate(0, 0, -6.3);
+      guardrailRailGeo.computeVertexNormals();
+
       const guardrailPostMat = new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.65, roughness: 0.4 });
-      const guardrailRailGeo = new THREE.BoxGeometry(0.12, 0.26, 12.6);
       const guardrailRailMat = new THREE.MeshStandardMaterial({ color: '#cbd5e1', metalness: 0.72, roughness: 0.34 });
       disposables.push(guardrailPostGeo, guardrailPostMat, guardrailRailGeo, guardrailRailMat);
 
@@ -1057,9 +1090,29 @@ export class MapBuilder {
     disposables.push(lampHeadMat);
 
     if (lightTransforms.length > 0) {
-      const poleGeo = new THREE.CylinderGeometry(0.11, 0.16, 7.6, 6);
-      const poleMat = new THREE.MeshStandardMaterial({ color: '#475569', metalness: 0.6, roughness: 0.45 });
-      const headGeo = new THREE.BoxGeometry(1.1, 0.18, 0.42);
+      // European swan-neck cantilevered street lamp (local +X points toward the road centerline)
+      const plinthGeo = new THREE.CylinderGeometry(0.19, 0.24, 0.55, 8);
+      const mastGeo = new THREE.CylinderGeometry(0.085, 0.145, 7.35, 8);
+      const armGeo = new THREE.CylinderGeometry(0.06, 0.08, 1.35, 6);
+      armGeo.rotateZ(-Math.PI / 2 + 0.28);
+      const hoodGeo = new THREE.BoxGeometry(0.76, 0.12, 0.34);
+
+      const poleGeo = mergeNormalizedParts(
+        [
+          { geo: plinthGeo, matrix: new THREE.Matrix4().makeTranslation(0, 0.275, 0) },
+          { geo: mastGeo, matrix: new THREE.Matrix4().makeTranslation(0, 3.675, 0) },
+          { geo: armGeo, matrix: new THREE.Matrix4().makeTranslation(0.62, 7.42, 0) },
+          { geo: hoodGeo, matrix: new THREE.Matrix4().makeTranslation(1.26, 7.64, 0) },
+        ],
+        false
+      );
+      plinthGeo.dispose();
+      mastGeo.dispose();
+      armGeo.dispose();
+      hoodGeo.dispose();
+
+      const poleMat = new THREE.MeshStandardMaterial({ color: '#475569', metalness: 0.62, roughness: 0.42 });
+      const headGeo = new THREE.BoxGeometry(0.68, 0.05, 0.28);
       disposables.push(poleGeo, poleMat, headGeo);
 
       const poleInst = new THREE.InstancedMesh(poleGeo, poleMat, lightTransforms.length);
@@ -1067,15 +1120,16 @@ export class MapBuilder {
 
       for (let i = 0; i < lightTransforms.length; i++) {
         const tf = lightTransforms[i]!;
-        dummy.position.set(tf.x, tf.y + 3.8, tf.z);
+        dummy.position.set(tf.x, tf.y, tf.z);
         dummy.rotation.set(0, tf.rotY, 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         poleInst.setMatrixAt(i, dummy.matrix);
 
-        const armOffsetX = -Math.cos(tf.rotY) * 0.55;
-        const armOffsetZ = Math.sin(tf.rotY) * 0.55;
-        dummy.position.set(tf.x + armOffsetX, tf.y + 7.55, tf.z + armOffsetZ);
+        // Local +X tip (1.26m) rotated by tf.rotY points directly over the road
+        const armOffsetX = Math.cos(tf.rotY) * 1.26;
+        const armOffsetZ = -Math.sin(tf.rotY) * 1.26;
+        dummy.position.set(tf.x + armOffsetX, tf.y + 7.56, tf.z + armOffsetZ);
         dummy.updateMatrix();
         headInst.setMatrixAt(i, dummy.matrix);
       }
@@ -1086,11 +1140,39 @@ export class MapBuilder {
       root.add(poleInst, headInst);
     }
 
-    // Overhead Motorway Gantries (batched steel truss + single-sided Euro sign faces with aluminum backing)
+    // Overhead Motorway Gantries (twin-chord steel truss + single-sided Euro sign faces with aluminum backing)
     if (manifest.gantries && manifest.gantries.length > 0) {
       const gantryList = manifest.gantries;
-      const gPostGeo = new THREE.CylinderGeometry(0.2, 0.24, 7.4, 8);
-      const gBeamGeo = new THREE.BoxGeometry(20, 0.48, 0.52);
+      const gPostShaftGeo = new THREE.CylinderGeometry(0.18, 0.22, 7.4, 8);
+      const gPostFlangeGeo = new THREE.BoxGeometry(0.72, 0.28, 0.72);
+      const gPostGeo = mergeNormalizedParts(
+        [
+          { geo: gPostShaftGeo },
+          { geo: gPostFlangeGeo, matrix: new THREE.Matrix4().makeTranslation(0, -3.56, 0) },
+        ],
+        false
+      );
+      gPostShaftGeo.dispose();
+      gPostFlangeGeo.dispose();
+
+      const gChordGeo = new THREE.BoxGeometry(20, 0.14, 0.48);
+      const gStrutGeo = new THREE.BoxGeometry(0.10, 0.44, 0.10);
+      const beamParts: { geo: THREE.BufferGeometry; matrix: THREE.Matrix4 }[] = [
+        { geo: gChordGeo, matrix: new THREE.Matrix4().makeTranslation(0, 0.24, 0) },
+        { geo: gChordGeo, matrix: new THREE.Matrix4().makeTranslation(0, -0.24, 0) },
+      ];
+      for (let gx = -9; gx <= 9; gx += 2) {
+        for (const gz of [-0.18, 0.18]) {
+          beamParts.push({
+            geo: gStrutGeo,
+            matrix: new THREE.Matrix4().makeTranslation(gx, 0, gz),
+          });
+        }
+      }
+      const gBeamGeo = mergeNormalizedParts(beamParts, false);
+      gChordGeo.dispose();
+      gStrutGeo.dispose();
+
       const gSteelMat = new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.65, roughness: 0.38 });
       const signGeo = new THREE.PlaneGeometry(8.6, 3.2);
       const signBackGeo = new THREE.BoxGeometry(8.66, 3.26, 0.14);
@@ -1258,6 +1340,7 @@ export class MapBuilder {
     const yardContainerSpots: { x: number; y: number; z: number; rotY: number; color: string }[] = [];
     const yardPalletSpots: { x: number; y: number; z: number; rotY: number }[] = [];
     const yardFloodLightSpots: { x: number; y: number; z: number }[] = [];
+    const parkedCarSpots: { x: number; y: number; z: number; rotY: number; color: string; isVan: boolean }[] = [];
 
     const sharedMats = this.createBatchMaterials(disposables, worldVertexMat);
 
@@ -1275,8 +1358,60 @@ export class MapBuilder {
         yardContainerSpots,
         yardPalletSpots,
         yardFloodLightSpots,
+        parkedCarSpots,
         disposables
       );
+    }
+
+    // Instanced parked sedans & vans at highway rest stops / service stations (Layer 1)
+    const parkedSedans = parkedCarSpots.filter((p) => !p.isVan);
+    const parkedVans = parkedCarSpots.filter((p) => p.isVan);
+    const parkedVehicleInsts: THREE.InstancedMesh[] = [];
+    if (parkedSedans.length > 0 || parkedVans.length > 0) {
+      const parkedPaintMat = new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.42 });
+      const parkedDetailMat = new THREE.MeshStandardMaterial({
+        color: '#ffffff',
+        roughness: 0.54,
+        metalness: 0.25,
+        vertexColors: true,
+      });
+      disposables.push(parkedPaintMat, parkedDetailMat);
+
+      const populateParked = (
+        spots: typeof parkedCarSpots,
+        pair: { paintGeo: THREE.BufferGeometry; detailGeo: THREE.BufferGeometry }
+      ) => {
+        if (spots.length === 0) {
+          pair.paintGeo.dispose();
+          pair.detailGeo.dispose();
+          return;
+        }
+        disposables.push(pair.paintGeo, pair.detailGeo);
+        const pInst = new THREE.InstancedMesh(pair.paintGeo, parkedPaintMat, spots.length);
+        const dInst = new THREE.InstancedMesh(pair.detailGeo, parkedDetailMat, spots.length);
+        const tmpC = new THREE.Color();
+        for (let i = 0; i < spots.length; i++) {
+          const sp = spots[i]!;
+          dummy.position.set(sp.x, sp.y, sp.z);
+          dummy.rotation.set(0, sp.rotY, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          pInst.setMatrixAt(i, dummy.matrix);
+          dInst.setMatrixAt(i, dummy.matrix);
+          tmpC.set(sp.color);
+          pInst.setColorAt(i, tmpC);
+        }
+        pInst.instanceMatrix.needsUpdate = true;
+        dInst.instanceMatrix.needsUpdate = true;
+        if (pInst.instanceColor) pInst.instanceColor.needsUpdate = true;
+        pInst.layers.set(1);
+        dInst.layers.set(1);
+        root.add(pInst, dInst);
+        parkedVehicleInsts.push(pInst, dInst);
+      };
+
+      if (parkedSedans.length > 0) populateParked(parkedSedans, createSedanGeometries());
+      if (parkedVans.length > 0) populateParked(parkedVans, createVanGeometries());
     }
 
     // Batch all yard stacked containers & pallets into 2 InstancedMeshes
@@ -1373,11 +1508,14 @@ export class MapBuilder {
 
         const canopyGeo = new THREE.BoxGeometry(24, 1.4, 7.2);
         const postGeo = new THREE.BoxGeometry(1.0, 6.6, 2.8);
+        const boothCabinGeo = new THREE.BoxGeometry(1.06, 1.35, 2.15);
         const lightGeo = new THREE.BoxGeometry(0.7, 0.5, 0.3);
         const armGeo = new THREE.BoxGeometry(3.4, 0.14, 0.14);
+        const armStripeGeo = new THREE.BoxGeometry(0.65, 0.15, 0.15);
         const boothLightMat = new THREE.MeshBasicMaterial({ color: '#f59e0b' });
         const armMat = new THREE.MeshStandardMaterial({ color: '#ef4444', roughness: 0.45 });
-        disposables.push(canopyGeo, postGeo, lightGeo, armGeo, boothLightMat, armMat);
+        const armWhiteMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.45 });
+        disposables.push(canopyGeo, postGeo, boothCabinGeo, lightGeo, armGeo, armStripeGeo, boothLightMat, armMat, armWhiteMat);
 
         const child = new THREE.Object3D();
         boothGroup.add(child);
@@ -1393,6 +1531,12 @@ export class MapBuilder {
           batcher.add(sharedMats.worldVertexMat, postGeo, {
             matrix: child.matrixWorld,
             colorHex: '#e2e8f0',
+          });
+          child.position.set(px, 2.45, 0);
+          child.updateMatrixWorld();
+          batcher.add(sharedMats.worldVertexMat, boothCabinGeo, {
+            matrix: child.matrixWorld,
+            colorHex: '#1e293b',
           });
         }
         boothGroup.remove(child);
@@ -1410,6 +1554,11 @@ export class MapBuilder {
           const arm = new THREE.Mesh(armGeo, armMat);
           arm.position.set(1.7, 0, 0);
           pivot.add(arm);
+          for (const sx of [0.85, 2.15]) {
+            const stripe = new THREE.Mesh(armStripeGeo, armWhiteMat);
+            stripe.position.set(sx, 0, 0);
+            pivot.add(stripe);
+          }
           boothGroup.add(pivot);
           armPivots.push(pivot);
         }
@@ -1585,6 +1734,9 @@ export class MapBuilder {
       updateSceneryDensityBase(ratio, isLowSpec);
       for (let i = 0; i < decorativeSignMeshes.length; i++) {
         decorativeSignMeshes[i]!.visible = !isLowSpec;
+      }
+      for (let i = 0; i < parkedVehicleInsts.length; i++) {
+        parkedVehicleInsts[i]!.visible = !isLowSpec;
       }
     };
 
@@ -2012,6 +2164,7 @@ export class MapBuilder {
     yardContainerSpots: { x: number; y: number; z: number; rotY: number; color: string }[],
     yardPalletSpots: { x: number; y: number; z: number; rotY: number }[],
     yardFloodLightSpots: { x: number; y: number; z: number }[],
+    parkedCarSpots: { x: number; y: number; z: number; rotY: number; color: string; isVan: boolean }[],
     disposables: { dispose: () => void }[]
   ): void {
     const apronGeo = new THREE.BoxGeometry(270, 0.36, 290);
@@ -2063,6 +2216,7 @@ export class MapBuilder {
         batcher,
         sharedMats,
         colliders,
+        parkedCarSpots,
         disposables
       );
     }
@@ -2209,6 +2363,7 @@ export class MapBuilder {
     batcher: GeometryBatcher,
     sharedMats: ReturnType<MapBuilder['createBatchMaterials']>,
     colliders: BoxCollider[],
+    parkedCarSpots: { x: number; y: number; z: number; rotY: number; color: string; isVan: boolean }[],
     disposables: { dispose: () => void }[]
   ): void {
     const [sx, sy, sz] = st.position;
@@ -2243,14 +2398,45 @@ export class MapBuilder {
       { x: sx, y: sy + 6.4, z: sz }
     );
 
+    // Fuel islands: concrete curb, pump housing, dark digital display, brand top cap & yellow bollards
+    const curbGeo = new THREE.BoxGeometry(1.5, 0.16, 3.4);
     const pumpGeo = new THREE.BoxGeometry(0.9, 1.7, 0.65);
+    const pumpDisplayGeo = new THREE.BoxGeometry(0.64, 0.48, 0.68);
+    const pumpCapGeo = new THREE.BoxGeometry(1.02, 0.26, 0.76);
+    const bollardGeo = new THREE.CylinderGeometry(0.11, 0.11, 0.95, 8);
     for (const px of [-3.6, 3.6]) {
+      batcher.add(sharedMats.worldVertexMat, curbGeo, {
+        x: sx + px,
+        y: sy + 0.08,
+        z: sz,
+        colorHex: '#94a3b8',
+      });
       batcher.add(sharedMats.worldVertexMat, pumpGeo, {
         x: sx + px,
-        y: sy + 0.85,
+        y: sy + 0.92,
         z: sz,
         colorHex: '#d8e0ea',
       });
+      batcher.add(sharedMats.worldVertexMat, pumpDisplayGeo, {
+        x: sx + px,
+        y: sy + 1.28,
+        z: sz,
+        colorHex: '#0f172a',
+      });
+      batcher.add(sharedMats.worldVertexMat, pumpCapGeo, {
+        x: sx + px,
+        y: sy + 1.85,
+        z: sz,
+        colorHex: accentColor,
+      });
+      for (const bz of [-1.45, 1.45]) {
+        batcher.add(sharedMats.worldVertexMat, bollardGeo, {
+          x: sx + px,
+          y: sy + 0.48,
+          z: sz + bz,
+          colorHex: '#eab308',
+        });
+      }
     }
 
     const shopGeo = new THREE.BoxGeometry(10, 4.0, 6.5);
@@ -2260,6 +2446,58 @@ export class MapBuilder {
       z: sz - 12.5,
       colorHex: '#253142',
     });
+    const shopGlassGeo = new THREE.BoxGeometry(9.2, 1.5, 6.62);
+    batcher.add(sharedMats.worldVertexMat, shopGlassGeo, {
+      x: sx,
+      y: sy + 2.15,
+      z: sz - 12.5,
+      colorHex: '#1e293b',
+    });
+    const awningGeo = new THREE.BoxGeometry(7.2, 0.22, 1.4);
+    batcher.add(sharedMats.worldVertexMat, awningGeo, {
+      x: sx,
+      y: sy + 3.15,
+      z: sz - 8.8,
+      colorHex: '#334155',
+    });
+
+    // Roadside station price totem pylon (clear of fueling lanes)
+    const totemGeo = new THREE.BoxGeometry(1.4, 7.5, 0.45);
+    const totemTrimGeo = new THREE.BoxGeometry(1.5, 0.65, 0.52);
+    batcher.add(sharedMats.worldVertexMat, totemGeo, {
+      x: sx + 10.5,
+      y: sy + 3.75,
+      z: sz + 6.5,
+      colorHex: '#1e293b',
+    });
+    batcher.add(
+      isFuelOnly ? sharedMats.stationFuelTrimMat : sharedMats.stationHubTrimMat,
+      totemTrimGeo,
+      { x: sx + 10.5, y: sy + 7.1, z: sz + 6.5 }
+    );
+
+    // Parked vehicles beside the station shop
+    const parkedPalette = ['#dc2626', '#2563eb', '#e2e8f0', '#475569', '#059669'];
+    const pIdx = Math.abs(Math.round(sx + sz)) % parkedPalette.length;
+    parkedCarSpots.push(
+      {
+        x: sx + 8.6,
+        y: sy,
+        z: sz - 12.2,
+        rotY: 0.06,
+        color: parkedPalette[pIdx]!,
+        isVan: false,
+      },
+      {
+        x: sx - 8.6,
+        y: sy,
+        z: sz - 12.2,
+        rotY: Math.PI - 0.05,
+        color: '#f1f5f9',
+        isVan: true,
+      }
+    );
+
     colliders.push({
       minX: sx - 5.2,
       maxX: sx + 5.2,
@@ -2301,7 +2539,22 @@ export class MapBuilder {
       colorHex: accentColor,
     });
 
-    disposables.push(roofGeo, trimGeo, pumpGeo, shopGeo, pillarGeo, padGeo);
+    disposables.push(
+      roofGeo,
+      trimGeo,
+      curbGeo,
+      pumpGeo,
+      pumpDisplayGeo,
+      pumpCapGeo,
+      bollardGeo,
+      shopGeo,
+      shopGlassGeo,
+      awningGeo,
+      totemGeo,
+      totemTrimGeo,
+      pillarGeo,
+      padGeo
+    );
   }
 
   private buildLandmark(
@@ -2631,8 +2884,53 @@ export class MapBuilder {
     const dummy = new THREE.Object3D();
     const tmpColor = new THREE.Color();
 
-    // 1. Nordic Spruce (Trunk + 3 Layered Foliage Cones)
-    const trunkGeo = new THREE.CylinderGeometry(0.24, 0.4, 3.4, 6);
+    // 1. Nordic Spruce (Flared-root Trunk with Branches + 3 Layered Foliage Cones)
+    const rootFlareGeo = new THREE.CylinderGeometry(0.36, 0.54, 0.9, 6);
+    const trunkMainGeo = new THREE.CylinderGeometry(0.22, 0.38, 3.4, 6);
+    const branchStubGeo = new THREE.CylinderGeometry(0.10, 0.17, 1.5, 5);
+    const trunkGeo = mergeNormalizedParts(
+      [
+        { geo: rootFlareGeo, matrix: new THREE.Matrix4().makeTranslation(0, -1.25, 0) },
+        { geo: trunkMainGeo },
+        {
+          geo: branchStubGeo,
+          matrix: new THREE.Matrix4().compose(
+            new THREE.Vector3(0.45, 1.45, 0),
+            new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -0.52)),
+            new THREE.Vector3(1, 1, 1)
+          ),
+        },
+        {
+          geo: branchStubGeo,
+          matrix: new THREE.Matrix4().compose(
+            new THREE.Vector3(-0.38, 1.25, 0.25),
+            new THREE.Quaternion().setFromEuler(new THREE.Euler(0.32, 0, 0.48)),
+            new THREE.Vector3(1, 1, 1)
+          ),
+        },
+      ],
+      false
+    );
+    rootFlareGeo.dispose();
+    trunkMainGeo.dispose();
+    branchStubGeo.dispose();
+
+    const jitterFoliage = (geo: THREE.BufferGeometry, amp = 0.14): THREE.BufferGeometry => {
+      const pos = geo.attributes.position as THREE.BufferAttribute;
+      for (let i = 0; i < pos.count; i++) {
+        const vx = pos.getX(i);
+        const vy = pos.getY(i);
+        const vz = pos.getZ(i);
+        const h = Math.sin(vx * 12.9898 + vy * 78.233 + vz * 37.719) * 43758.5453;
+        const frac = h - Math.floor(h);
+        const scale = 1 + (frac * 2 - 1) * amp;
+        pos.setXYZ(i, vx * scale, vy * scale, vz * scale);
+      }
+      pos.needsUpdate = true;
+      geo.computeVertexNormals();
+      return geo;
+    };
+
     const trunkMat = new THREE.MeshStandardMaterial({ color: '#5c4033', roughness: 0.92 });
     const spruceLowGeo = new THREE.ConeGeometry(2.45, 4.8, 7);
     const spruceMidGeo = new THREE.ConeGeometry(1.95, 4.4, 7);
@@ -2687,9 +2985,9 @@ export class MapBuilder {
       root.add(spruceTrunkInst, spruceLowInst, spruceMidInst, spruceHighInst);
     }
 
-    // 2. Broadleaf Oak (Trunk + Dual-Cluster Asymmetric Crown)
-    const oakGeo = new THREE.IcosahedronGeometry(2.5, 1);
-    const oakSubGeo = new THREE.IcosahedronGeometry(1.75, 1);
+    // 2. Broadleaf Oak (Trunk + Organic Jittered Dual-Cluster Asymmetric Crown)
+    const oakGeo = jitterFoliage(new THREE.IcosahedronGeometry(2.5, 1), 0.14);
+    const oakSubGeo = jitterFoliage(new THREE.IcosahedronGeometry(1.75, 1), 0.14);
     const oakMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.88, flatShading: true });
     disposables.push(oakGeo, oakSubGeo, oakMat);
 
@@ -2737,7 +3035,7 @@ export class MapBuilder {
     }
 
     // 3. Roadside Bushes / Shrubs
-    const bushGeo = new THREE.DodecahedronGeometry(1.15, 0);
+    const bushGeo = jitterFoliage(new THREE.DodecahedronGeometry(1.15, 0), 0.15);
     const bushMat = new THREE.MeshStandardMaterial({ color: '#436932', roughness: 0.9, flatShading: true });
     disposables.push(bushGeo, bushMat);
     let bushInst: THREE.InstancedMesh | null = null;

@@ -839,8 +839,8 @@ export class ProceduralTextures {
     if (this.gpsTexture) return this.gpsTexture;
 
     this.gpsCanvas = document.createElement('canvas');
-    this.gpsCanvas.width = 320;
-    this.gpsCanvas.height = 200;
+    this.gpsCanvas.width = 384;
+    this.gpsCanvas.height = 240;
     this.gpsCtx = this.gpsCanvas.getContext('2d')!;
     this.gpsTexture = new THREE.CanvasTexture(this.gpsCanvas);
     this.gpsTexture.colorSpace = THREE.SRGBColorSpace;
@@ -869,22 +869,22 @@ export class ProceduralTextures {
     if (key === this.lastGpsKey) return;
     this.lastGpsKey = key;
 
-    const w = 320;
-    const h = 200;
+    const w = 384;
+    const h = 240;
     const ctx = this.gpsCtx;
-    ctx.fillStyle = '#09111f';
+    ctx.fillStyle = '#08101c';
     ctx.fillRect(0, 0, w, h);
 
     // Subtle map grid backdrop
-    ctx.strokeStyle = 'rgba(51, 65, 85, 0.25)';
+    ctx.strokeStyle = 'rgba(51, 65, 85, 0.24)';
     ctx.lineWidth = 1;
-    for (let gx = 40; gx < w; gx += 40) {
+    for (let gx = 48; gx < w; gx += 48) {
       ctx.beginPath();
       ctx.moveTo(gx, 0);
-      ctx.lineTo(gx, h - 40);
+      ctx.lineTo(gx, h - 46);
       ctx.stroke();
     }
-    for (let gy = 40; gy < h - 40; gy += 40) {
+    for (let gy = 48; gy < h - 46; gy += 48) {
       ctx.beginPath();
       ctx.moveTo(0, gy);
       ctx.lineTo(w, gy);
@@ -892,7 +892,7 @@ export class ProceduralTextures {
     }
 
     const cx = w * 0.5;
-    const cy = 118;
+    const cy = 142;
 
     if (
       state.roadPolylines &&
@@ -907,7 +907,7 @@ export class ProceduralTextures {
       const cosY = Math.cos(state.truckHeadingRad);
       const rightX = -cosY;
       const rightZ = sinY;
-      const scale = Math.max(0.18, Math.min(0.36, 0.36 - (Math.min(100, state.speedKmh) / 100) * 0.17));
+      const scale = Math.max(0.20, Math.min(0.42, 0.42 - (Math.min(100, state.speedKmh) / 100) * 0.20));
 
       const toGps = (wx: number, wz: number): [number, number] => {
         const dx = wx - tx;
@@ -919,36 +919,42 @@ export class ProceduralTextures {
 
       ctx.save();
       ctx.beginPath();
-      ctx.rect(0, 0, w, 160);
+      ctx.rect(0, 0, w, 194);
       ctx.clip();
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
-      // Nearby road network segments
+      // Dark road casings + crisp road cores
       for (let i = 0; i < state.roadPolylines.length; i++) {
         const poly = state.roadPolylines[i]!;
         if (poly.points.length < 2) continue;
-        ctx.strokeStyle = poly.isMotorway ? '#475569' : '#334155';
-        ctx.lineWidth = poly.isMotorway ? 7.5 : 5;
         ctx.beginPath();
         for (let p = 0; p < poly.points.length; p++) {
           const [gx, gy] = toGps(poly.points[p]!.x, poly.points[p]!.z);
           if (p === 0) ctx.moveTo(gx, gy);
           else ctx.lineTo(gx, gy);
         }
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = poly.isMotorway ? 12 : 8.5;
+        ctx.stroke();
+        ctx.strokeStyle = poly.isMotorway ? '#64748b' : '#475569';
+        ctx.lineWidth = poly.isMotorway ? 8.5 : 5.5;
         ctx.stroke();
       }
 
-      // Active purple GPS route ribbon
+      // Active glowing purple GPS route ribbon
       if (state.routePoints && state.routePoints.length > 1) {
-        ctx.strokeStyle = '#c084fc';
-        ctx.lineWidth = 5.5;
         ctx.beginPath();
         for (let i = 0; i < state.routePoints.length; i++) {
           const [gx, gy] = toGps(state.routePoints[i]!.x, state.routePoints[i]!.z);
           if (i === 0) ctx.moveTo(gx, gy);
           else ctx.lineTo(gx, gy);
         }
+        ctx.strokeStyle = 'rgba(168, 85, 247, 0.35)';
+        ctx.lineWidth = 11;
+        ctx.stroke();
+        ctx.strokeStyle = '#c084fc';
+        ctx.lineWidth = 6;
         ctx.stroke();
       }
 
@@ -956,25 +962,24 @@ export class ProceduralTextures {
         const [dx, dy] = toGps(state.destPoint.x, state.destPoint.z);
         ctx.fillStyle = '#10b981';
         ctx.beginPath();
-        ctx.arc(dx, dy, 6.5, 0, Math.PI * 2);
+        ctx.arc(dx, dy, 7.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = '#f8fafc';
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 2;
         ctx.stroke();
       }
       ctx.restore();
     } else {
-      // Fallback stylized ribbon (e.g. A2 exam or initial preview)
       ctx.strokeStyle = state.hasActiveJob ? '#a855f7' : '#38bdf8';
-      ctx.lineWidth = 14;
+      ctx.lineWidth = 15;
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(cx, 158);
+      ctx.moveTo(cx, 190);
       ctx.quadraticCurveTo(
         cx,
-        92,
-        turnDir === 'left' ? 104 : turnDir === 'right' ? 216 : cx,
-        32
+        112,
+        turnDir === 'left' ? 124 : turnDir === 'right' ? 260 : cx,
+        40
       );
       ctx.stroke();
     }
@@ -982,75 +987,81 @@ export class ProceduralTextures {
     // Player amber chevron
     ctx.fillStyle = '#f59e0b';
     ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(cx, cy - 10);
-    ctx.lineTo(cx + 8, cy + 8);
-    ctx.lineTo(cx, cy + 4);
-    ctx.lineTo(cx - 8, cy + 8);
+    ctx.moveTo(cx, cy - 12);
+    ctx.lineTo(cx + 9.5, cy + 9.5);
+    ctx.lineTo(cx, cy + 4.5);
+    ctx.lineTo(cx - 9.5, cy + 9.5);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
 
-    // Top-left next turn badge
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-    ctx.fillRect(10, 10, 58, 46);
+    // Top-left next turn card
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.fillRect(12, 12, 68, 54);
     ctx.strokeStyle = '#334155';
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(10, 10, 58, 46);
+    ctx.strokeRect(12, 12, 68, 54);
     ctx.fillStyle = turnDir === 'arrive' ? '#34d399' : turnDir === 'straight' ? '#38bdf8' : '#fbbf24';
-    ctx.font = 'bold 20px sans-serif';
+    ctx.font = 'bold 23px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const turnGlyph =
       turnDir === 'left' ? '↰' : turnDir === 'right' ? '↱' : turnDir === 'arrive' ? '⚑' : '↑';
-    ctx.fillText(turnGlyph, 39, 26);
+    ctx.fillText(turnGlyph, 46, 30);
     ctx.fillStyle = '#cbd5e1';
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 12px monospace';
     ctx.fillText(
       state.turnDistMeters != null ? `${state.turnDistMeters}m` : `${state.speedKmh}km/h`,
-      39,
-      45
+      46,
+      52
     );
 
-    // Speed limit circle (inset safely from right edge)
+    // Speed limit circle
     const speeding = state.speedKmh > state.speedLimitKmh + 5;
     ctx.fillStyle = speeding ? '#dc2626' : '#ffffff';
     ctx.beginPath();
-    ctx.arc(282, 34, 21, 0, Math.PI * 2);
+    ctx.arc(340, 39, 24, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = speeding ? '#fecaca' : '#dc2626';
-    ctx.lineWidth = 4.5;
+    ctx.lineWidth = 5;
     ctx.stroke();
     ctx.fillStyle = speeding ? '#ffffff' : '#0f172a';
-    ctx.font = 'bold 15px monospace';
+    ctx.font = 'bold 17px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(state.speedLimitKmh), 282, 35);
+    ctx.fillText(String(state.speedLimitKmh), 340, 40);
 
     // Bottom bar distance + guidance
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
-    ctx.fillRect(0, 160, w, 40);
+    ctx.fillStyle = 'rgba(11, 18, 32, 0.96)';
+    ctx.fillRect(0, 194, w, 46);
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 194);
+    ctx.lineTo(w, 194);
+    ctx.stroke();
 
     const distText = state.hasActiveJob
       ? `${(state.distanceMeters / 1000).toFixed(1)}km`
       : 'SATNAV';
-    ctx.font = 'bold 12px monospace';
+    ctx.font = 'bold 13px monospace';
     const distWidth = ctx.measureText(distText).width;
-    const badgeW = Math.ceil(distWidth) + 14;
-    const badgeX = w - badgeW - 10;
+    const badgeW = Math.ceil(distWidth) + 16;
+    const badgeX = w - badgeW - 12;
 
-    ctx.fillStyle = state.hasActiveJob ? 'rgba(16, 185, 129, 0.18)' : 'rgba(148, 163, 184, 0.14)';
-    ctx.fillRect(badgeX, 168, badgeW, 24);
-    ctx.fillStyle = state.hasActiveJob ? '#34d399' : '#94a3b8';
+    ctx.fillStyle = state.hasActiveJob ? 'rgba(16, 185, 129, 0.2)' : 'rgba(56, 189, 248, 0.14)';
+    ctx.fillRect(badgeX, 203, badgeW, 28);
+    ctx.fillStyle = state.hasActiveJob ? '#34d399' : '#38bdf8';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(distText, badgeX + badgeW / 2, 180);
+    ctx.fillText(distText, badgeX + badgeW / 2, 217);
 
     ctx.fillStyle = '#e2e8f0';
-    ctx.font = 'bold 12px sans-serif';
+    ctx.font = 'bold 14px sans-serif';
     ctx.textAlign = 'left';
-    const maxInstrWidth = Math.max(40, badgeX - 18);
+    const maxInstrWidth = Math.max(40, badgeX - 22);
     let instr = state.instruction.trim();
     if (!state.hasActiveJob && instr.includes('自由')) {
       instr = '自由漫游 · 货场接单';
@@ -1061,7 +1072,7 @@ export class ProceduralTextures {
       }
       instr = `${instr}…`;
     }
-    ctx.fillText(instr, 10, 180);
+    ctx.fillText(instr, 12, 217);
 
     this.gpsTexture.needsUpdate = true;
   }
@@ -1213,8 +1224,8 @@ export class ProceduralTextures {
     if (this.dashTexture) return this.dashTexture;
 
     this.dashCanvas = document.createElement('canvas');
-    this.dashCanvas.width = 512;
-    this.dashCanvas.height = 192;
+    this.dashCanvas.width = 640;
+    this.dashCanvas.height = 224;
     this.dashCtx = this.dashCanvas.getContext('2d')!;
     this.dashTexture = new THREE.CanvasTexture(this.dashCanvas);
     this.dashTexture.colorSpace = THREE.SRGBColorSpace;
@@ -1243,14 +1254,16 @@ export class ProceduralTextures {
     if (key === this.lastDashKey) return;
     this.lastDashKey = key;
 
+    const w = 640;
+    const h = 224;
     const ctx = this.dashCtx;
-    ctx.fillStyle = '#0a101d';
-    ctx.fillRect(0, 0, 512, 192);
+    ctx.fillStyle = '#070c16';
+    ctx.fillRect(0, 0, w, h);
 
-    // Soft backlit console bezel
-    ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(4, 4, 504, 184);
+    // Subtle brushed-aluminum instrument bezel frame
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(3, 3, w - 6, h - 6);
 
     const drawDial = (
       cx: number,
@@ -1259,13 +1272,38 @@ export class ProceduralTextures {
       ratio: number,
       title: string,
       valueText: string,
-      redStartRatio = 0.88
+      labels: string[],
+      redStartRatio: number,
+      ecoBand?: [number, number]
     ) => {
-      ctx.strokeStyle = '#334155';
-      ctx.lineWidth = 6;
+      // Dial recessed background + outer metallic bezel ring
+      ctx.fillStyle = '#0b1220';
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius + 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#475569';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 7;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, Math.PI * 0.75, Math.PI * 2.25);
       ctx.stroke();
+
+      if (ecoBand) {
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(
+          cx,
+          cy,
+          radius,
+          Math.PI * 0.75 + ecoBand[0] * Math.PI * 1.5,
+          Math.PI * 0.75 + ecoBand[1] * Math.PI * 1.5
+        );
+        ctx.stroke();
+      }
 
       ctx.strokeStyle = '#ef4444';
       ctx.lineWidth = 6;
@@ -1279,116 +1317,154 @@ export class ProceduralTextures {
       );
       ctx.stroke();
 
-      for (let i = 0; i <= 10; i++) {
-        const a = Math.PI * 0.75 + (i / 10) * Math.PI * 1.5;
-        ctx.strokeStyle = i / 10 >= redStartRatio ? '#f87171' : '#e2e8f0';
-        ctx.lineWidth = i % 2 === 0 ? 3 : 1.5;
+      const totalTicks = (labels.length - 1) * 2;
+      for (let i = 0; i <= totalTicks; i++) {
+        const frac = i / totalTicks;
+        const a = Math.PI * 0.75 + frac * Math.PI * 1.5;
+        const major = i % 2 === 0;
+        ctx.strokeStyle = frac >= redStartRatio ? '#f87171' : '#e2e8f0';
+        ctx.lineWidth = major ? 2.5 : 1.2;
         ctx.beginPath();
-        ctx.moveTo(cx + Math.cos(a) * (radius - 11), cy + Math.sin(a) * (radius - 11));
+        ctx.moveTo(cx + Math.cos(a) * (radius - (major ? 12 : 7)), cy + Math.sin(a) * (radius - (major ? 12 : 7)));
         ctx.lineTo(cx + Math.cos(a) * (radius - 2), cy + Math.sin(a) * (radius - 2));
         ctx.stroke();
+
+        if (major) {
+          const lbl = labels[i / 2]!;
+          ctx.fillStyle = frac >= redStartRatio ? '#fca5a5' : '#cbd5e1';
+          ctx.font = 'bold 10px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(lbl, cx + Math.cos(a) * (radius - 22), cy + Math.sin(a) * (radius - 22));
+        }
       }
 
       const needleAngle = Math.PI * 0.75 + Math.max(0, Math.min(1, ratio)) * Math.PI * 1.5;
       ctx.strokeStyle = '#f97316';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 3.5;
       ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.cos(needleAngle) * (radius - 14), cy + Math.sin(needleAngle) * (radius - 14));
+      ctx.moveTo(cx - Math.cos(needleAngle) * 10, cy - Math.sin(needleAngle) * 10);
+      ctx.lineTo(cx + Math.cos(needleAngle) * (radius - 13), cy + Math.sin(needleAngle) * (radius - 13));
       ctx.stroke();
 
-      ctx.fillStyle = '#f8fafc';
+      ctx.fillStyle = '#1e293b';
       ctx.beginPath();
-      ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 9, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 2;
+      ctx.stroke();
 
       ctx.fillStyle = '#94a3b8';
-      ctx.font = 'bold 12px sans-serif';
+      ctx.font = 'bold 11px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(title, cx, cy + 34);
+      ctx.fillText(title, cx, cy + 36);
 
       ctx.fillStyle = '#f8fafc';
       ctx.font = 'bold 16px monospace';
-      ctx.fillText(valueText, cx, cy + 54);
+      ctx.fillText(valueText, cx, cy + 56);
     };
 
-    drawDial(92, 96, 62, state.speedKmh / 120, 'KM/H', String(state.speedKmh), 0.78);
-    drawDial(420, 96, 62, state.rpm / 2500, 'RPM', String(Math.round(state.rpm)), 0.88);
+    drawDial(
+      110,
+      112,
+      74,
+      state.speedKmh / 120,
+      'KM/H',
+      String(state.speedKmh),
+      ['0', '20', '40', '60', '80', '100', '120'],
+      0.78
+    );
+    drawDial(
+      530,
+      112,
+      74,
+      state.rpm / 2500,
+      'RPM x100',
+      String(Math.round(state.rpm)),
+      ['0', '5', '10', '15', '20', '25'],
+      0.84,
+      [0.40, 0.60]
+    );
 
-    // Center High-Contrast Digital MFD positioned inside the unobstructed upper steering wheel opening
-    ctx.fillStyle = '#0f1b33';
-    ctx.fillRect(172, 16, 168, 160);
+    // Center High-Contrast Digital TFT MFD
+    ctx.fillStyle = '#0c172b';
+    ctx.fillRect(212, 16, 216, 192);
     ctx.strokeStyle = '#38bdf8';
     ctx.lineWidth = 2;
-    ctx.strokeRect(172, 16, 168, 160);
+    ctx.strokeRect(212, 16, 216, 192);
 
-    // Top row: Blinker arrows + Cruise indicator
+    ctx.fillStyle = 'rgba(30, 41, 59, 0.65)';
+    ctx.fillRect(214, 18, 212, 32);
+
+    // Top row: Blinker arrows + Cruise + Air pressure readout
     ctx.textBaseline = 'middle';
-    ctx.font = 'bold 18px sans-serif';
+    ctx.font = 'bold 20px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillStyle = state.leftBlinker ? '#34d399' : '#1e293b';
-    ctx.fillText('◄', 192, 34);
-    ctx.fillStyle = state.rightBlinker ? '#34d399' : '#1e293b';
-    ctx.fillText('►', 320, 34);
+    ctx.fillStyle = state.leftBlinker ? '#34d399' : '#334155';
+    ctx.fillText('◄', 234, 34);
+    ctx.fillStyle = state.rightBlinker ? '#34d399' : '#334155';
+    ctx.fillText('►', 406, 34);
 
-    ctx.font = 'bold 12px monospace';
-    ctx.fillStyle = state.cruiseControlKmh != null ? '#34d399' : '#475569';
+    ctx.font = 'bold 13px monospace';
+    ctx.fillStyle = state.cruiseControlKmh != null ? '#34d399' : '#94a3b8';
     ctx.fillText(
-      state.cruiseControlKmh != null ? `CC ${state.cruiseControlKmh}` : 'CC --',
-      256,
+      state.cruiseControlKmh != null ? `CC ${state.cruiseControlKmh}` : `${airBar.toFixed(1)} BAR`,
+      320,
       34
     );
 
-    // Core high-contrast digital speedometer (clearly visible through upper wheel rim)
+    // Core high-contrast digital speedometer
     ctx.fillStyle = engineRunning ? '#ffffff' : '#64748b';
-    ctx.font = 'bold 44px monospace';
-    ctx.fillText(String(state.speedKmh), 256, 76);
+    ctx.font = 'bold 48px monospace';
+    ctx.fillText(String(state.speedKmh), 320, 86);
 
     ctx.fillStyle = lowAir ? '#ef4444' : !engineRunning ? '#f59e0b' : '#38bdf8';
-    ctx.font = 'bold 11px sans-serif';
+    ctx.font = 'bold 12px sans-serif';
     ctx.fillText(
       lowAir ? 'LOW AIR!' : !engineRunning ? 'IGN OFF [I]' : 'KM/H',
-      256,
-      104
+      320,
+      118
     );
 
     // Auxiliary status badges (EXH / R1-3)
-    ctx.font = 'bold 10px monospace';
+    ctx.font = 'bold 11px monospace';
     ctx.textAlign = 'left';
-    ctx.fillStyle = exh ? '#38bdf8' : '#334155';
-    ctx.fillText('EXH', 184, 104);
+    ctx.fillStyle = exh ? '#38bdf8' : '#475569';
+    ctx.fillText('EXH', 226, 118);
     ctx.textAlign = 'right';
-    ctx.fillStyle = ret > 0 ? '#f59e0b' : '#334155';
-    ctx.fillText(ret > 0 ? `R${ret}` : 'RET', 328, 104);
+    ctx.fillStyle = ret > 0 ? '#f59e0b' : '#475569';
+    ctx.fillText(ret > 0 ? `R${ret}` : 'RET', 414, 118);
 
-    // Gear & Parking brake row
+    // Gear & Parking brake pill
     ctx.fillStyle = '#fbbf24';
-    ctx.font = 'bold 24px monospace';
+    ctx.font = 'bold 26px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(state.gearLabel, 186, 130);
+    ctx.fillText(state.gearLabel, 226, 148);
 
-    ctx.fillStyle = state.parkingBrake ? '#ef4444' : '#64748b';
+    ctx.fillStyle = state.parkingBrake ? 'rgba(239, 68, 68, 0.22)' : 'rgba(16, 185, 129, 0.14)';
+    ctx.fillRect(334, 136, 82, 22);
+    ctx.fillStyle = state.parkingBrake ? '#f87171' : '#34d399';
     ctx.font = 'bold 12px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(state.parkingBrake ? 'PARK [P]' : 'DRIVE', 326, 130);
+    ctx.textAlign = 'center';
+    ctx.fillText(state.parkingBrake ? 'PARK [P]' : 'DRIVE', 375, 148);
 
-    // Compact RPM, Air Pressure (MPa) & Fuel status bars
-    const rpmFrac = Math.max(0, Math.min(1, (state.rpm - 600) / 1700));
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(186, 145, 140, 5);
-    ctx.fillStyle = state.rpm > 1850 ? '#ef4444' : state.rpm > 1550 ? '#fbbf24' : '#38bdf8';
-    ctx.fillRect(186, 145, 140 * rpmFrac, 5);
+    // Labeled RPM, Air Pressure & Fuel status bars
+    const drawBar = (yPos: number, lbl: string, frac: number, fillCol: string) => {
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(lbl, 224, yPos + 3);
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(256, yPos, 160, 6);
+      ctx.fillStyle = fillCol;
+      ctx.fillRect(256, yPos, 160 * Math.max(0, Math.min(1, frac)), 6);
+    };
 
-    const airFrac = Math.max(0, Math.min(1, airBar / 8.5));
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(186, 154, 140, 5);
-    ctx.fillStyle = lowAir ? '#ef4444' : '#38bdf8';
-    ctx.fillRect(186, 154, 140 * airFrac, 5);
-
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(186, 163, 140, 5);
-    ctx.fillStyle = state.fuelPct < 18 ? '#ef4444' : '#10b981';
-    ctx.fillRect(186, 163, 140 * Math.max(0, Math.min(1, state.fuelPct / 100)), 5);
+    const rpmFrac = (state.rpm - 600) / 1700;
+    drawBar(166, 'RPM', rpmFrac, state.rpm > 1850 ? '#ef4444' : state.rpm > 1550 ? '#fbbf24' : '#38bdf8');
+    drawBar(179, 'AIR', airBar / 8.5, lowAir ? '#ef4444' : '#38bdf8');
+    drawBar(192, 'FUEL', state.fuelPct / 100, state.fuelPct < 18 ? '#ef4444' : '#10b981');
 
     this.dashTexture.needsUpdate = true;
   }
