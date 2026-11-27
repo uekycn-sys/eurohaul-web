@@ -78,6 +78,19 @@ export class TrafficSystem {
   private readonly dummy = new THREE.Object3D();
   private readonly tmpBrakeColor = new THREE.Color();
   private readonly disposables: { dispose: () => void }[] = [];
+  private readonly playerCircles: { x: number; z: number }[] = [
+    { x: 0, z: 0 },
+    { x: 0, z: 0 },
+    { x: 0, z: 0 },
+    { x: 0, z: 0 },
+  ];
+  private playerCircleCount = 2;
+  private readonly aiCircles: { x: number; z: number; r: number }[] = [
+    { x: 0, z: 0, r: 1.3 },
+    { x: 0, z: 0, r: 1.3 },
+    { x: 0, z: 0, r: 1.35 },
+    { x: 0, z: 0, r: 1.35 },
+  ];
 
   private collisionCooldownSec = 0;
   private hazardClockSec = 0;
@@ -217,6 +230,12 @@ export class TrafficSystem {
       this.headlightInst,
       this.taillightInst
     );
+  }
+
+  public setBlobShadowVisible(visible: boolean): void {
+    if (this.shadowInst) {
+      this.shadowInst.visible = visible;
+    }
   }
 
   public setActiveCount(count: number): void {
@@ -565,7 +584,7 @@ export class TrafficSystem {
   private isAdjacentLaneClear(
     agent: TrafficAgent,
     candidateLane: 0 | 1,
-    playerCircles: readonly { x: number; z: number }[]
+    playerCircleCount: number
   ): boolean {
     const candLat = this.getLaneOffsetMeters(agent.segment, candidateLane);
     const t = THREE.MathUtils.clamp(agent.sMeters / agent.segment.lengthMeters, 0, 1);
@@ -579,8 +598,8 @@ export class TrafficSystem {
     const candX = p.x + rx * candLat;
     const candZ = p.z + rz * candLat;
 
-    for (let k = 0; k < playerCircles.length; k++) {
-      const pc = playerCircles[k]!;
+    for (let k = 0; k < playerCircleCount; k++) {
+      const pc = this.playerCircles[k]!;
       const dx = pc.x - candX;
       const dz = pc.z - candZ;
       const fwd = dx * tx + dz * tz;
@@ -607,36 +626,38 @@ export class TrafficSystem {
     playerYaw: number,
     trailerX: number,
     trailerZ: number,
-    nightFactor = 0,
-    rainIntensity = 0,
+    _nightFactor = 0,
+    _rainIntensity = 0,
     playerHorn = false,
     trailerYaw = playerYaw,
     trailerAttached = true,
     playerSpeedMs = 0
   ): CollisionEvent | null {
     this.hazardClockSec += dtSec;
-    const hazardFlashOn = Math.floor(this.hazardClockSec * 3.0) % 2 === 0;
-    const lightsOn = nightFactor > 0.25 || rainIntensity > 0.25;
-    this.headlightMat.color.setHex(lightsOn ? 0xfffbeb : 0xe2e8f0);
     let collision: CollisionEvent | null = null;
     if (this.collisionCooldownSec > 0) {
       this.collisionCooldownSec = Math.max(0, this.collisionCooldownSec - dtSec);
     }
+    if (this.activeCount === 0) return null;
 
     const pFwdX = Math.sin(playerYaw);
     const pFwdZ = Math.cos(playerYaw);
     const trFwdX = Math.sin(trailerYaw);
     const trFwdZ = Math.cos(trailerYaw);
-    const playerCircles: { x: number; z: number }[] = [
-      { x: playerX + pFwdX * 1.9, z: playerZ + pFwdZ * 1.9 },
-      { x: playerX - pFwdX * 1.8, z: playerZ - pFwdZ * 1.8 },
-    ];
+    this.playerCircles[0]!.x = playerX + pFwdX * 1.9;
+    this.playerCircles[0]!.z = playerZ + pFwdZ * 1.9;
+    this.playerCircles[1]!.x = playerX - pFwdX * 1.8;
+    this.playerCircles[1]!.z = playerZ - pFwdZ * 1.8;
     if (trailerAttached) {
-      playerCircles.push(
-        { x: trailerX + trFwdX * 3.2, z: trailerZ + trFwdZ * 3.2 },
-        { x: trailerX - trFwdX * 4.4, z: trailerZ - trFwdZ * 4.4 }
-      );
+      this.playerCircles[2]!.x = trailerX + trFwdX * 3.2;
+      this.playerCircles[2]!.z = trailerZ + trFwdZ * 3.2;
+      this.playerCircles[3]!.x = trailerX - trFwdX * 4.4;
+      this.playerCircles[3]!.z = trailerZ - trFwdZ * 4.4;
+      this.playerCircleCount = 4;
+    } else {
+      this.playerCircleCount = 2;
     }
+    const playerCircleCount = this.playerCircleCount;
 
     for (let i = 0; i < this.activeCount; i++) {
       const a = this.agents[i]!;
@@ -676,8 +697,8 @@ export class TrafficSystem {
         // 2. Predictive physical braking against all 4 player hull circles (tractor + trailer)
         if (Math.abs(a.y - playerY) < 6) {
           const laneBand = isSemi ? 3.2 : 2.9;
-          for (let k = 0; k < playerCircles.length; k++) {
-            const pc = playerCircles[k]!;
+          for (let k = 0; k < playerCircleCount; k++) {
+            const pc = this.playerCircles[k]!;
             const dx = pc.x - a.x;
             const dz = pc.z - a.z;
             const forwardDot = dx * fwdX + dz * fwdZ;
@@ -691,7 +712,7 @@ export class TrafficSystem {
                 desiredSpeed = Math.min(desiredSpeed, ramp * a.targetSpeedMs);
               }
             }
-            if (playerHorn && Math.hypot(dx, dz) < 36) {
+            if (playerHorn && dx * dx + dz * dz < 36 * 36) {
               a.yieldTimerSec = 1.4;
             } else if (Math.abs(forwardDot) < 12 && lateralDist < 3.4 && lateralDist > 1.8) {
               a.yieldTimerSec = Math.max(a.yieldTimerSec, 0.7);
@@ -728,7 +749,7 @@ export class TrafficSystem {
               netGap < 40
             ) {
               const altLane: 0 | 1 = a.targetLaneSlot === 0 ? 1 : 0;
-              if (this.isAdjacentLaneClear(a, altLane, playerCircles)) {
+              if (this.isAdjacentLaneClear(a, altLane, playerCircleCount)) {
                 a.targetLaneSlot = altLane;
                 a.targetSpeedMs = this.speedForAgent(a.segment, a.archetype, altLane);
               }
@@ -769,25 +790,37 @@ export class TrafficSystem {
         const aiFwdZ = Math.cos(a.yaw);
         const aiTrFwdX = Math.sin(a.trailerYaw);
         const aiTrFwdZ = Math.cos(a.trailerYaw);
-        const aiCircles: { x: number; z: number; r: number }[] = isSemi
-          ? [
-              { x: a.x + aiFwdX * 3.8, z: a.z + aiFwdZ * 3.8, r: 1.3 },
-              { x: a.x + aiFwdX * 1.5, z: a.z + aiFwdZ * 1.5, r: 1.3 },
-              { x: a.trailerX + aiTrFwdX * 2.5, z: a.trailerZ + aiTrFwdZ * 2.5, r: 1.35 },
-              { x: a.trailerX - aiTrFwdX * 3.0, z: a.trailerZ - aiTrFwdZ * 3.0, r: 1.35 },
-            ]
-          : [
-              { x: a.x + aiFwdX * 1.15, z: a.z + aiFwdZ * 1.15, r: 1.15 },
-              { x: a.x - aiFwdX * 1.15, z: a.z - aiFwdZ * 1.15, r: 1.15 },
-            ];
+        let aiCircleCount = 2;
+        if (isSemi) {
+          aiCircleCount = 4;
+          this.aiCircles[0]!.x = a.x + aiFwdX * 3.8;
+          this.aiCircles[0]!.z = a.z + aiFwdZ * 3.8;
+          this.aiCircles[0]!.r = 1.3;
+          this.aiCircles[1]!.x = a.x + aiFwdX * 1.5;
+          this.aiCircles[1]!.z = a.z + aiFwdZ * 1.5;
+          this.aiCircles[1]!.r = 1.3;
+          this.aiCircles[2]!.x = a.trailerX + aiTrFwdX * 2.5;
+          this.aiCircles[2]!.z = a.trailerZ + aiTrFwdZ * 2.5;
+          this.aiCircles[2]!.r = 1.35;
+          this.aiCircles[3]!.x = a.trailerX - aiTrFwdX * 3.0;
+          this.aiCircles[3]!.z = a.trailerZ - aiTrFwdZ * 3.0;
+          this.aiCircles[3]!.r = 1.35;
+        } else {
+          this.aiCircles[0]!.x = a.x + aiFwdX * 1.15;
+          this.aiCircles[0]!.z = a.z + aiFwdZ * 1.15;
+          this.aiCircles[0]!.r = 1.15;
+          this.aiCircles[1]!.x = a.x - aiFwdX * 1.15;
+          this.aiCircles[1]!.z = a.z - aiFwdZ * 1.15;
+          this.aiCircles[1]!.r = 1.15;
+        }
 
         let maxPen = 0;
         let bestCa: { x: number; z: number; r: number } | null = null;
         let bestCp: { x: number; z: number } | null = null;
-        for (let ac = 0; ac < aiCircles.length; ac++) {
-          const cA = aiCircles[ac]!;
-          for (let pc = 0; pc < playerCircles.length; pc++) {
-            const cP = playerCircles[pc]!;
+        for (let ac = 0; ac < aiCircleCount; ac++) {
+          const cA = this.aiCircles[ac]!;
+          for (let pc = 0; pc < playerCircleCount; pc++) {
+            const cP = this.playerCircles[pc]!;
             const dist = Math.hypot(cA.x - cP.x, cA.z - cP.z);
             const minSep = cA.r + PLAYER_HULL_RADIUS;
             if (dist < minSep) {
@@ -857,8 +890,15 @@ export class TrafficSystem {
       }
     }
 
-    this.syncInstanceMatrices(lightsOn, hazardFlashOn);
     return collision;
+  }
+
+  public syncVisuals(nightFactor = 0, rainIntensity = 0): void {
+    if (this.activeCount === 0) return;
+    const hazardFlashOn = Math.floor(this.hazardClockSec * 3.0) % 2 === 0;
+    const lightsOn = nightFactor > 0.25 || rainIntensity > 0.25;
+    this.headlightMat.color.setHex(lightsOn ? 0xfffbeb : 0xe2e8f0);
+    this.syncInstanceMatrices(lightsOn, hazardFlashOn);
   }
 
   private syncInstanceMatrices(lightsOn: boolean, hazardFlashOn: boolean): void {
@@ -931,10 +971,8 @@ export class TrafficSystem {
         this.tmpBrakeColor.setHex(a.braking ? 0xff2626 : lightsOn ? 0x991b1b : 0x450a0a);
       }
 
-      for (const [idxOffset, sideSign] of [
-        [0, -1],
-        [1, 1],
-      ] as const) {
+      for (let sideIdx = 0; sideIdx < 2; sideIdx++) {
+        const sideSign = sideIdx === 0 ? -1 : 1;
         this.dummy.position.set(
           a.x + updatedFwdX * frontDist + rightX * (sideSign * frontSide),
           a.y + frontY,
@@ -943,7 +981,7 @@ export class TrafficSystem {
         this.dummy.rotation.set(a.pitch, a.yaw, 0, 'YXZ');
         this.dummy.scale.set(1, 1, 1);
         this.dummy.updateMatrix();
-        this.headlightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
+        this.headlightInst.setMatrixAt(i * 2 + sideIdx, this.dummy.matrix);
 
         this.dummy.position.set(
           rearBaseX - rearFwdX * rearDist + rearRightX * (sideSign * rearSide),
@@ -952,8 +990,8 @@ export class TrafficSystem {
         );
         this.dummy.rotation.set(isSemi ? a.trailerPitch : a.pitch, isSemi ? a.trailerYaw : a.yaw, 0, 'YXZ');
         this.dummy.updateMatrix();
-        this.taillightInst.setMatrixAt(i * 2 + idxOffset, this.dummy.matrix);
-        this.taillightInst.setColorAt(i * 2 + idxOffset, this.tmpBrakeColor);
+        this.taillightInst.setMatrixAt(i * 2 + sideIdx, this.dummy.matrix);
+        this.taillightInst.setColorAt(i * 2 + sideIdx, this.tmpBrakeColor);
       }
 
       if (this.shadowInst) {

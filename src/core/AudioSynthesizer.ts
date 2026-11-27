@@ -444,7 +444,8 @@ export class AudioSynthesizer {
       this.engineSubOsc.frequency.setTargetAtTime(baseFreq * 0.5, now, 0.05);
       this.engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.05);
       this.engineOsc2.frequency.setTargetAtTime(baseFreq * (isV8 ? 1.5 : 2.02), now, 0.05);
-      this.engineSubGain.gain.setTargetAtTime(isV8 ? 0.85 : 0.52, now, 0.05);
+      const luggingLoad = opts.rpm < 1350 && opts.throttle > 0.5 ? (1 - Math.max(0, opts.rpm - 650) / 700) * opts.throttle : 0;
+      this.engineSubGain.gain.setTargetAtTime((isV8 ? 0.85 : 0.52) + luggingLoad * 0.15, now, 0.05);
 
       // Cylinder firing-pulse LFO (I6: 3 pulses/rev, V8: 4 pulses/rev with characteristic deep burble)
       if (this.enginePulseOsc && this.enginePulseDepth) {
@@ -470,7 +471,7 @@ export class AudioSynthesizer {
         now,
         0.06
       );
-      this.exhaustPeakFilter.gain.setTargetAtTime(2.0 + opts.throttle * 6.5, now, 0.06);
+      this.exhaustPeakFilter.gain.setTargetAtTime(2.0 + opts.throttle * 6.5 + luggingLoad * 2.5, now, 0.06);
 
       // Quiet coasting when lifting off throttle vs deep growl under load
       const loadGain = 0.075 + opts.throttle * 0.165 + rpmRatio * 0.048 + (opts.retarderActive ? 0.035 : 0);
@@ -608,6 +609,46 @@ export class AudioSynthesizer {
     g.connect(this.exteriorBus);
     src.start(now);
     src.stop(now + 0.25);
+  }
+
+  public playRangeShift(): void {
+    if (!this.ctx || !this.interiorBus || !this.noiseBuffer || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(3200, now);
+    filter.frequency.exponentialRampToValueAtTime(1750, now + 0.13);
+    filter.Q.value = 2.6;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.032, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.interiorBus);
+    src.start(now);
+    src.stop(now + 0.15);
+  }
+
+  public playRoadJointThump(intensity = 0.6): void {
+    if (!this.ctx || !this.exteriorBus || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const level = 0.045 + Math.min(1, intensity) * 0.055;
+    for (let i = 0; i < 2; i++) {
+      const t = now + i * 0.11;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(i === 0 ? 68 : 56, t);
+      osc.frequency.exponentialRampToValueAtTime(30, t + 0.085);
+      g.gain.setValueAtTime(level * (i === 0 ? 1.0 : 0.85), t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+      osc.connect(g);
+      g.connect(this.exteriorBus);
+      osc.start(t);
+      osc.stop(t + 0.1);
+    }
   }
 
   private playWiperSwish(isInterior: boolean): void {

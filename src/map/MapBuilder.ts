@@ -199,11 +199,12 @@ export class MapBuilder {
       segmentMap.set(seg.id, compiled);
     }
 
-    // Spatial hash grid for O(1) road lookup (cell size = 40m)
+    // Spatial hash grid for O(1) road lookup (cell size = 40m, integer-packed keys for zero string GC)
     const cellSize = 40;
-    const spatialGrid = new Map<string, SpatialCellEntry[]>();
+    const cellKey = (gx: number, gz: number): number => (gx + 32768) * 65536 + (gz + 32768);
+    const spatialGrid = new Map<number, SpatialCellEntry[]>();
     const addCell = (gx: number, gz: number, entry: SpatialCellEntry) => {
-      const key = `${gx},${gz}`;
+      const key = cellKey(gx, gz);
       let arr = spatialGrid.get(key);
       if (!arr) {
         arr = [];
@@ -232,7 +233,7 @@ export class MapBuilder {
     ): { dist: number; y: number; seg: CompiledRoadSegment | null } => {
       const gx = Math.floor(x / cellSize);
       const gz = Math.floor(z / cellSize);
-      const entries = spatialGrid.get(`${gx},${gz}`);
+      const entries = spatialGrid.get(cellKey(gx, gz));
       let bestDistSq = Infinity;
       let bestY = 0;
       let bestSeg: CompiledRoadSegment | null = null;
@@ -1740,11 +1741,35 @@ export class MapBuilder {
       }
     };
 
+    // Precomputed flat paved zones for fast zero-hypot surface queries
+    const pavedCityBoxes: { minX: number; maxX: number; minZ: number; maxZ: number; y: number }[] = [];
+    const pavedCircles: { x: number; z: number; rSq: number; y: number }[] = [];
+    for (const city of manifest.cities) {
+      pavedCityBoxes.push({
+        minX: city.position[0] - 145,
+        maxX: city.position[0] + 145,
+        minZ: city.position[2] - 155,
+        maxZ: city.position[2] + 155,
+        y: city.position[1],
+      });
+      for (const depot of city.depots) {
+        pavedCircles.push(
+          { x: depot.parkingBayPosition[0], z: depot.parkingBayPosition[2], rSq: 42 * 42, y: depot.position[1] },
+          { x: depot.officePosition[0], z: depot.officePosition[2], rSq: 42 * 42, y: depot.position[1] },
+          { x: depot.position[0], z: depot.position[2], rSq: 48 * 48, y: depot.position[1] }
+        );
+      }
+      for (const st of city.stations) {
+        const r = st.radius + 18;
+        pavedCircles.push({ x: st.position[0], z: st.position[2], rSq: r * r, y: st.position[1] });
+      }
+    }
+
     // 9. Surface Query (O(1) spatial hash + linear slope interpolation + full paved yards/rest stops)
     const querySurface = (x: number, z: number, out: SurfaceQueryResult): void => {
       const gx = Math.floor(x / cellSize);
       const gz = Math.floor(z / cellSize);
-      const entries = spatialGrid.get(`${gx},${gz}`);
+      const entries = spatialGrid.get(cellKey(gx, gz));
 
       let bestDistSq = Infinity;
       let bestSeg: CompiledRoadSegment | null = null;
@@ -1856,39 +1881,27 @@ export class MapBuilder {
         out.medianPenetration = 0;
       }
 
-      for (const city of manifest.cities) {
-        const dxCity = Math.abs(x - city.position[0]);
-        const dzCity = Math.abs(z - city.position[2]);
-        if (dxCity <= 145 && dzCity <= 155) {
-          out.groundY = city.position[1];
+      for (let i = 0; i < pavedCityBoxes.length; i++) {
+        const b = pavedCityBoxes[i]!;
+        if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ) {
+          out.groundY = b.y;
           out.onRoad = true;
           out.speedLimitKmh = 50;
           out.guardrailHit = false;
           return;
         }
+      }
 
-        for (const depot of city.depots) {
-          if (
-            Math.hypot(x - depot.parkingBayPosition[0], z - depot.parkingBayPosition[2]) <= 42 ||
-            Math.hypot(x - depot.officePosition[0], z - depot.officePosition[2]) <= 42 ||
-            Math.hypot(x - depot.position[0], z - depot.position[2]) <= 48
-          ) {
-            out.groundY = depot.position[1];
-            out.onRoad = true;
-            out.speedLimitKmh = 50;
-            out.guardrailHit = false;
-            return;
-          }
-        }
-
-        for (const st of city.stations) {
-          if (Math.hypot(x - st.position[0], z - st.position[2]) <= st.radius + 18) {
-            out.groundY = st.position[1];
-            out.onRoad = true;
-            out.speedLimitKmh = 50;
-            out.guardrailHit = false;
-            return;
-          }
+      for (let i = 0; i < pavedCircles.length; i++) {
+        const c = pavedCircles[i]!;
+        const dx = x - c.x;
+        const dz = z - c.z;
+        if (dx * dx + dz * dz <= c.rSq) {
+          out.groundY = c.y;
+          out.onRoad = true;
+          out.speedLimitKmh = 50;
+          out.guardrailHit = false;
+          return;
         }
       }
     };
@@ -1992,8 +2005,11 @@ export class MapBuilder {
       return 'red';
     };
 
+    let lastWetness = -1;
     const setRainWetness = (wet01: number): void => {
       const w = THREE.MathUtils.clamp(wet01, 0, 1);
+      if (Math.abs(w - lastWetness) < 0.005) return;
+      lastWetness = w;
       const rough = THREE.MathUtils.lerp(0.85, 0.26, w);
       const metal = THREE.MathUtils.lerp(0.04, 0.24, w);
       const envInt = THREE.MathUtils.lerp(0.55, 1.38, w);
@@ -2982,6 +2998,7 @@ export class MapBuilder {
       if (spruceMidInst.instanceColor) spruceMidInst.instanceColor.needsUpdate = true;
       if (spruceHighInst.instanceColor) spruceHighInst.instanceColor.needsUpdate = true;
       spruceTrunkInst.layers.set(1);
+      spruceMidInst.layers.set(1);
       root.add(spruceTrunkInst, spruceLowInst, spruceMidInst, spruceHighInst);
     }
 
@@ -3031,6 +3048,7 @@ export class MapBuilder {
       if (oakInst.instanceColor) oakInst.instanceColor.needsUpdate = true;
       if (oakSubInst.instanceColor) oakSubInst.instanceColor.needsUpdate = true;
       oakTrunkInst.layers.set(1);
+      oakSubInst.layers.set(1);
       root.add(oakTrunkInst, oakInst, oakSubInst);
     }
 

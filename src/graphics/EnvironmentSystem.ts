@@ -230,6 +230,7 @@ export class EnvironmentSystem {
 
   private readonly zenithColor = new THREE.Color();
   private readonly horizonColor = new THREE.Color();
+  private readonly lightningTintColor = new THREE.Color('#cbd5e1');
   private readonly sunDir = new THREE.Vector3(0.5, 0.6, 0.4).normalize();
   private readonly sunOffset = new THREE.Vector3();
 
@@ -649,7 +650,7 @@ export class EnvironmentSystem {
         (1 - this.rainIntensity * 0.45) +
       lightningBoost;
     if (lightningBoost > 0) {
-      this.horizonColor.lerp(new THREE.Color('#cbd5e1'), 0.42);
+      this.horizonColor.lerp(this.lightningTintColor, 0.42);
       (this.scene.background as THREE.Color).copy(this.horizonColor);
       this.fog.color.copy(this.horizonColor);
     }

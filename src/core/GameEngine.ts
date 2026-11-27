@@ -121,6 +121,21 @@ export class GameEngine {
   private viewportHeight = 720;
   private cabRoadPolylines: CabGpsRoadPolyline[] = [];
   private cabGpsAccumSec = 0;
+  private pendingFuelBurned = 0;
+  private pendingDistanceKm = 0;
+  private pendingFatigueDelta = 0;
+  private pendingJobTimerSec = 0;
+  private progressFlushAccumSec = 0;
+  private readonly sprayEmitters: [number, number, number][] = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
+  private readonly tractorSprayEmitters: [number, number, number][] = [
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
   private readonly tempVecA = new THREE.Vector3();
   private readonly tempVecB = new THREE.Vector3();
 
@@ -152,13 +167,13 @@ export class GameEngine {
     this.camera = new THREE.PerspectiveCamera(58, width / height, 0.25, 1600);
     this.camera.layers.enableAll();
 
-    this.leftMirrorCam = new THREE.PerspectiveCamera(42, 256 / 160, 0.4, 150);
+    const initMirrorW = store.qualityPreset === 'ultra' ? 384 : store.qualityPreset === 'high' ? 320 : 256;
+    const initMirrorH = store.qualityPreset === 'ultra' ? 256 : store.qualityPreset === 'high' ? 224 : 176;
+    this.leftMirrorCam = new THREE.PerspectiveCamera(46, initMirrorW / initMirrorH, 0.4, 150);
     this.leftMirrorCam.layers.set(0);
-    this.rightMirrorCam = new THREE.PerspectiveCamera(42, 256 / 160, 0.4, 150);
+    this.rightMirrorCam = new THREE.PerspectiveCamera(46, initMirrorW / initMirrorH, 0.4, 150);
     this.rightMirrorCam.layers.set(0);
 
-    const initMirrorW = store.qualityPreset === 'ultra' ? 320 : 256;
-    const initMirrorH = store.qualityPreset === 'ultra' ? 200 : 160;
     this.mirrorRtLeft = new THREE.WebGLRenderTarget(initMirrorW, initMirrorH, {
       depthBuffer: true,
       stencilBuffer: false,
@@ -339,6 +354,7 @@ export class GameEngine {
         } else if (s.activeModal !== 'none') {
           s.setActiveModal('none');
         } else if (s.gamePhase === 'playing') {
+          this.flushDrivingProgress();
           s.setGamePhase('menu');
         }
       },
@@ -436,6 +452,7 @@ export class GameEngine {
   }
 
   public enterA2Exam(levelId: A2ExamLevelId): void {
+    this.flushDrivingProgress();
     this.audio.unlock();
     const s = useGameStore.getState();
     if (this.examArena) {
@@ -597,6 +614,7 @@ export class GameEngine {
   }
 
   public completeDelivery(manualParking: boolean): void {
+    this.flushDrivingProgress();
     const res = useGameStore.getState().completeDelivery(manualParking);
     if (res) {
       this.audio.playSuccess();
@@ -671,6 +689,7 @@ export class GameEngine {
   }
 
   public performRoadsideRescue(): void {
+    this.flushDrivingProgress();
     const store = useGameStore.getState();
     if (store.gameMode === 'a2_exam') return;
     const station = this.getNearestServiceStation();
@@ -689,6 +708,7 @@ export class GameEngine {
   }
 
   public handleStationRest(): void {
+    this.flushDrivingProgress();
     const s = useGameStore.getState();
     const inter = s.nearbyInteraction;
     if (!inter || (inter.kind !== 'fuel' && inter.kind !== 'repair' && inter.kind !== 'service_hub')) {
@@ -714,20 +734,54 @@ export class GameEngine {
     useGameStore.getState().pushNotification('info', `雨刮器: ${label}`, '按 P 键循环切换雨刷档位');
   }
 
+  private flushDrivingProgress(): void {
+    if (
+      this.pendingFuelBurned <= 0 &&
+      this.pendingDistanceKm <= 0 &&
+      this.pendingFatigueDelta <= 0 &&
+      this.pendingJobTimerSec <= 0
+    ) {
+      return;
+    }
+    useGameStore.getState().applyDrivingProgress({
+      fuelBurned: this.pendingFuelBurned,
+      distanceKm: this.pendingDistanceKm,
+      fatigueDelta: this.pendingFatigueDelta,
+      jobTimerSec: this.pendingJobTimerSec,
+    });
+    this.pendingFuelBurned = 0;
+    this.pendingDistanceKm = 0;
+    this.pendingFatigueDelta = 0;
+    this.pendingJobTimerSec = 0;
+    this.progressFlushAccumSec = 0;
+  }
+
   private rebuildCabRoadPolylines(): void {
     this.cabRoadPolylines = this.builtMap.segments.map((seg) => {
       const pts: { x: number; z: number }[] = [];
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      const pushPt = (x: number, z: number) => {
+        pts.push({ x, z });
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+      };
       for (let i = 0; i < seg.samples.length; i += 3) {
         const s = seg.samples[i]!;
-        pts.push({ x: s.x, z: s.z });
+        pushPt(s.x, s.z);
       }
       const last = seg.samples[seg.samples.length - 1];
-      if (last) pts.push({ x: last.x, z: last.z });
-      return { points: pts, isMotorway: seg.def.roadClass === 'motorway' };
+      if (last) pushPt(last.x, last.z);
+      return { points: pts, isMotorway: seg.def.roadClass === 'motorway', minX, maxX, minZ, maxZ };
     });
   }
 
   public loadMap(mapId: string): void {
+    this.flushDrivingProgress();
     const manifest = MapRegistry.getMapById(mapId);
     const preset = useGameStore.getState().qualityPreset;
     const spec = QUALITY_SPECS[preset];
@@ -769,10 +823,14 @@ export class GameEngine {
     this.truckVisuals.setBlobShadowVisible(!spec.shadowsEnabled);
     this.truckVisuals.setPbrDetailEnabled(enableDetailMaps);
 
-    const mirrorW = preset === 'ultra' ? 320 : 256;
-    const mirrorH = preset === 'ultra' ? 200 : 160;
+    const mirrorW = preset === 'ultra' ? 384 : preset === 'high' ? 320 : 256;
+    const mirrorH = preset === 'ultra' ? 256 : preset === 'high' ? 224 : 176;
     this.mirrorRtLeft.setSize(mirrorW, mirrorH);
     this.mirrorRtRight.setSize(mirrorW, mirrorH);
+    this.leftMirrorCam.aspect = mirrorW / mirrorH;
+    this.leftMirrorCam.updateProjectionMatrix();
+    this.rightMirrorCam.aspect = mirrorW / mirrorH;
+    this.rightMirrorCam.updateProjectionMatrix();
 
     this.env.configureForPreset(preset, spec.shadowsEnabled, spec.shadowMapSize, spec.fogScale);
     this.camera.far = spec.cameraFar;
@@ -781,6 +839,7 @@ export class GameEngine {
     this.builtMap.setFoliageDensity(spec.foliageDensity, preset === 'mobile_fast');
     this.builtMap.setPbrDetailEnabled(enableDetailMaps);
     this.traffic.setActiveCount(spec.maxTraffic);
+    this.traffic.setBlobShadowVisible(!spec.shadowsEnabled);
     this.mirrorUpdateInterval = Math.max(1, spec.mirrorUpdateInterval);
 
     this.handleResize();
@@ -808,6 +867,7 @@ export class GameEngine {
   }
 
   public dispose(): void {
+    this.flushDrivingProgress();
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
@@ -878,6 +938,9 @@ export class GameEngine {
       this.env.rainIntensity,
       interpAlpha
     );
+    if (store.gameMode !== 'a2_exam') {
+      this.traffic.syncVisuals(this.env.nightFactor, this.env.rainIntensity);
+    }
     this.truckVisuals.updateWipers(this.elapsedSec, this.wipersMode);
     const isPlayingActive = store.gamePhase === 'playing' && store.activeModal === 'none';
     const isCabRainVisible =
@@ -975,6 +1038,12 @@ export class GameEngine {
       if (this.physics.turboBlowoffEvent > 0) {
         this.audio.playTurboBlowoff(this.physics.turboBlowoffEvent);
       }
+      if (this.physics.rangeShiftEvent) {
+        this.audio.playRangeShift();
+      }
+      if (this.physics.roadJointEvent > 0) {
+        this.audio.playRoadJointThump(this.physics.roadJointEvent);
+      }
     }
 
     this.telemetryAccumSec += frameDtSec;
@@ -995,7 +1064,8 @@ export class GameEngine {
         store.activeModal === 'none' &&
         store.cameraMode === 1 &&
         store.qualityPreset !== 'mobile_fast',
-      nowMs
+      nowMs,
+      store.cameraMode
     );
   };
 
@@ -1036,15 +1106,20 @@ export class GameEngine {
     }
   }
 
-  private renderFrame(hudMirrorMode: MirrorDisplayMode, render3dCabMirrors: boolean, nowMs: number): void {
+  private renderFrame(
+    hudMirrorMode: MirrorDisplayMode,
+    render3dCabMirrors: boolean,
+    nowMs: number,
+    cameraMode: CameraMode
+  ): void {
     const w = this.viewportWidth;
     const h = this.viewportHeight;
     this.renderer.info.reset();
 
-    // Odd/even alternating side mirror pass (~16-20Hz per mirror, keeping 3D cab door mirrors smooth even if HUD mirrors are off)
+    // Odd/even alternating side mirror pass (~16-20Hz per mirror, skipping off-screen right mirror when looking forward)
     const canShowHudMirrors = hudMirrorMode !== 'off' && w >= 640;
     const needLeftRt = (canShowHudMirrors && hudMirrorMode === 'both') || render3dCabMirrors;
-    const needRightRt = canShowHudMirrors || render3dCabMirrors;
+    const needRightRt = canShowHudMirrors || (render3dCabMirrors && this.cameraRig.isLookingRight());
     const mirrorMinIntervalMs = Math.max(50, this.mirrorUpdateInterval * 16.6);
     if (needLeftRt || needRightRt) {
       const renderLeft =
@@ -1056,15 +1131,17 @@ export class GameEngine {
         nowMs - this.lastRightMirrorMs >= mirrorMinIntervalMs;
 
       if (renderLeft || renderRight) {
-        this.truckVisuals.tractorRoot.updateMatrixWorld(true);
+        if (cameraMode !== 1 && cameraMode !== 3) {
+          this.truckVisuals.tractorRoot.updateMatrixWorld(true);
+        }
         const prevShadowAuto = this.renderer.shadowMap.autoUpdate;
         this.renderer.shadowMap.autoUpdate = false;
 
         if (renderLeft) {
           this.lastLeftMirrorMs = nowMs;
-          this.tempVecA.set(1.87, 2.65, 2.45);
+          this.tempVecA.set(1.68, 2.66, 2.52);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-          this.tempVecB.set(1.65, 1.95, -22);
+          this.tempVecB.set(2.85, 1.88, -28);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
           this.leftMirrorCam.position.copy(this.tempVecA);
           this.leftMirrorCam.lookAt(this.tempVecB);
@@ -1075,9 +1152,9 @@ export class GameEngine {
           this.renderer.render(this.scene, this.leftMirrorCam);
         } else {
           this.lastRightMirrorMs = nowMs;
-          this.tempVecA.set(-1.87, 2.65, 2.45);
+          this.tempVecA.set(-1.68, 2.66, 2.52);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-          this.tempVecB.set(-1.65, 1.95, -22);
+          this.tempVecB.set(-2.85, 1.88, -28);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
           this.rightMirrorCam.position.copy(this.tempVecA);
           this.rightMirrorCam.lookAt(this.tempVecB);
@@ -1206,10 +1283,10 @@ export class GameEngine {
         surfaceGripOverride,
         skipMapCollisions: isA2Exam,
         onFuelBurned: (liters) => {
-          if (!isA2Exam) store.consumeFuel(liters);
+          if (!isA2Exam) this.pendingFuelBurned += liters;
         },
         onDistanceKm: (km) => {
-          if (!isA2Exam) store.addCareerDistance(km);
+          if (!isA2Exam) this.pendingDistanceKm += km;
         },
       });
 
@@ -1300,10 +1377,10 @@ export class GameEngine {
         // Check upcoming intersection traffic signals & enforce red-light violation fines
         this.evaluateTrafficSignals(kmh, nowPerf);
 
-        // EU Tachograph gentle driver fatigue accumulation
+        // EU Tachograph gentle driver fatigue accumulation (batched every 0.5s)
         if (store.fatigueEnabled && Math.abs(this.physics.speedMs) > 1.0) {
-          store.addDriverFatigue(dtSec * 0.085);
-          const fatigue = useGameStore.getState().driverFatiguePct;
+          this.pendingFatigueDelta += dtSec * 0.085;
+          const fatigue = store.driverFatiguePct + this.pendingFatigueDelta;
           if (fatigue >= 80 && !this.fatigueWarn80Sent) {
             this.fatigueWarn80Sent = true;
             store.pushNotification(
@@ -1322,7 +1399,7 @@ export class GameEngine {
         }
 
         if (store.activeJob) {
-          store.tickJobTimer(dtSec);
+          this.pendingJobTimerSec += dtSec;
           if (store.parkingGuide.readyToDeliver) {
             this.manualParkHoldSec += dtSec;
             if (this.manualParkHoldSec >= 0.9) {
@@ -1331,6 +1408,11 @@ export class GameEngine {
           } else {
             this.manualParkHoldSec = 0;
           }
+        }
+
+        this.progressFlushAccumSec += dtSec;
+        if (this.progressFlushAccumSec >= 0.5) {
+          this.flushDrivingProgress();
         }
       }
     } else if (!isA2Exam) {
@@ -1376,32 +1458,46 @@ export class GameEngine {
         }
       }
 
-      const fwdX = Math.sin(this.physics.yaw);
-      const fwdZ = Math.cos(this.physics.yaw);
-      const sideX = Math.cos(this.physics.yaw);
-      const sideZ = -Math.sin(this.physics.yaw);
-      const emitters: [number, number, number][] = [
-        [this.physics.x - fwdX * 2.1 + sideX * 1.0, this.physics.y, this.physics.z - fwdZ * 2.1 + sideZ * 1.0],
-        [this.physics.x - fwdX * 2.1 - sideX * 1.0, this.physics.y, this.physics.z - fwdZ * 2.1 - sideZ * 1.0],
-      ];
-      if (this.physics.trailerAttached) {
-        const trFwdX = Math.sin(this.physics.trailerYaw);
-        const trFwdZ = Math.cos(this.physics.trailerYaw);
-        const trSideX = Math.cos(this.physics.trailerYaw);
-        const trSideZ = -Math.sin(this.physics.trailerYaw);
-        emitters.push(
-          [this.physics.trailerX - trFwdX * 5.2 + trSideX * 1.0, this.physics.trailerY, this.physics.trailerZ - trFwdZ * 5.2 + trSideZ * 1.0],
-          [this.physics.trailerX - trFwdX * 5.2 - trSideX * 1.0, this.physics.trailerY, this.physics.trailerZ - trFwdZ * 5.2 - trSideZ * 1.0]
-        );
+      const sprayActive =
+        drivingActive &&
+        this.physics.onRoad &&
+        this.env.rainIntensity >= 0.25 &&
+        Math.abs(this.physics.speedMs) >= 7;
+      if (sprayActive) {
+        const fwdX = Math.sin(this.physics.yaw);
+        const fwdZ = Math.cos(this.physics.yaw);
+        const sideX = Math.cos(this.physics.yaw);
+        const sideZ = -Math.sin(this.physics.yaw);
+        if (this.physics.trailerAttached) {
+          const trFwdX = Math.sin(this.physics.trailerYaw);
+          const trFwdZ = Math.cos(this.physics.trailerYaw);
+          const trSideX = Math.cos(this.physics.trailerYaw);
+          const trSideZ = -Math.sin(this.physics.trailerYaw);
+          this.sprayEmitters[0]![0] = this.physics.x - fwdX * 2.1 + sideX * 1.0;
+          this.sprayEmitters[0]![1] = this.physics.y;
+          this.sprayEmitters[0]![2] = this.physics.z - fwdZ * 2.1 + sideZ * 1.0;
+          this.sprayEmitters[1]![0] = this.physics.x - fwdX * 2.1 - sideX * 1.0;
+          this.sprayEmitters[1]![1] = this.physics.y;
+          this.sprayEmitters[1]![2] = this.physics.z - fwdZ * 2.1 - sideZ * 1.0;
+          this.sprayEmitters[2]![0] = this.physics.trailerX - trFwdX * 5.2 + trSideX * 1.0;
+          this.sprayEmitters[2]![1] = this.physics.trailerY;
+          this.sprayEmitters[2]![2] = this.physics.trailerZ - trFwdZ * 5.2 + trSideZ * 1.0;
+          this.sprayEmitters[3]![0] = this.physics.trailerX - trFwdX * 5.2 - trSideX * 1.0;
+          this.sprayEmitters[3]![1] = this.physics.trailerY;
+          this.sprayEmitters[3]![2] = this.physics.trailerZ - trFwdZ * 5.2 - trSideZ * 1.0;
+          this.env.updateTireSpray(dtSec, true, this.sprayEmitters, fwdX, fwdZ, this.physics.speedMs);
+        } else {
+          this.tractorSprayEmitters[0]![0] = this.physics.x - fwdX * 2.1 + sideX * 1.0;
+          this.tractorSprayEmitters[0]![1] = this.physics.y;
+          this.tractorSprayEmitters[0]![2] = this.physics.z - fwdZ * 2.1 + sideZ * 1.0;
+          this.tractorSprayEmitters[1]![0] = this.physics.x - fwdX * 2.1 - sideX * 1.0;
+          this.tractorSprayEmitters[1]![1] = this.physics.y;
+          this.tractorSprayEmitters[1]![2] = this.physics.z - fwdZ * 2.1 - sideZ * 1.0;
+          this.env.updateTireSpray(dtSec, true, this.tractorSprayEmitters, fwdX, fwdZ, this.physics.speedMs);
+        }
+      } else {
+        this.env.updateTireSpray(dtSec, false, this.tractorSprayEmitters, 0, 1, 0);
       }
-      this.env.updateTireSpray(
-        dtSec,
-        drivingActive && this.physics.onRoad,
-        emitters,
-        fwdX,
-        fwdZ,
-        this.physics.speedMs
-      );
     }
 
     // Rain-sensing automatic wipers (yields to manual P-key override)

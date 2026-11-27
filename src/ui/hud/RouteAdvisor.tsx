@@ -79,7 +79,30 @@ export const RouteAdvisor = memo(function RouteAdvisor({
   useEffect(() => {
     if (advisorDisplayMode !== 'full' || advisorTab !== 'nav') return;
 
-    const drawMinimap = () => {
+    const nodeLookup = new Map(mapManifest.nodes.map((n) => [n.id, n]));
+    const prebuiltSegs: {
+      isMotorway: boolean;
+      lanes: number;
+      pts: readonly (readonly [number, number, number])[];
+    }[] = [];
+    for (const seg of mapManifest.segments) {
+      const a = nodeLookup.get(seg.fromNodeId);
+      const b = nodeLookup.get(seg.toNodeId);
+      if (!a || !b) continue;
+      prebuiltSegs.push({
+        isMotorway: seg.roadClass === 'motorway',
+        lanes: seg.lanes,
+        pts: [a.position, ...(seg.controlPoints ?? []), b.position],
+      });
+    }
+
+    let lastDrawnX = NaN;
+    let lastDrawnZ = NaN;
+    let lastDrawnH = NaN;
+    let lastDrawnSpeed = -1;
+    let lastDrawnJobId: string | null | undefined = undefined;
+
+    const drawMinimap = (force = false) => {
       const canvas = minimapRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
@@ -88,6 +111,23 @@ export const RouteAdvisor = memo(function RouteAdvisor({
       const state = useGameStore.getState();
       const { truckX, truckZ, truckHeadingRad, speedKmh } = state.telemetry;
       const currentJob = state.activeJob;
+      const jobId = currentJob?.job.id ?? null;
+
+      if (
+        !force &&
+        Math.abs(truckX - lastDrawnX) <= 0.4 &&
+        Math.abs(truckZ - lastDrawnZ) <= 0.4 &&
+        Math.abs(truckHeadingRad - lastDrawnH) <= 0.01 &&
+        speedKmh === lastDrawnSpeed &&
+        jobId === lastDrawnJobId
+      ) {
+        return;
+      }
+      lastDrawnX = truckX;
+      lastDrawnZ = truckZ;
+      lastDrawnH = truckHeadingRad;
+      lastDrawnSpeed = speedKmh;
+      lastDrawnJobId = jobId;
 
       const w = canvas.width;
       const h = canvas.height;
@@ -122,19 +162,15 @@ export const RouteAdvisor = memo(function RouteAdvisor({
         return [lateral * scale, -forward * scale];
       };
 
-      const nodeLookup = new Map(mapManifest.nodes.map((n) => [n.id, n]));
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      for (const seg of mapManifest.segments) {
-        const a = nodeLookup.get(seg.fromNodeId);
-        const b = nodeLookup.get(seg.toNodeId);
-        if (!a || !b) continue;
-        const pts = [a.position, ...(seg.controlPoints ?? []), b.position];
-        ctx.strokeStyle = seg.roadClass === 'motorway' ? '#475569' : '#334155';
+      for (let sIdx = 0; sIdx < prebuiltSegs.length; sIdx++) {
+        const seg = prebuiltSegs[sIdx]!;
+        ctx.strokeStyle = seg.isMotorway ? '#475569' : '#334155';
         ctx.lineWidth = seg.lanes >= 4 ? 7 : 5;
         ctx.beginPath();
-        for (let i = 0; i < pts.length; i++) {
-          const [mx, my] = toMini(pts[i]![0], pts[i]![2]);
+        for (let i = 0; i < seg.pts.length; i++) {
+          const [mx, my] = toMini(seg.pts[i]![0], seg.pts[i]![2]);
           if (i === 0) ctx.moveTo(mx, my);
           else ctx.lineTo(mx, my);
         }
@@ -192,7 +228,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
       ctx.restore();
     };
 
-    drawMinimap();
+    drawMinimap(true);
     const unsub = useGameStore.subscribe((state, prev) => {
       if (
         state.telemetry.truckX !== prev.telemetry.truckX ||
@@ -201,7 +237,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
         state.telemetry.speedKmh !== prev.telemetry.speedKmh ||
         state.activeJob !== prev.activeJob
       ) {
-        drawMinimap();
+        drawMinimap(false);
       }
     });
     return unsub;

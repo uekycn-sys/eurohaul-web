@@ -133,7 +133,8 @@ export class InputManager {
     this.throttle += (targetThrottle - this.throttle) * Math.min(1, dtSec * throttleRate * 3);
 
     const targetBrake = Math.max(kbBrake, this.touchBrake);
-    const brakeRate = targetBrake > this.brake ? 3.2 : 4.8;
+    const brakeRate =
+      targetBrake > this.brake ? (this.brake < 0.35 ? 2.4 : 4.2) : 4.8;
     this.brake += (targetBrake - this.brake) * Math.min(1, dtSec * brakeRate * 3);
 
     if (wantClutch > this.clutch) {
@@ -160,8 +161,8 @@ export class InputManager {
 
     const absSpeed = Math.abs(speedKmh);
     const speedSteerSpeed = realisticSteeringReturn
-      ? Math.max(0.85, 1.85 - absSpeed * 0.012)
-      : Math.max(1.15, 2.5 - absSpeed * 0.015);
+      ? Math.max(0.58, 1.85 - absSpeed * 0.0145)
+      : Math.max(0.85, 2.4 - absSpeed * 0.017);
     const centerSpeed = this.centeringSteer
       ? 6.0
       : realisticSteeringReturn
@@ -183,7 +184,7 @@ export class InputManager {
         ? 1.85
         : absSpeed < 22
         ? Math.min(1.0, Math.max(0.55, 0.55 + this.steerHoldSec * 1.8))
-        : Math.min(1.0, Math.max(0.28, 0.28 + this.steerHoldSec * 1.6));
+        : Math.min(1.0, Math.max(0.24, 0.24 + this.steerHoldSec * 1.55));
       const prevSign = Math.sign(this.rawSteer);
       const diff = targetSteer - this.rawSteer;
       const step = Math.sign(diff) * speedSteerSpeed * holdRamp * dtSec;
@@ -199,7 +200,8 @@ export class InputManager {
       this.steerHoldSec = 0;
       this.lastSteerDir = 0;
       if (centerSpeed > 0) {
-        const step = centerSpeed * dtSec;
+        const settleFactor = Math.min(1, Math.abs(this.rawSteer) * 3.5 + 0.25);
+        const step = centerSpeed * settleFactor * dtSec;
         if (Math.abs(this.rawSteer) <= step) {
           this.rawSteer = 0;
           this.centeringSteer = false;
@@ -209,9 +211,10 @@ export class InputManager {
       }
     }
 
-    // Non-linear progressive steering curve: surgical center precision for lane-keeping, full lock on hold
+    // Speed-blended non-linear steering curve: surgical highway lane-keeping, full lock when held
     const absRaw = Math.abs(this.rawSteer);
-    this.steer = Math.sign(this.rawSteer) * (0.5 * absRaw + 0.5 * absRaw * absRaw);
+    const quadWeight = 0.48 + Math.min(0.24, absSpeed / 360);
+    this.steer = Math.sign(this.rawSteer) * ((1 - quadWeight) * absRaw + quadWeight * absRaw * absRaw);
   }
 
   private readonly handleKeyDown = (e: KeyboardEvent): void => {

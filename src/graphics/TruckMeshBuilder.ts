@@ -978,19 +978,27 @@ export class TruckMeshBuilder {
     const blindMirrorGeo = new THREE.BoxGeometry(0.22, 0.16, 0.09);
     disposables.push(mirrorBaseGeo);
 
-    const makeDoorMirrorGeo = (w: number, h: number, uMin: number, uMax: number) => {
+    const makeDoorMirrorGeo = (
+      w: number,
+      h: number,
+      uMin: number,
+      uMax: number,
+      vMin = 0,
+      vMax = 1
+    ) => {
       const geo = new THREE.PlaneGeometry(w, h);
       const uvAttr = geo.attributes.uv as THREE.BufferAttribute;
       for (let i = 0; i < uvAttr.count; i++) {
         uvAttr.setX(i, uvAttr.getX(i) > 0.5 ? uMax : uMin);
+        uvAttr.setY(i, uvAttr.getY(i) > 0.5 ? vMax : vMin);
       }
       uvAttr.needsUpdate = true;
       return geo;
     };
-    const leftMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.36, 0.46, 0.81);
-    const rightMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.36, 0.19, 0.54);
-    const leftBlindGlassGeo = makeDoorMirrorGeo(0.20, 0.14, 0.12, 0.96);
-    const rightBlindGlassGeo = makeDoorMirrorGeo(0.20, 0.14, 0.04, 0.88);
+    const leftMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.36, 0.28, 0.86, 0.04, 0.96);
+    const rightMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.36, 0.14, 0.72, 0.04, 0.96);
+    const leftBlindGlassGeo = makeDoorMirrorGeo(0.20, 0.14, 0.02, 0.98, 0.02, 0.56);
+    const rightBlindGlassGeo = makeDoorMirrorGeo(0.20, 0.14, 0.02, 0.98, 0.02, 0.56);
     const leftDoorMirrorMat = new THREE.MeshBasicMaterial({ color: '#e0f2fe' });
     const rightDoorMirrorMat = new THREE.MeshBasicMaterial({ color: '#e0f2fe' });
     disposables.push(leftBlindGlassGeo, rightBlindGlassGeo);
@@ -1336,8 +1344,8 @@ export class TruckMeshBuilder {
     // Unobstructed Embedded Euro-Truck SatNav angled cleanly toward driver (Layer 1)
     const gpsTex = this.textures.getDynamicCabGpsTexture();
     const gpsGroup = new THREE.Group();
-    gpsGroup.position.set(0.03, 2.30, 2.50);
-    gpsGroup.rotation.set(-0.14, Math.PI - 0.30, 0, 'YXZ');
+    gpsGroup.position.set(0.03, 2.355, 2.50);
+    gpsGroup.rotation.set(-0.08, Math.PI - 0.30, 0, 'YXZ');
     const gpsBezelGeo = new THREE.BoxGeometry(0.33, 0.205, 0.024);
     const gpsBezel = new THREE.Mesh(gpsBezelGeo, wiperMat);
     gpsBezel.layers.set(1);
@@ -1350,11 +1358,11 @@ export class TruckMeshBuilder {
     cabSuspensionGroup.add(gpsGroup);
 
     // Contoured mounting pedestal connecting SatNav cleanly to angled center console
-    const gpsMountGeo = new THREE.BoxGeometry(0.14, 0.12, 0.09);
+    const gpsMountGeo = new THREE.BoxGeometry(0.14, 0.10, 0.07);
     cabBatcher.add(cabInteriorMat, gpsMountGeo, {
       x: 0.03,
-      y: 2.19,
-      z: 2.52,
+      y: 2.21,
+      z: 2.54,
       rotY: -0.30,
       colorHex: '#18202c',
       layer: 1,
@@ -1362,9 +1370,9 @@ export class TruckMeshBuilder {
     const gpsRimGeo = new THREE.BoxGeometry(0.342, 0.216, 0.014);
     cabBatcher.add(cabTrimMetalMat, gpsRimGeo, {
       x: 0.03,
-      y: 2.30,
+      y: 2.355,
       z: 2.505,
-      rotX: -0.14,
+      rotX: -0.08,
       rotY: Math.PI - 0.30,
       colorHex: '#64748b',
       layer: 1,

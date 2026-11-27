@@ -27,6 +27,10 @@ export interface DashboardDrawState {
 export interface CabGpsRoadPolyline {
   points: { x: number; z: number }[];
   isMotorway: boolean;
+  minX?: number;
+  maxX?: number;
+  minZ?: number;
+  maxZ?: number;
 }
 
 export interface CabGpsDrawState {
@@ -924,10 +928,21 @@ export class ProceduralTextures {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
-      // Dark road casings + crisp road cores
+      // Dark road casings + crisp road cores (AABB-culled to visible GPS window)
+      const cullRange = 260 / scale;
+      const cullMinX = tx - cullRange;
+      const cullMaxX = tx + cullRange;
+      const cullMinZ = tz - cullRange;
+      const cullMaxZ = tz + cullRange;
       for (let i = 0; i < state.roadPolylines.length; i++) {
         const poly = state.roadPolylines[i]!;
         if (poly.points.length < 2) continue;
+        if (
+          poly.maxX !== undefined &&
+          (poly.maxX < cullMinX || poly.minX! > cullMaxX || poly.maxZ! < cullMinZ || poly.minZ! > cullMaxZ)
+        ) {
+          continue;
+        }
         ctx.beginPath();
         for (let p = 0; p < poly.points.length; p++) {
           const [gx, gy] = toGps(poly.points[p]!.x, poly.points[p]!.z);
@@ -1699,8 +1714,8 @@ export class ProceduralTextures {
   public getWindshieldRainTexture(): THREE.CanvasTexture {
     if (this.rainTexture) return this.rainTexture;
     this.rainCanvas = document.createElement('canvas');
-    this.rainCanvas.width = 768;
-    this.rainCanvas.height = 384;
+    this.rainCanvas.width = 512;
+    this.rainCanvas.height = 256;
     this.rainCtx = this.rainCanvas.getContext('2d')!;
     this.rainTexture = new THREE.CanvasTexture(this.rainCanvas);
     this.rainTexture.colorSpace = THREE.SRGBColorSpace;
@@ -1715,8 +1730,8 @@ export class ProceduralTextures {
     speedKmh = 0
   ): void {
     if (!this.rainCtx || !this.rainTexture) return;
-    const W = 768;
-    const H = 384;
+    const W = 512;
+    const H = 256;
     if (rainIntensity < 0.16) {
       if (this.rainDrops.length > 0) {
         this.rainDrops.length = 0;
@@ -1729,15 +1744,15 @@ export class ProceduralTextures {
 
     // Spawn fine realistic raindrops proportional to rain intensity
     const normRain = Math.max(0, (rainIntensity - 0.16) / 0.84);
-    const maxDrops = Math.round(18 + normRain * 140);
-    const spawnBudget = Math.max(0, rainIntensity - 0.12) * 180 * dtSec;
+    const maxDrops = Math.round(16 + normRain * 120);
+    const spawnBudget = Math.max(0, rainIntensity - 0.12) * 165 * dtSec;
     const spawnCount = Math.floor(spawnBudget) + (Math.random() < spawnBudget % 1 ? 1 : 0);
     for (let i = 0; i < spawnCount && this.rainDrops.length < maxDrops; i++) {
       this.rainDrops.push({
         x: Math.random() * W,
-        y: Math.random() * (H - 8),
-        r: 0.9 + Math.random() * 1.1,
-        vy: 22 + Math.random() * 42,
+        y: Math.random() * (H - 6),
+        r: 0.7 + Math.random() * 0.85,
+        vy: 15 + Math.random() * 28,
       });
     }
 
@@ -1789,32 +1804,53 @@ export class ProceduralTextures {
 
     const ctx = this.rainCtx;
     ctx.clearRect(0, 0, W, H);
-    const speedStreakBase = Math.min(26, (Math.abs(speedKmh) / 85) * 20);
+    const speedStreakBase = Math.min(18, (Math.abs(speedKmh) / 85) * 14);
+
+    // Pass 1: Faint upper water streak tails (single batched stroke)
+    ctx.strokeStyle = 'rgba(215, 228, 242, 0.12)';
+    ctx.lineWidth = 1.0;
+    ctx.beginPath();
     for (let i = 0; i < this.rainDrops.length; i++) {
       const d = this.rainDrops[i]!;
-      // Slender translucent water streak tail above droplet
-      const streakLen = 4 + Math.min(26, speedStreakBase + d.r * 3);
-      const grad = ctx.createLinearGradient(d.x, d.y - streakLen, d.x, d.y);
-      grad.addColorStop(0, 'rgba(215, 228, 242, 0)');
-      grad.addColorStop(1, 'rgba(215, 228, 242, 0.26)');
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = d.r * 0.75;
-      ctx.beginPath();
+      const streakLen = 3 + Math.min(18, speedStreakBase + d.r * 2.2);
       ctx.moveTo(d.x, d.y - streakLen);
-      ctx.lineTo(d.x, d.y);
-      ctx.stroke();
-
-      // Elongated vertical water droplet head + subtle bottom refraction glint
-      ctx.fillStyle = 'rgba(210, 225, 240, 0.28)';
-      ctx.beginPath();
-      ctx.ellipse(d.x, d.y, d.r * 0.85, d.r * 1.45, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = 'rgba(240, 248, 255, 0.42)';
-      ctx.beginPath();
-      ctx.arc(d.x, d.y + d.r * 0.45, Math.max(0.45, d.r * 0.35), 0, Math.PI * 2);
-      ctx.fill();
+      ctx.lineTo(d.x, d.y - streakLen * 0.45);
     }
+    ctx.stroke();
+
+    // Pass 2: Brighter lower water streak cores (single batched stroke)
+    ctx.strokeStyle = 'rgba(215, 228, 242, 0.28)';
+    ctx.lineWidth = 1.15;
+    ctx.beginPath();
+    for (let i = 0; i < this.rainDrops.length; i++) {
+      const d = this.rainDrops[i]!;
+      const streakLen = 3 + Math.min(18, speedStreakBase + d.r * 2.2);
+      ctx.moveTo(d.x, d.y - streakLen * 0.48);
+      ctx.lineTo(d.x, d.y);
+    }
+    ctx.stroke();
+
+    // Pass 3: Droplet oval bodies & lower refraction glints (2 batched fills)
+    ctx.fillStyle = 'rgba(210, 225, 240, 0.30)';
+    ctx.beginPath();
+    for (let i = 0; i < this.rainDrops.length; i++) {
+      const d = this.rainDrops[i]!;
+      ctx.moveTo(d.x + d.r * 0.85, d.y);
+      ctx.ellipse(d.x, d.y, d.r * 0.85, d.r * 1.45, 0, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(242, 248, 255, 0.48)';
+    ctx.beginPath();
+    for (let i = 0; i < this.rainDrops.length; i++) {
+      const d = this.rainDrops[i]!;
+      const gr = Math.max(0.4, d.r * 0.35);
+      const gy = d.y + d.r * 0.45;
+      ctx.moveTo(d.x + gr, gy);
+      ctx.arc(d.x, gy, gr, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
     this.rainTexture.needsUpdate = true;
   }
 

@@ -35,8 +35,9 @@ export class CameraRig {
   private lastPointerY = 0;
   private initialized = false;
 
-  // Air-suspension driver seat exponential low-pass filter state (heave ±0.015m max)
+  // Air-suspension driver seat exponential low-pass filter state (heave ±0.015m, surge ±0.028m)
   private seatHeaveY = 0;
+  private seatSurgeZ = 0;
   private smoothLookSteer = 0;
   private rumbleClockSec = 0;
 
@@ -61,11 +62,20 @@ export class CameraRig {
     this.chasePitchOffset = 0;
   }
 
+  public isLookingRight(): boolean {
+    return this.cabLookYaw + this.quickLookYaw + this.smoothLookSteer < -0.18;
+  }
+
   private readonly onDoubleClick = (): void => {
     this.resetCabLook();
   };
 
   private readonly onPointerDown = (e: PointerEvent): void => {
+    if (e.button === 1) {
+      e.preventDefault();
+      this.resetCabLook();
+      return;
+    }
     this.isDragging = true;
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
@@ -113,19 +123,28 @@ export class CameraRig {
     this.isMenuMode = isMenu;
     const absKmh = Math.abs(physics.speedMs) * 3.6;
 
+    const tx = visuals.tractorRoot.position.x;
+    const ty = visuals.tractorRoot.position.y;
+    const tz = visuals.tractorRoot.position.z;
+    const tyaw = visuals.tractorRoot.rotation.y;
+    const trx = visuals.trailerRoot.position.x;
+    const tryPos = visuals.trailerRoot.position.y;
+    const trz = visuals.trailerRoot.position.z;
+    const tryaw = visuals.trailerRoot.rotation.y;
+
     if (isMenu || mode === 4) {
       if (!this.isDragging) {
         this.orbitYaw += dtSec * (isMenu ? 0.14 : 0.22);
       }
       const radius = isMenu ? 15.5 : 19.5;
-      const cx = physics.trailerAttached ? (physics.x + physics.trailerX) * 0.5 : physics.x;
-      const cz = physics.trailerAttached ? (physics.z + physics.trailerZ) * 0.5 : physics.z;
+      const cx = physics.trailerAttached ? (tx + trx) * 0.5 : tx;
+      const cz = physics.trailerAttached ? (tz + trz) * 0.5 : tz;
       this.desiredPos.set(
         cx + Math.cos(this.orbitYaw) * Math.cos(this.orbitPitch) * radius,
-        physics.y + 2.2 + Math.sin(this.orbitPitch) * radius,
+        ty + 2.2 + Math.sin(this.orbitPitch) * radius,
         cz + Math.sin(this.orbitYaw) * Math.cos(this.orbitPitch) * radius
       );
-      this.desiredLook.set(cx, physics.y + 2.0, cz);
+      this.desiredLook.set(cx, ty + 2.0, cz);
       this.camera.fov += (54 - this.camera.fov) * Math.min(1, dtSec * 6);
       this.camera.updateProjectionMatrix();
 
@@ -149,6 +168,7 @@ export class CameraRig {
       const safeDt = Math.min(0.033, Math.max(0.001, dtSec));
 
       let heaveY = 0;
+      let surgeZ = 0;
       const rumbleActive = (physics as { onRumbleStrip?: boolean }).onRumbleStrip ?? false;
       if (cabMotionEnabled) {
         this.rumbleClockSec += safeDt * (1 + Math.min(2.0, absKmh / 45));
@@ -168,8 +188,16 @@ export class CameraRig {
           this.seatHeaveY = 0;
         }
         heaveY = THREE.MathUtils.clamp(this.seatHeaveY, -0.015, 0.015);
+
+        const targetSurge = THREE.MathUtils.clamp(-accelSignal * 0.0055, -0.028, 0.028);
+        this.seatSurgeZ += (targetSurge - this.seatSurgeZ) * (1 - Math.exp(-7.0 * safeDt));
+        if (targetSurge === 0 && Math.abs(this.seatSurgeZ) < 0.0002) {
+          this.seatSurgeZ = 0;
+        }
+        surgeZ = THREE.MathUtils.clamp(this.seatSurgeZ, -0.028, 0.028);
       } else {
         this.seatHeaveY = 0;
+        this.seatSurgeZ = 0;
       }
 
       const steeringCamOn = cabOptions?.steeringCameraEnabled ?? true;
@@ -187,7 +215,7 @@ export class CameraRig {
       const seatOffsetY = cabOptions?.seatOffsetY ?? 0;
       const seatOffsetZ = cabOptions?.seatOffsetZ ?? 0;
       const eyeY = 2.64 + seatOffsetY + heaveY;
-      const eyeZ = Math.max(1.48, 1.58 + seatOffsetZ);
+      const eyeZ = Math.max(1.48, 1.58 + seatOffsetZ + surgeZ);
 
       visuals.tractorRoot.updateMatrixWorld(true);
       this.tempVec.set(0.58, eyeY, eyeZ);
@@ -223,7 +251,7 @@ export class CameraRig {
     }
 
     if (mode === 2) {
-      // Third-person chase camera behind tractor & trailer (supports mouse-drag orbit & gentle auto-center)
+      // Third-person chase camera behind tractor & trailer (interpolated visuals + mouse-drag orbit)
       if (!this.isDragging && Math.abs(physics.speedMs) > 1.5) {
         const recenterAlpha = Math.min(1, dtSec * 1.4);
         this.chaseYawOffset += (0 - this.chaseYawOffset) * recenterAlpha;
@@ -231,10 +259,10 @@ export class CameraRig {
       }
 
       const backDist = physics.trailerAttached ? 17.5 : 10.5;
-      const fwdX = Math.sin(physics.yaw);
-      const fwdZ = Math.cos(physics.yaw);
-      const trFwdX = physics.trailerAttached ? Math.sin(physics.trailerYaw) : fwdX;
-      const trFwdZ = physics.trailerAttached ? Math.cos(physics.trailerYaw) : fwdZ;
+      const fwdX = Math.sin(tyaw);
+      const fwdZ = Math.cos(tyaw);
+      const trFwdX = physics.trailerAttached ? Math.sin(tryaw) : fwdX;
+      const trFwdZ = physics.trailerAttached ? Math.cos(tryaw) : fwdZ;
 
       const mixX = fwdX * 0.45 + trFwdX * 0.55;
       const mixZ = fwdZ * 0.45 + trFwdZ * 0.55;
@@ -250,14 +278,14 @@ export class CameraRig {
       const camHeight = Math.max(1.8, baseHeight + this.chasePitchOffset * 8.5);
 
       this.desiredPos.set(
-        physics.x - dirX * backDist,
-        physics.y + camHeight,
-        physics.z - dirZ * backDist
+        tx - dirX * backDist,
+        ty + camHeight,
+        tz - dirZ * backDist
       );
       this.desiredLook.set(
-        physics.x + fwdX * (Math.abs(this.chaseYawOffset) > 0.3 ? 1.5 : 8),
-        physics.y + 2.3,
-        physics.z + fwdZ * (Math.abs(this.chaseYawOffset) > 0.3 ? 1.5 : 8)
+        tx + fwdX * (Math.abs(this.chaseYawOffset) > 0.3 ? 1.5 : 8),
+        ty + 2.3,
+        tz + fwdZ * (Math.abs(this.chaseYawOffset) > 0.3 ? 1.5 : 8)
       );
 
       const targetFov = THREE.MathUtils.lerp(56, 65, THREE.MathUtils.clamp(absKmh / 100, 0, 1));
@@ -278,18 +306,18 @@ export class CameraRig {
     }
 
     if (mode === 5) {
-      // Overhead precision camera tracking tractor-trailer midpoint
-      const fwdX = Math.sin(physics.yaw);
-      const fwdZ = Math.cos(physics.yaw);
-      const cx = physics.trailerAttached ? (physics.x * 0.45 + physics.trailerX * 0.55) : physics.x;
-      const cz = physics.trailerAttached ? (physics.z * 0.45 + physics.trailerZ * 0.55) : physics.z;
+      // Overhead precision camera tracking interpolated tractor-trailer midpoint
+      const fwdX = Math.sin(tyaw);
+      const fwdZ = Math.cos(tyaw);
+      const cx = physics.trailerAttached ? (tx * 0.45 + trx * 0.55) : tx;
+      const cz = physics.trailerAttached ? (tz * 0.45 + trz * 0.55) : tz;
 
       this.desiredPos.set(
         cx - fwdX * 4.5,
-        physics.y + this.overheadHeight,
+        ty + this.overheadHeight,
         cz - fwdZ * 4.5
       );
-      this.desiredLook.set(cx + fwdX * 1.2, physics.y + 0.5, cz + fwdZ * 1.2);
+      this.desiredLook.set(cx + fwdX * 1.2, ty + 0.5, cz + fwdZ * 1.2);
 
       this.camera.fov += (52 - this.camera.fov) * Math.min(1, dtSec * 8);
       this.camera.updateProjectionMatrix();
@@ -314,15 +342,15 @@ export class CameraRig {
     this.desiredPos.copy(this.tempVec);
     if (physics.trailerAttached) {
       this.desiredLook.set(
-        physics.trailerX - Math.sin(physics.trailerYaw) * 6.5,
-        physics.trailerY + 1.2,
-        physics.trailerZ - Math.cos(physics.trailerYaw) * 6.5
+        trx - Math.sin(tryaw) * 6.5,
+        tryPos + 1.2,
+        trz - Math.cos(tryaw) * 6.5
       );
     } else {
       this.desiredLook.set(
-        physics.x - Math.sin(physics.yaw) * 7.5,
-        physics.y + 1.0,
-        physics.z - Math.cos(physics.yaw) * 7.5
+        tx - Math.sin(tyaw) * 7.5,
+        ty + 1.0,
+        tz - Math.cos(tyaw) * 7.5
       );
     }
 

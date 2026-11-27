@@ -1,6 +1,68 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist, StateStorage } from 'zustand/middleware';
 import { A2ExamLevelId, A2ExamStateSnapshot, A2LevelBestRecord } from '../exam/types';
+
+// Debounced localStorage wrapper so 60Hz driving progress never causes synchronous JSON serialization/disk stalls
+const debouncedLocalStorage: StateStorage = (() => {
+  let pendingKey: string | null = null;
+  let pendingVal: string | null = null;
+  let timerId: number | null = null;
+
+  const flush = () => {
+    if (timerId !== null) {
+      window.clearTimeout(timerId);
+      timerId = null;
+    }
+    if (pendingKey !== null && pendingVal !== null) {
+      try {
+        window.localStorage.setItem(pendingKey, pendingVal);
+      } catch {
+        // Ignore quota/private-browsing errors
+      }
+      pendingKey = null;
+      pendingVal = null;
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) flush();
+    });
+  }
+
+  return {
+    getItem: (name: string): string | null => {
+      try {
+        return window.localStorage.getItem(name);
+      } catch {
+        return null;
+      }
+    },
+    setItem: (name: string, value: string): void => {
+      pendingKey = name;
+      pendingVal = value;
+      if (timerId !== null) return;
+      timerId = window.setTimeout(flush, 2500);
+    },
+    removeItem: (name: string): void => {
+      if (pendingKey === name) {
+        pendingKey = null;
+        pendingVal = null;
+      }
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+        timerId = null;
+      }
+      try {
+        window.localStorage.removeItem(name);
+      } catch {
+        // Ignore errors
+      }
+    },
+  };
+})();
 
 export type QualityPreset = 'mobile_fast' | 'mobile_balanced' | 'pc_igpu' | 'high' | 'ultra';
 export type MobileSteeringStyle = 'wheel' | 'buttons';
@@ -489,6 +551,12 @@ interface GameStoreState extends PersistedCareerState {
   triggerSpeedCameraFlash: () => void;
   tickJobTimer: (dtSec: number) => void;
   addCareerDistance: (deltaKm: number) => void;
+  applyDrivingProgress: (opts: {
+    fuelBurned?: number;
+    distanceKm?: number;
+    fatigueDelta?: number;
+    jobTimerSec?: number;
+  }) => void;
   resetCareer: () => void;
 }
 
@@ -586,7 +654,7 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   showDrawCalls: true,
   cabMotionEnabled: true,
   mirrorsEnabled: INITIAL_SPEC.defaultMirrors,
-  mirrorDisplayMode: INITIAL_SPEC.defaultMirrors ? 'both' : 'off',
+  mirrorDisplayMode: INITIAL_SPEC.defaultMirrors ? 'right_only' : 'off',
   advisorDisplayMode: 'full',
   cabFovDeg: 68,
   seatOffsetZ: 0,
@@ -1051,8 +1119,41 @@ export const useGameStore = create<GameStoreState>()(
           telemetry: { ...s.telemetry, ...partial },
         })),
 
-      setNearbyInteraction: (nearbyInteraction) => set({ nearbyInteraction }),
-      setParkingGuide: (parkingGuide) => set({ parkingGuide }),
+      setNearbyInteraction: (nearbyInteraction) =>
+        set((s) => {
+          const prev = s.nearbyInteraction;
+          if (prev === nearbyInteraction) return s;
+          if (
+            prev &&
+            nearbyInteraction &&
+            prev.kind === nearbyInteraction.kind &&
+            prev.label === nearbyInteraction.label &&
+            prev.sublabel === nearbyInteraction.sublabel &&
+            prev.depotId === nearbyInteraction.depotId &&
+            prev.cityId === nearbyInteraction.cityId
+          ) {
+            return s;
+          }
+          return { nearbyInteraction };
+        }),
+      setParkingGuide: (parkingGuide) =>
+        set((s) => {
+          const prev = s.parkingGuide;
+          if (
+            prev.active === parkingGuide.active &&
+            prev.aligned === parkingGuide.aligned &&
+            prev.readyToDeliver === parkingGuide.readyToDeliver &&
+            prev.distanceMeters === parkingGuide.distanceMeters &&
+            prev.angleErrorDeg === parkingGuide.angleErrorDeg &&
+            prev.speedKmh === parkingGuide.speedKmh &&
+            prev.bayX === parkingGuide.bayX &&
+            prev.bayZ === parkingGuide.bayZ &&
+            prev.bayHeadingRad === parkingGuide.bayHeadingRad
+          ) {
+            return s;
+          }
+          return { parkingGuide };
+        }),
 
       pushNotification: (type, title, detail) =>
         set((s) => {
@@ -1092,6 +1193,33 @@ export const useGameStore = create<GameStoreState>()(
             : null,
         })),
 
+      applyDrivingProgress: ({ fuelBurned = 0, distanceKm = 0, fatigueDelta = 0, jobTimerSec = 0 }) =>
+        set((s) => {
+          if (fuelBurned <= 0 && distanceKm <= 0 && fatigueDelta <= 0 && jobTimerSec <= 0) {
+            return s;
+          }
+          const nextFuel = fuelBurned > 0 ? Math.max(0, s.fuelLiters - fuelBurned) : s.fuelLiters;
+          const nextDist = distanceKm > 0 ? s.totalDistanceKm + distanceKm : s.totalDistanceKm;
+          const nextFatigue =
+            fatigueDelta > 0
+              ? Math.min(100, Math.max(0, s.driverFatiguePct + fatigueDelta))
+              : s.driverFatiguePct;
+          const nextJob = s.activeJob
+            ? {
+                ...s.activeJob,
+                tripFuelUsedLiters: s.activeJob.tripFuelUsedLiters + fuelBurned,
+                tripDistanceKm: s.activeJob.tripDistanceKm + distanceKm,
+                remainingSeconds: Math.max(0, s.activeJob.remainingSeconds - jobTimerSec),
+              }
+            : null;
+          return {
+            fuelLiters: nextFuel,
+            totalDistanceKm: nextDist,
+            driverFatiguePct: nextFatigue,
+            activeJob: nextJob,
+          };
+        }),
+
       resetCareer: () =>
         set({
           ...INITIAL_PERSISTED,
@@ -1104,6 +1232,7 @@ export const useGameStore = create<GameStoreState>()(
     {
       name: 'eurohaul_save_v1',
       version: 6,
+      storage: createJSONStorage(() => debouncedLocalStorage),
       migrate: (persistedState) => {
         const st = (persistedState ?? {}) as Partial<PersistedCareerState>;
         const mirrorsEnabled = st.mirrorsEnabled ?? INITIAL_SPEC.defaultMirrors;

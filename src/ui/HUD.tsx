@@ -174,9 +174,15 @@ export function HUD({
   const repairTruckFull = useGameStore((s) => s.repairTruckFull);
 
   useEffect(() => {
+    const now = Date.now();
+    setNowMs(now);
+    const hasActiveFlash = now - speedCameraFlashAt < 600;
+    if (notifications.length === 0 && !hasActiveFlash) {
+      return;
+    }
     const id = window.setInterval(() => setNowMs(Date.now()), 300);
     return () => window.clearInterval(id);
-  }, []);
+  }, [notifications, speedCameraFlashAt]);
 
   const showFlash = nowMs - speedCameraFlashAt < 380;
   const visibleNotifs = notifications.filter((n) => nowMs - n.createdAt < 6500);
