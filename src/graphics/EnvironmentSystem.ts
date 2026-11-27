@@ -422,13 +422,13 @@ export class EnvironmentSystem {
     this.timeOfDayHours = (this.timeOfDayHours + dtSec * this.timeScaleHoursPerSec) % 24;
     this.skyMat.uniforms.uTime!.value = this.elapsedSec;
 
-    // Smooth weather cycle (auto shifts naturally across clear -> rain every ~3 minutes)
+    // Smooth weather cycle (auto shifts naturally across clear -> rain after clear startup period)
     const targetRain =
       this.weatherSetting === 'rain'
         ? 0.92
         : this.weatherSetting === 'clear'
         ? 0
-        : THREE.MathUtils.clamp(Math.sin(this.elapsedSec * 0.032 - 0.85) * 1.4, 0, 0.92);
+        : THREE.MathUtils.clamp(Math.sin(this.elapsedSec * 0.018 - 1.5) * 1.35, 0, 0.92);
     this.rainIntensity += (targetRain - this.rainIntensity) * Math.min(1, dtSec * 0.55);
 
     if (this.lightningFlashTimer > 0) {
@@ -500,7 +500,7 @@ export class EnvironmentSystem {
 
   private updateRainParticles(dtSec: number, fx: number, fy: number, fz: number): void {
     const activeCount = Math.floor(this.rainDropBudget * this.rainIntensity);
-    if (activeCount < 8 || this.rainIntensity < 0.06) {
+    if (activeCount < 8 || this.rainIntensity < 0.16) {
       this.rainLines.visible = false;
       return;
     }
@@ -629,7 +629,7 @@ export class EnvironmentSystem {
     this.zenithColor.copy(kfA.zenith).lerp(kfB.zenith, t);
     this.horizonColor.copy(kfA.horizon).lerp(kfB.horizon, t);
     if (this.rainIntensity > 0.01) {
-      const rainTint = this.rainIntensity * 0.62;
+      const rainTint = Math.min(0.82, Math.pow(this.rainIntensity, 0.65) * 0.78);
       this.zenithColor.lerp(this.overcastZenith, rainTint);
       this.horizonColor.lerp(this.overcastHorizon, rainTint);
     }

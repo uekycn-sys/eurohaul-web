@@ -187,7 +187,7 @@ export class CameraRig {
       const seatOffsetY = cabOptions?.seatOffsetY ?? 0;
       const seatOffsetZ = cabOptions?.seatOffsetZ ?? 0;
       const eyeY = 2.64 + seatOffsetY + heaveY;
-      const eyeZ = 1.58 + seatOffsetZ;
+      const eyeZ = Math.max(1.48, 1.58 + seatOffsetZ);
 
       visuals.tractorRoot.updateMatrixWorld(true);
       this.tempVec.set(0.58, eyeY, eyeZ);

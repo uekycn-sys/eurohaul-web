@@ -125,12 +125,18 @@ export class TrafficSystem {
 
     this.bodyInst = new THREE.InstancedMesh(bodyGeo, bodyMat, this.maxCapacity);
     this.bodyInst.castShadow = true;
+    this.bodyInst.frustumCulled = false;
     this.cabinInst = new THREE.InstancedMesh(cabinGeo, cabinMat, this.maxCapacity);
+    this.cabinInst.frustumCulled = false;
     this.semiTrailerInst = new THREE.InstancedMesh(semiTrailerGeo, semiTrailerMat, this.maxCapacity);
     this.semiTrailerInst.castShadow = true;
+    this.semiTrailerInst.frustumCulled = false;
     this.wheelInst = new THREE.InstancedMesh(wheelGeo, wheelMat, this.maxCapacity * 2);
+    this.wheelInst.frustumCulled = false;
     this.headlightInst = new THREE.InstancedMesh(lampGeo, this.headlightMat, this.maxCapacity * 2);
+    this.headlightInst.frustumCulled = false;
     this.taillightInst = new THREE.InstancedMesh(lampGeo, this.taillightMat, this.maxCapacity * 2);
+    this.taillightInst.frustumCulled = false;
 
     if (shadowTexture) {
       const shadowGeo = new THREE.PlaneGeometry(2.9, 5.8);
@@ -145,6 +151,7 @@ export class TrafficSystem {
         polygonOffsetUnits: -2,
       });
       this.shadowInst = new THREE.InstancedMesh(shadowGeo, shadowMat, this.maxCapacity);
+      this.shadowInst.frustumCulled = false;
       this.disposables.push(shadowGeo, shadowMat);
       builtMap.root.add(this.shadowInst);
     }
@@ -152,6 +159,7 @@ export class TrafficSystem {
     const [sx, , sz] = builtMap.manifest.defaultSpawnPosition;
     this.spawnAgents(this.maxCapacity, sx, sz, builtMap.manifest.defaultSpawnHeadingRad);
     this.setActiveCount(this.activeCount);
+    this.syncInstanceMatrices(false, false);
     builtMap.root.add(
       this.bodyInst,
       this.cabinInst,
@@ -409,10 +417,12 @@ export class TrafficSystem {
     const tx = tan.x / hLen;
     const tz = tan.z / hLen;
 
-    const targetLat = this.getLaneOffsetMeters(seg, agent.targetLaneSlot);
-    agent.lateralShift += (targetLat - agent.lateralShift) * Math.min(1, dtSec * 3.5);
-    if (Math.abs(targetLat - agent.lateralShift) < 0.2) {
-      agent.laneSlot = agent.targetLaneSlot;
+    if (agent.accidentTimerSec <= 0) {
+      const targetLat = this.getLaneOffsetMeters(seg, agent.targetLaneSlot);
+      agent.lateralShift += (targetLat - agent.lateralShift) * Math.min(1, dtSec * 3.5);
+      if (Math.abs(targetLat - agent.lateralShift) < 0.2) {
+        agent.laneSlot = agent.targetLaneSlot;
+      }
     }
 
     const rx = -tz * agent.dir;
@@ -450,11 +460,15 @@ export class TrafficSystem {
   private transitionNextSegment(agent: TrafficAgent, slotIndex: number): void {
     const arrivedNodeId = agent.dir === 1 ? agent.segment.def.toNodeId : agent.segment.def.fromNodeId;
     const connected = this.nodeConnections.get(arrivedNodeId) ?? [];
-    const options = connected.filter(
+    const arterialOptions = connected.filter(
       (s) => s.def.id !== agent.segment.def.id && s.def.roadClass !== 'urban'
     );
+    const anyOptions =
+      arterialOptions.length > 0
+        ? arterialOptions
+        : connected.filter((s) => s.def.id !== agent.segment.def.id);
     const nextSeg =
-      options.length > 0 ? options[Math.floor(Math.random() * options.length)]! : agent.segment;
+      anyOptions.length > 0 ? anyOptions[Math.floor(Math.random() * anyOptions.length)]! : agent.segment;
 
     if (nextSeg.def.fromNodeId === arrivedNodeId) {
       agent.segment = nextSeg;
@@ -566,8 +580,6 @@ export class TrafficSystem {
       }
 
       const isSemi = a.archetype === 'semi';
-      const scaleZ = isSemi ? 0.9 : a.archetype === 'van' ? 1.16 : 0.96;
-      const scaleY = isSemi ? 1.28 : a.archetype === 'van' ? 1.52 : 0.95;
       const frontHalf = isSemi ? 5.15 : a.archetype === 'van' ? 2.65 : 2.3;
       const stopDist = (a.speedMs * a.speedMs) / (2 * 5.5) + 8.0;
 
@@ -696,6 +708,8 @@ export class TrafficSystem {
             ];
 
         let maxPen = 0;
+        let bestCa: { x: number; z: number; r: number } | null = null;
+        let bestCp: { x: number; z: number } | null = null;
         for (let ac = 0; ac < aiCircles.length; ac++) {
           const cA = aiCircles[ac]!;
           for (let pc = 0; pc < playerCircles.length; pc++) {
@@ -703,22 +717,52 @@ export class TrafficSystem {
             const dist = Math.hypot(cA.x - cP.x, cA.z - cP.z);
             const minSep = cA.r + PLAYER_HULL_RADIUS;
             if (dist < minSep) {
-              maxPen = Math.max(maxPen, minSep - dist);
+              const pen = minSep - dist;
+              if (pen > maxPen) {
+                maxPen = pen;
+                bestCa = cA;
+                bestCp = cP;
+              }
             }
           }
         }
 
-        if (maxPen > 0) {
+        if (maxPen > 0 && bestCa && bestCp) {
           const relVx = aiFwdX * a.speedMs - pFwdX * playerSpeedMs;
           const relVz = aiFwdZ * a.speedMs - pFwdZ * playerSpeedMs;
           const relSpeedKmh = Math.hypot(relVx, relVz) * 3.6;
 
-          // Push AI cleanly out of overlap along spline so vehicles never stack or clip inside trailer
-          a.sMeters = THREE.MathUtils.clamp(
-            a.sMeters - a.dir * Math.max(maxPen + 0.9, 1.5),
-            2,
-            a.segment.lengthMeters - 2
-          );
+          // Push AI cleanly away from the player along impact direction so crashed vehicles remain visible
+          const sepX = bestCa.x - bestCp.x;
+          const sepZ = bestCa.z - bestCp.z;
+          const aiRightX = -aiFwdZ;
+          const aiRightZ = aiFwdX;
+          const alongFwd = sepX * aiFwdX + sepZ * aiFwdZ;
+          const alongRight = sepX * aiRightX + sepZ * aiRightZ;
+
+          if (Math.abs(alongFwd) >= Math.abs(alongRight) * 0.45) {
+            const pushSign = alongFwd >= 0 ? 1 : -1;
+            const pushDist = Math.min(maxPen + 0.35, 1.8);
+            a.sMeters = THREE.MathUtils.clamp(
+              a.sMeters + a.dir * pushSign * pushDist,
+              2,
+              a.segment.lengthMeters - 2
+            );
+          } else {
+            const latSign = alongRight >= 0 ? 1 : -1;
+            const latPush = Math.min(maxPen + 0.25, 1.4);
+            a.lateralShift = THREE.MathUtils.clamp(
+              a.lateralShift + latSign * latPush,
+              0.8,
+              a.segment.def.width * 0.46
+            );
+            const longSign = alongFwd >= 0 ? 1 : -1;
+            a.sMeters = THREE.MathUtils.clamp(
+              a.sMeters + a.dir * longSign * 0.35,
+              2,
+              a.segment.lengthMeters - 2
+            );
+          }
           a.speedMs = 0;
           a.accidentTimerSec = 3.5;
           this.syncAgentPose(a, dtSec);
@@ -737,6 +781,19 @@ export class TrafficSystem {
           }
         }
       }
+    }
+
+    this.syncInstanceMatrices(lightsOn, hazardFlashOn);
+    return collision;
+  }
+
+  private syncInstanceMatrices(lightsOn: boolean, hazardFlashOn: boolean): void {
+    for (let i = 0; i < this.activeCount; i++) {
+      const a = this.agents[i]!;
+      const isSemi = a.archetype === 'semi';
+      const scaleZ = isSemi ? 0.9 : a.archetype === 'van' ? 1.16 : 0.96;
+      const scaleY = isSemi ? 1.28 : a.archetype === 'van' ? 1.52 : 0.95;
+      const frontHalf = isSemi ? 5.15 : a.archetype === 'van' ? 2.65 : 2.3;
 
       // 5. Update instanced matrices with exact road pitch & independent semi-trailer articulation
       const updatedFwdX = Math.sin(a.yaw);
@@ -862,7 +919,6 @@ export class TrafficSystem {
     if (this.shadowInst) {
       this.shadowInst.instanceMatrix.needsUpdate = true;
     }
-    return collision;
   }
 
   public dispose(): void {

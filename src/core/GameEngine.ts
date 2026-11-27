@@ -881,7 +881,7 @@ export class GameEngine {
     this.truckVisuals.updateWipers(this.elapsedSec, this.wipersMode);
     const isPlayingActive = store.gamePhase === 'playing' && store.activeModal === 'none';
     const isCabRainVisible =
-      isPlayingActive && store.cameraMode === 1 && this.env.rainIntensity > 0.05;
+      isPlayingActive && store.cameraMode === 1 && this.env.rainIntensity >= 0.16;
     this.truckVisuals.updateInteriorDetails({
       dtSec: frameDtSec,
       leftBlinker: this.physics.leftBlinker || this.physics.hazardLights,
@@ -893,6 +893,7 @@ export class GameEngine {
       cabLightOn: this.physics.cabLightOn,
       trailerAttached: this.physics.trailerAttached,
       showRainGlass: isCabRainVisible,
+      rainIntensity: this.env.rainIntensity,
       showCabPendant: store.showCabPendant,
     });
     if (isPlayingActive && store.cameraMode === 1) {
@@ -1061,7 +1062,7 @@ export class GameEngine {
 
         if (renderLeft) {
           this.lastLeftMirrorMs = nowMs;
-          this.tempVecA.set(1.87, 2.48, 2.45);
+          this.tempVecA.set(1.87, 2.65, 2.45);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
           this.tempVecB.set(1.65, 1.95, -22);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
@@ -1074,7 +1075,7 @@ export class GameEngine {
           this.renderer.render(this.scene, this.leftMirrorCam);
         } else {
           this.lastRightMirrorMs = nowMs;
-          this.tempVecA.set(-1.87, 2.48, 2.45);
+          this.tempVecA.set(-1.87, 2.65, 2.45);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
           this.tempVecB.set(-1.65, 1.95, -22);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
@@ -1256,6 +1257,12 @@ export class GameEngine {
         );
 
         const impact = this.physics.lastCollision ?? trafficCollision;
+        if (trafficCollision) {
+          this.physics.speedMs *= Math.max(
+            0.35,
+            1 - Math.min(0.65, trafficCollision.impactSpeedKmh / 95)
+          );
+        }
         if (impact) {
           const dmg = Math.min(18, Math.max(1.5, impact.impactSpeedKmh * 0.25));
           store.damageTruck(dmg);

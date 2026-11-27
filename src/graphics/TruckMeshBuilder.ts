@@ -29,6 +29,7 @@ export interface TruckVisualRefs {
     cabLightOn: boolean;
     trailerAttached: boolean;
     showRainGlass: boolean;
+    rainIntensity?: number;
     showCabPendant?: boolean;
   }) => void;
   getWiperAngle: () => number;
@@ -730,8 +731,8 @@ export class TruckMeshBuilder {
 
     // European aerodynamic twin-arm vertical side mirrors with 1:1 main mirror + wide-angle blindspot mirror (0 extra RT)
     const mirrorArmGeo = new THREE.BoxGeometry(0.24, 0.022, 0.028);
-    const mirrorHousingGeo = new THREE.BoxGeometry(0.23, 0.42, 0.11);
-    const mirrorCapGeo = new THREE.BoxGeometry(0.22, 0.40, 0.035);
+    const mirrorHousingGeo = new THREE.BoxGeometry(0.23, 0.40, 0.11);
+    const mirrorCapGeo = new THREE.BoxGeometry(0.22, 0.38, 0.035);
     const blindMirrorGeo = new THREE.BoxGeometry(0.22, 0.16, 0.09);
 
     const makeDoorMirrorGeo = (w: number, h: number, uMin: number, uMax: number) => {
@@ -743,8 +744,8 @@ export class TruckMeshBuilder {
       uvAttr.needsUpdate = true;
       return geo;
     };
-    const leftMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.38, 0.46, 0.81);
-    const rightMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.38, 0.19, 0.54);
+    const leftMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.36, 0.46, 0.81);
+    const rightMirrorGlassGeo = makeDoorMirrorGeo(0.21, 0.36, 0.19, 0.54);
     const leftBlindGlassGeo = makeDoorMirrorGeo(0.20, 0.14, 0.12, 0.96);
     const rightBlindGlassGeo = makeDoorMirrorGeo(0.20, 0.14, 0.04, 0.88);
     const leftDoorMirrorMat = new THREE.MeshBasicMaterial({ color: '#e0f2fe' });
@@ -754,34 +755,34 @@ export class TruckMeshBuilder {
     for (const side of [-1, 1]) {
       cabBatcher.add(metalMat, mirrorArmGeo, {
         x: side * 1.32,
-        y: 2.71,
+        y: 2.93,
         z: 2.84,
-        rotZ: side * -0.15,
+        rotZ: side * -0.12,
         colorHex: '#94a3b8',
       });
       cabBatcher.add(metalMat, mirrorArmGeo, {
         x: side * 1.32,
-        y: 2.34,
+        y: 2.53,
         z: 2.82,
-        rotZ: side * 0.16,
+        rotZ: side * 0.14,
         colorHex: '#94a3b8',
       });
       cabBatcher.add(darkChassisMat, mirrorHousingGeo, {
         x: side * 1.44,
-        y: 2.54,
+        y: 2.76,
         z: 2.84,
         rotY: side * -0.1,
         colorHex: '#1e2634',
       });
       cabBatcher.add(paintMat, mirrorCapGeo, {
         x: side * 1.44,
-        y: 2.54,
+        y: 2.76,
         z: 2.89,
         rotY: side * -0.1,
       });
       cabBatcher.add(darkChassisMat, blindMirrorGeo, {
         x: side * 1.44,
-        y: 2.21,
+        y: 2.46,
         z: 2.83,
         rotY: side * -0.12,
         colorHex: '#1e2634',
@@ -791,7 +792,7 @@ export class TruckMeshBuilder {
         side > 0 ? leftMirrorGlassGeo : rightMirrorGlassGeo,
         side > 0 ? leftDoorMirrorMat : rightDoorMirrorMat
       );
-      mirrorMesh.position.set(side * 1.44, 2.54, 2.782);
+      mirrorMesh.position.set(side * 1.44, 2.76, 2.782);
       mirrorMesh.rotation.y = Math.PI + side * -0.1;
       mirrorMesh.layers.set(1);
       cabSuspensionGroup.add(mirrorMesh);
@@ -800,7 +801,7 @@ export class TruckMeshBuilder {
         side > 0 ? leftBlindGlassGeo : rightBlindGlassGeo,
         side > 0 ? leftDoorMirrorMat : rightDoorMirrorMat
       );
-      blindMesh.position.set(side * 1.44, 2.21, 2.782);
+      blindMesh.position.set(side * 1.44, 2.46, 2.782);
       blindMesh.rotation.y = Math.PI + side * -0.12;
       blindMesh.layers.set(1);
       cabSuspensionGroup.add(blindMesh);
@@ -937,17 +938,25 @@ export class TruckMeshBuilder {
     gpsGroup.add(gpsBezel, gpsMesh);
     cabSuspensionGroup.add(gpsGroup);
 
-    // Driver & Passenger seats (batched, Layer 1)
-    const seatGeo = new THREE.BoxGeometry(0.56, 0.92, 0.48);
+    // Driver & Passenger seats (batched, Layer 1 — driver backrest omitted so cab eye never clips seat)
+    const seatCushionGeo = new THREE.BoxGeometry(0.54, 0.16, 0.46);
+    const seatBackGeo = new THREE.BoxGeometry(0.52, 0.72, 0.12);
     for (const sx of [-0.58, 0.58]) {
-      cabBatcher.add(cabInteriorMat, seatGeo, {
+      cabBatcher.add(cabInteriorMat, seatCushionGeo, {
         x: sx,
-        y: 2.12,
-        z: 1.72,
+        y: 1.90,
+        z: 1.74,
         colorHex: '#4c586b',
         layer: 1,
       });
     }
+    cabBatcher.add(cabInteriorMat, seatBackGeo, {
+      x: -0.58,
+      y: 2.34,
+      z: 1.50,
+      colorHex: '#4c586b',
+      layer: 1,
+    });
 
     // 4-Spoke European Multi-Function Steering Wheel (LHD on +X = 0.58, Layer 1)
     // Positive rotation.x tilts top rim forward toward windshield so dashboard is 100% unobstructed!
@@ -1577,7 +1586,8 @@ export class TruckMeshBuilder {
       gpsBezelGeo,
       gpsGeo,
       gpsMat,
-      seatGeo,
+      seatCushionGeo,
+      seatBackGeo,
       steeringColumnGeo,
       rimTorusGeo,
       spokeGeo,
@@ -1695,6 +1705,7 @@ export class TruckMeshBuilder {
       cabLightOn: boolean;
       trailerAttached: boolean;
       showRainGlass: boolean;
+      rainIntensity?: number;
       showCabPendant?: boolean;
     }): void => {
       cabPendantPivot.visible = opts.showCabPendant ?? true;
@@ -1726,7 +1737,9 @@ export class TruckMeshBuilder {
       suzieCoilsGroup.scale.z = opts.trailerAttached ? 1.0 : 0.28;
       suzieCoilsGroup.position.y = opts.trailerAttached ? 1.92 : 1.72;
 
-      rainGlassMesh.visible = opts.showRainGlass;
+      const rainAlpha = THREE.MathUtils.clamp(((opts.rainIntensity ?? 0) - 0.16) / 0.55, 0, 1);
+      rainGlassMat.opacity = rainAlpha * 0.68;
+      rainGlassMesh.visible = opts.showRainGlass && rainAlpha > 0.01;
     };
 
     const getWiperAngle = (): number => wiperPivots[0]?.rotation.z ?? -0.02;
