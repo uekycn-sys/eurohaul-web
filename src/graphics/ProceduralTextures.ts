@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { QualityPreset } from '../store/useGameStore';
+import { QualityPreset, WipersMode } from '../store/useGameStore';
 
 export interface PbrTextureSet {
   map: THREE.CanvasTexture;
@@ -50,6 +50,13 @@ export class ProceduralTextures {
   private gpsCtx: CanvasRenderingContext2D | null = null;
   private gpsTexture: THREE.CanvasTexture | null = null;
   private lastGpsKey = '';
+
+  private rainCanvas: HTMLCanvasElement | null = null;
+  private rainCtx: CanvasRenderingContext2D | null = null;
+  private rainTexture: THREE.CanvasTexture | null = null;
+  private rainAccumSec = 0;
+  private prevWiperAngle = -0.02;
+  private readonly rainDrops: { x: number; y: number; r: number; vy: number }[] = [];
 
   public configureQuality(preset: QualityPreset): void {
     this.anisotropy =
@@ -1340,6 +1347,244 @@ export class ProceduralTextures {
     return tex;
   }
 
+  public getExitCountdownTexture(meters: 300 | 200 | 100): THREE.CanvasTexture {
+    const key = `exit_countdown_${meters}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, 128, 256);
+    ctx.strokeStyle = '#1d4ed8';
+    ctx.lineWidth = 8;
+    ctx.strokeRect(4, 4, 120, 248);
+
+    ctx.fillStyle = '#1d4ed8';
+    ctx.fillRect(10, 14, 108, 44);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 26px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${meters}m`, 64, 37);
+
+    const stripes = meters === 300 ? 3 : meters === 200 ? 2 : 1;
+    ctx.fillStyle = '#1d4ed8';
+    for (let i = 0; i < stripes; i++) {
+      const y = 84 + i * 52;
+      ctx.beginPath();
+      ctx.moveTo(16, y + 26);
+      ctx.lineTo(112, y);
+      ctx.lineTo(112, y + 24);
+      ctx.lineTo(16, y + 50);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getCurveChevronTexture(): THREE.CanvasTexture {
+    const key = 'alpine_curve_chevron';
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 256, 128);
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(4, 4, 248, 120);
+
+    ctx.fillStyle = '#facc15';
+    for (const bx of [32, 104, 176]) {
+      ctx.beginPath();
+      ctx.moveTo(bx, 18);
+      ctx.lineTo(bx + 36, 64);
+      ctx.lineTo(bx, 110);
+      ctx.lineTo(bx + 26, 110);
+      ctx.lineTo(bx + 62, 64);
+      ctx.lineTo(bx + 26, 18);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getCityWelcomeSignTexture(cityLabel: string, country: string): THREE.CanvasTexture {
+    const key = `city_welcome_${cityLabel}_${country}`;
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d')!;
+
+    const isAustria = country.includes('奥地利');
+    ctx.fillStyle = isAustria ? '#f8fafc' : '#facc15';
+    ctx.fillRect(0, 0, 256, 128);
+    ctx.strokeStyle = isAustria ? '#1d4ed8' : '#0f172a';
+    ctx.lineWidth = 10;
+    ctx.strokeRect(7, 7, 242, 114);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 34px Inter, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(cityLabel, 128, 54);
+
+    ctx.fillStyle = isAustria ? '#1d4ed8' : '#334155';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText(isAustria ? 'ÖSTERREICH · TIROL' : 'DEUTSCHLAND', 128, 94);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.anisotropy;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getSoftParticleTexture(): THREE.CanvasTexture {
+    const key = 'soft_spray_particle';
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d')!;
+    const grad = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+    grad.addColorStop(0, 'rgba(226, 232, 240, 0.85)');
+    grad.addColorStop(0.5, 'rgba(203, 213, 225, 0.35)');
+    grad.addColorStop(1, 'rgba(203, 213, 225, 0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 64, 64);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.cache.set(key, tex);
+    return tex;
+  }
+
+  public getWindshieldRainTexture(): THREE.CanvasTexture {
+    if (this.rainTexture) return this.rainTexture;
+    this.rainCanvas = document.createElement('canvas');
+    this.rainCanvas.width = 256;
+    this.rainCanvas.height = 128;
+    this.rainCtx = this.rainCanvas.getContext('2d')!;
+    this.rainTexture = new THREE.CanvasTexture(this.rainCanvas);
+    this.rainTexture.colorSpace = THREE.SRGBColorSpace;
+    return this.rainTexture;
+  }
+
+  public updateWindshieldRain(
+    dtSec: number,
+    rainIntensity: number,
+    wiperAngleRad: number,
+    wipersMode: WipersMode
+  ): void {
+    if (!this.rainCtx || !this.rainTexture) return;
+    if (rainIntensity < 0.05) {
+      if (this.rainDrops.length > 0) {
+        this.rainDrops.length = 0;
+        this.rainCtx.clearRect(0, 0, 256, 128);
+        this.rainTexture.needsUpdate = true;
+      }
+      this.prevWiperAngle = wiperAngleRad;
+      return;
+    }
+
+    // Spawn raindrops proportional to rain intensity (max ~95 active drops)
+    const maxDrops = Math.round(18 + rainIntensity * 77);
+    const spawnBudget = rainIntensity * 110 * dtSec;
+    const spawnCount = Math.floor(spawnBudget) + (Math.random() < spawnBudget % 1 ? 1 : 0);
+    for (let i = 0; i < spawnCount && this.rainDrops.length < maxDrops; i++) {
+      this.rainDrops.push({
+        x: Math.random() * 256,
+        y: Math.random() * 124,
+        r: 1.4 + Math.random() * 2.2,
+        vy: 5 + Math.random() * 11,
+      });
+    }
+
+    // Advance & wipe drops in the swept wiper arc
+    const minAng = Math.min(this.prevWiperAngle, wiperAngleRad) - 0.08;
+    const maxAng = Math.max(this.prevWiperAngle, wiperAngleRad) + 0.08;
+    const wiperSweeping = wipersMode > 0 && Math.abs(wiperAngleRad - this.prevWiperAngle) > 0.002;
+
+    // Two wiper pivots in windshield local coordinates (2.24m x 1.18m centered at y=2.62)
+    // u = (1.12 - worldX) / 2.24, v = (3.21 - worldY) / 1.18
+    const pivotYs = 128; // y=2.03 -> bottom edge
+    const pivotXs = [((1.12 - 0.52) / 2.24) * 256, ((1.12 - -0.18) / 2.24) * 256];
+    const bladeRadiusPx = (0.76 / 1.18) * 128;
+
+    for (let i = this.rainDrops.length - 1; i >= 0; i--) {
+      const d = this.rainDrops[i]!;
+      d.y += d.vy * dtSec;
+      if (d.y > 128) {
+        this.rainDrops.splice(i, 1);
+        continue;
+      }
+
+      if (wiperSweeping) {
+        let wiped = false;
+        for (let p = 0; p < 2; p++) {
+          const dx = d.x - pivotXs[p]!; // +dx points right (-worldX)
+          const dy = pivotYs - d.y; // +dy points up (+worldY)
+          const dist = Math.hypot(dx, dy);
+          if (dist >= 16 && dist <= bladeRadiusPx) {
+            const bladeTheta = -Math.atan2(dy, dx); // matches pivot.rotation.z in [-1.5..-0.02]
+            if (bladeTheta >= minAng && bladeTheta <= maxAng) {
+              wiped = true;
+              break;
+            }
+          }
+        }
+        if (wiped) {
+          this.rainDrops.splice(i, 1);
+        }
+      }
+    }
+    this.prevWiperAngle = wiperAngleRad;
+
+    this.rainAccumSec += dtSec;
+    if (this.rainAccumSec < 0.05) return;
+    this.rainAccumSec = 0;
+
+    const ctx = this.rainCtx;
+    ctx.clearRect(0, 0, 256, 128);
+    for (let i = 0; i < this.rainDrops.length; i++) {
+      const d = this.rainDrops[i]!;
+      ctx.fillStyle = 'rgba(203, 213, 225, 0.42)';
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+      ctx.beginPath();
+      ctx.arc(d.x - d.r * 0.3, d.y - d.r * 0.3, Math.max(0.6, d.r * 0.35), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    this.rainTexture.needsUpdate = true;
+  }
+
   public dispose(): void {
     for (const tex of this.cache.values()) {
       tex.dispose();
@@ -1349,5 +1594,7 @@ export class ProceduralTextures {
     this.dashTexture = null;
     this.gpsTexture?.dispose();
     this.gpsTexture = null;
+    this.rainTexture?.dispose();
+    this.rainTexture = null;
   }
 }

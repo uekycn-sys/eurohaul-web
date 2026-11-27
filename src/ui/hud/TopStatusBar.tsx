@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import {
   ClipboardList,
+  LifeBuoy,
   Map as MapIcon,
   Package,
   RotateCcw,
@@ -186,6 +187,16 @@ export const TopStatusBar = memo(function TopStatusBar({
             >
               <MapIcon className="h-3.5 w-3.5 shrink-0" />
               <span className="hidden sm:inline">地图</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveModal('rescue')}
+              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-xl border border-rose-500/40 bg-slate-900/85 px-2.5 py-1.5 text-xs font-semibold text-rose-300 backdrop-blur-md hover:bg-rose-500/20"
+              title="道路救援拖车 [F7]"
+            >
+              <LifeBuoy className="h-3.5 w-3.5 shrink-0" />
+              <span className="hidden md:inline">救援 F7</span>
             </button>
           </>
         )}

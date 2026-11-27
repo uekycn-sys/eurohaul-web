@@ -21,6 +21,8 @@ export interface NavigationGuidance {
   distanceMeters: number;
   etaSeconds: number;
   instruction: string;
+  nextTurnDir: 'straight' | 'left' | 'right' | 'arrive';
+  nextTurnDistMeters: number | null;
   routePoints: RoutePoint[];
 }
 
@@ -166,6 +168,8 @@ export class NavigationSystem {
         distanceMeters: d,
         etaSeconds: d / 17,
         instruction: '自由驾驶模式 · 前往货场按 Enter 接单',
+        nextTurnDir: 'straight',
+        nextTurnDistMeters: null,
         routePoints: [],
       };
     }
@@ -194,29 +198,71 @@ export class NavigationSystem {
       );
     }
 
-    // Look ahead ~70m along route to compute turn hint
-    const lookIdx = Math.min(route.points.length - 1, bestIdx + 4);
-    const targetPt = route.points[lookIdx]!;
-    const dx = targetPt.x - truckX;
-    const dz = targetPt.z - truckZ;
-    const targetBearing = Math.atan2(dx, dz);
-    let relAngle = targetBearing - truckYaw;
-    while (relAngle > Math.PI) relAngle -= Math.PI * 2;
-    while (relAngle < -Math.PI) relAngle += Math.PI * 2;
+    // Look ahead along route to detect upcoming significant turn and its exact distance
+    let nextTurnDir: 'straight' | 'left' | 'right' | 'arrive' = 'straight';
+    let nextTurnDistMeters: number | null = null;
+
+    if (remaining < 140) {
+      nextTurnDir = 'arrive';
+      nextTurnDistMeters = Math.round(remaining);
+    } else {
+      let accumDist = Math.hypot(
+        route.points[bestIdx]!.x - truckX,
+        route.points[bestIdx]!.z - truckZ
+      );
+      let prevSegBearing: number | null = null;
+      for (let i = bestIdx + 1; i < route.points.length && accumDist < 650; i++) {
+        const pA = route.points[i - 1]!;
+        const pB = route.points[i]!;
+        const segLen = Math.hypot(pB.x - pA.x, pB.z - pA.z);
+        if (segLen < 1.5) continue;
+        const bearing = Math.atan2(pB.x - pA.x, pB.z - pA.z);
+        if (prevSegBearing !== null) {
+          let dYaw = bearing - prevSegBearing;
+          while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+          while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+          if (Math.abs(dYaw) > 0.48) {
+            nextTurnDir = dYaw > 0 ? 'left' : 'right';
+            nextTurnDistMeters = Math.max(10, Math.round(accumDist));
+            break;
+          }
+        }
+        prevSegBearing = bearing;
+        accumDist += segLen;
+      }
+    }
 
     let instruction = '沿主路直行';
-    if (remaining < 130) {
+    if (nextTurnDir === 'arrive') {
       instruction = '即将抵达目的地货场，注意减速入库';
-    } else if (relAngle > 0.42) {
-      instruction = '前方路口向左转向';
-    } else if (relAngle < -0.42) {
-      instruction = '前方路口向右转向';
+    } else if (nextTurnDir === 'left') {
+      instruction = `${nextTurnDistMeters ?? 80}m 后前方左转`;
+    } else if (nextTurnDir === 'right') {
+      instruction = `${nextTurnDistMeters ?? 80}m 后前方右转`;
+    } else {
+      const lookIdx = Math.min(route.points.length - 1, bestIdx + 4);
+      const targetPt = route.points[lookIdx]!;
+      const targetBearing = Math.atan2(targetPt.x - truckX, targetPt.z - truckZ);
+      let relAngle = targetBearing - truckYaw;
+      while (relAngle > Math.PI) relAngle -= Math.PI * 2;
+      while (relAngle < -Math.PI) relAngle += Math.PI * 2;
+      if (relAngle > 0.42) {
+        nextTurnDir = 'left';
+        nextTurnDistMeters = 70;
+        instruction = '前方路口向左转向';
+      } else if (relAngle < -0.42) {
+        nextTurnDir = 'right';
+        nextTurnDistMeters = 70;
+        instruction = '前方路口向右转向';
+      }
     }
 
     return {
       distanceMeters: remaining,
       etaSeconds: remaining / 18.5,
       instruction,
+      nextTurnDir,
+      nextTurnDistMeters,
       routePoints: route.points.slice(bestIdx),
     };
   }

@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   CloudRain,
   Gauge,
+  LifeBuoy,
   Moon,
   Sun,
   Volume2,
@@ -18,6 +19,12 @@ import {
 interface SettingsAndSummaryModalsProps {
   onRefreshJobs: () => void;
   onSetTimeOfDay: (hours: number) => void;
+  onRoadsideRescue: () => void;
+  getNearestStation: () => {
+    name: string;
+    cityName: string;
+    distanceKm: number;
+  } | null;
 }
 
 const PRESET_ORDER: QualityPreset[] = [
@@ -31,6 +38,8 @@ const PRESET_ORDER: QualityPreset[] = [
 export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
   onRefreshJobs,
   onSetTimeOfDay,
+  onRoadsideRescue,
+  getNearestStation,
 }: SettingsAndSummaryModalsProps) {
   const activeModal = useGameStore((s) => s.activeModal);
   const setActiveModal = useGameStore((s) => s.setActiveModal);
@@ -53,6 +62,10 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
   const setRealisticSteeringReturn = useGameStore((s) => s.setRealisticSteeringReturn);
   const examVoiceEnabled = useGameStore((s) => s.examVoiceEnabled);
   const setExamVoiceEnabled = useGameStore((s) => s.setExamVoiceEnabled);
+  const fatigueEnabled = useGameStore((s) => s.fatigueEnabled);
+  const setFatigueEnabled = useGameStore((s) => s.setFatigueEnabled);
+  const fuelLiters = useGameStore((s) => s.fuelLiters);
+  const moneyEur = useGameStore((s) => s.moneyEur);
   const mobileControlsEnabled = useGameStore((s) => s.mobileControlsEnabled);
   const setMobileControlsEnabled = useGameStore((s) => s.setMobileControlsEnabled);
   const mobileSteeringStyle = useGameStore((s) => s.mobileSteeringStyle);
@@ -211,6 +224,19 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
               </div>
 
               <div className="flex items-center justify-between">
+                <span className="text-slate-300">欧盟行车记录仪 (驾驶疲劳提醒 · R 休息)</span>
+                <button
+                  type="button"
+                  onClick={() => setFatigueEnabled(!fatigueEnabled)}
+                  className={`rounded-lg px-3 py-1 font-semibold ${
+                    fatigueEnabled ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  {fatigueEnabled ? '柔和启用' : '已关闭'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
                 <span className="text-slate-300">A2 考场中文语音播报</span>
                 <button
                   type="button"
@@ -346,6 +372,69 @@ export const SettingsAndSummaryModals = memo(function SettingsAndSummaryModals({
           </div>
         </div>
       )}
+
+      {activeModal === 'rescue' && (() => {
+        const nearest = getNearestStation();
+        const rescueCost = Math.min(moneyEur, 450);
+        return (
+          <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-rose-500/45 bg-slate-900 p-6 shadow-2xl">
+              <div className="flex items-center gap-3 text-rose-400">
+                <LifeBuoy className="h-8 w-8" />
+                <div>
+                  <h2 className="text-xl font-bold text-white">F7 紧急道路救援</h2>
+                  <p className="text-xs text-slate-400">
+                    欧陆道路清障拖车服务 · 摆正牵引车与半挂车
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2 rounded-xl border border-slate-800 bg-slate-950/65 p-4 text-xs">
+                <div className="flex justify-between text-slate-300">
+                  <span>拖车目的地</span>
+                  <span className="font-semibold text-sky-300">
+                    {nearest ? nearest.name : '最近城市服务站'}
+                  </span>
+                </div>
+                {nearest && (
+                  <div className="flex justify-between text-slate-400">
+                    <span>所属城市 / 直线距离</span>
+                    <span className="font-mono">
+                      {nearest.cityName} · {nearest.distanceKm} km
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between text-slate-300">
+                  <span>救援拖车费用</span>
+                  <span className="font-mono font-bold text-amber-300">€{rescueCost}</span>
+                </div>
+                {fuelLiters < 40 && (
+                  <div className="rounded-lg bg-emerald-500/15 px-2.5 py-1.5 text-[11px] font-medium text-emerald-300">
+                    检测到油量较低 ({Math.round(fuelLiters)}L)，拖车完成后免费附赠 80L 应急柴油！
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-5 flex gap-3">
+                <button
+                  type="button"
+                  onClick={onRoadsideRescue}
+                  className="flex-1 rounded-xl bg-rose-600 py-2.5 text-sm font-bold text-white hover:bg-rose-500"
+                >
+                  确认呼叫救援 (-€{rescueCost})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveModal('none')}
+                  className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-700"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {activeModal === 'delivery_summary' && lastDeliveryResult && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">

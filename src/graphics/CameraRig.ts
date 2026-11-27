@@ -22,9 +22,14 @@ export class CameraRig {
 
   private orbitYaw = 0.65;
   private orbitPitch = 0.28;
+  private chaseYawOffset = 0;
+  private chasePitchOffset = 0;
   private overheadHeight = 24;
   private cabLookYaw = 0;
   private cabLookPitch = 0;
+  private quickLookYaw = 0;
+  private lastMode: CameraMode = 1;
+  private isMenuMode = false;
   private isDragging = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
@@ -52,6 +57,8 @@ export class CameraRig {
   public resetCabLook(): void {
     this.cabLookYaw = 0;
     this.cabLookPitch = 0;
+    this.chaseYawOffset = 0;
+    this.chasePitchOffset = 0;
   }
 
   private readonly onDoubleClick = (): void => {
@@ -70,11 +77,17 @@ export class CameraRig {
     const dy = e.clientY - this.lastPointerY;
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
-    this.orbitYaw -= dx * 0.006;
-    this.orbitPitch = THREE.MathUtils.clamp(this.orbitPitch + dy * 0.004, 0.08, 1.05);
-    // First-person cab head look (clamp comfortably to left/right side windows)
-    this.cabLookYaw = THREE.MathUtils.clamp(this.cabLookYaw - dx * 0.005, -1.25, 1.25);
-    this.cabLookPitch = THREE.MathUtils.clamp(this.cabLookPitch - dy * 0.0035, -0.35, 0.32);
+    if (this.isMenuMode || this.lastMode === 4) {
+      this.orbitYaw -= dx * 0.006;
+      this.orbitPitch = THREE.MathUtils.clamp(this.orbitPitch + dy * 0.004, 0.08, 1.05);
+    } else if (this.lastMode === 2) {
+      this.chaseYawOffset = THREE.MathUtils.clamp(this.chaseYawOffset - dx * 0.006, -2.4, 2.4);
+      this.chasePitchOffset = THREE.MathUtils.clamp(this.chasePitchOffset + dy * 0.004, -0.18, 0.62);
+    } else if (this.lastMode === 1) {
+      // First-person cab head look (clamp comfortably to left/right side windows)
+      this.cabLookYaw = THREE.MathUtils.clamp(this.cabLookYaw - dx * 0.005, -1.25, 1.25);
+      this.cabLookPitch = THREE.MathUtils.clamp(this.cabLookPitch - dy * 0.0035, -0.35, 0.32);
+    }
   };
 
   private readonly onPointerUp = (): void => {
@@ -87,8 +100,11 @@ export class CameraRig {
     physics: TruckPhysics,
     visuals: TruckVisualRefs,
     isMenu: boolean,
-    cabMotionEnabled = true
+    cabMotionEnabled = true,
+    quickLookDir: -1 | 0 | 1 = 0
   ): void {
+    this.lastMode = mode;
+    this.isMenuMode = isMenu;
     const absKmh = Math.abs(physics.speedMs) * 3.6;
 
     if (isMenu || mode === 4) {
@@ -146,18 +162,22 @@ export class CameraRig {
       }
 
       const steerAlpha = 1 - Math.exp(-7.5 * safeDt);
-      this.smoothLookSteer += (physics.steerAngleRad * 4.5 - this.smoothLookSteer) * steerAlpha;
+      const speedLookScale = THREE.MathUtils.clamp(absKmh / 35, 0, 1);
+      this.smoothLookSteer +=
+        (physics.steerAngleRad * 3.8 * speedLookScale - this.smoothLookSteer) * steerAlpha;
+      this.quickLookYaw += (quickLookDir * 0.68 - this.quickLookYaw) * (1 - Math.exp(-12 * safeDt));
 
       visuals.tractorRoot.updateMatrixWorld(true);
       this.tempVec.set(0.58, 2.57 + heaveY, 1.74);
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
       this.desiredPos.copy(this.tempVec);
 
-      const headYawSin = Math.sin(this.cabLookYaw);
-      const headYawCos = Math.cos(this.cabLookYaw);
+      const totalHeadYaw = THREE.MathUtils.clamp(this.cabLookYaw + this.quickLookYaw, -1.35, 1.35);
+      const headYawSin = Math.sin(totalHeadYaw);
+      const headYawCos = Math.cos(totalHeadYaw);
       this.tempVec.set(
         0.58 + this.smoothLookSteer * headYawCos + headYawSin * 20,
-        2.40 + heaveY * 0.35 + this.cabLookPitch * 14,
+        2.4 + heaveY * 0.35 + this.cabLookPitch * 14,
         1.74 + headYawCos * 20.3
       );
       visuals.cabSuspensionGroup.localToWorld(this.tempVec);
@@ -167,7 +187,7 @@ export class CameraRig {
       this.currentLook.copy(this.desiredLook);
       this.initialized = true;
       const fovAlpha = 1 - Math.exp(-8 * safeDt);
-      this.camera.fov += (64 - this.camera.fov) * fovAlpha;
+      this.camera.fov += (67 - this.camera.fov) * fovAlpha;
       this.camera.updateProjectionMatrix();
       this.camera.position.copy(this.currentPos);
       this.camera.lookAt(this.currentLook);
@@ -175,7 +195,13 @@ export class CameraRig {
     }
 
     if (mode === 2) {
-      // Third-person chase camera behind tractor & trailer
+      // Third-person chase camera behind tractor & trailer (supports mouse-drag orbit & gentle auto-center)
+      if (!this.isDragging && Math.abs(physics.speedMs) > 1.5) {
+        const recenterAlpha = Math.min(1, dtSec * 1.4);
+        this.chaseYawOffset += (0 - this.chaseYawOffset) * recenterAlpha;
+        this.chasePitchOffset += (0 - this.chasePitchOffset) * recenterAlpha;
+      }
+
       const backDist = physics.trailerAttached ? 17.5 : 10.5;
       const fwdX = Math.sin(physics.yaw);
       const fwdZ = Math.cos(physics.yaw);
@@ -185,18 +211,25 @@ export class CameraRig {
       const mixX = fwdX * 0.45 + trFwdX * 0.55;
       const mixZ = fwdZ * 0.45 + trFwdZ * 0.55;
       const len = Math.hypot(mixX, mixZ) || 1;
-      const dirX = mixX / len;
-      const dirZ = mixZ / len;
+      const baseDirX = mixX / len;
+      const baseDirZ = mixZ / len;
+
+      const cosO = Math.cos(this.chaseYawOffset);
+      const sinO = Math.sin(this.chaseYawOffset);
+      const dirX = baseDirX * cosO + baseDirZ * sinO;
+      const dirZ = -baseDirX * sinO + baseDirZ * cosO;
+      const baseHeight = physics.trailerAttached ? 6.4 : 4.8;
+      const camHeight = Math.max(1.8, baseHeight + this.chasePitchOffset * 8.5);
 
       this.desiredPos.set(
         physics.x - dirX * backDist,
-        physics.y + (physics.trailerAttached ? 6.4 : 4.8),
+        physics.y + camHeight,
         physics.z - dirZ * backDist
       );
       this.desiredLook.set(
-        physics.x + fwdX * 8,
+        physics.x + fwdX * (Math.abs(this.chaseYawOffset) > 0.3 ? 1.5 : 8),
         physics.y + 2.3,
-        physics.z + fwdZ * 8
+        physics.z + fwdZ * (Math.abs(this.chaseYawOffset) > 0.3 ? 1.5 : 8)
       );
 
       const targetFov = THREE.MathUtils.lerp(56, 65, THREE.MathUtils.clamp(absKmh / 100, 0, 1));
@@ -246,24 +279,26 @@ export class CameraRig {
       return;
     }
 
-    // Mode 3: Driver-side reverse sightline (looks along left side of trailer & bay)
-    const fwdX = Math.sin(physics.yaw);
-    const fwdZ = Math.cos(physics.yaw);
-    const leftX = Math.cos(physics.yaw);
-    const leftZ = -Math.sin(physics.yaw);
+    // Mode 3: ETS2 Classic Lean-Out Driver Window Reverse Sightline (along left trailer flank)
+    visuals.tractorRoot.updateMatrixWorld(true);
+    this.tempVec.set(1.42, 2.68, 1.92);
+    visuals.cabSuspensionGroup.localToWorld(this.tempVec);
+    this.desiredPos.copy(this.tempVec);
+    if (physics.trailerAttached) {
+      this.desiredLook.set(
+        physics.trailerX - Math.sin(physics.trailerYaw) * 6.5,
+        physics.trailerY + 1.2,
+        physics.trailerZ - Math.cos(physics.trailerYaw) * 6.5
+      );
+    } else {
+      this.desiredLook.set(
+        physics.x - Math.sin(physics.yaw) * 7.5,
+        physics.y + 1.0,
+        physics.z - Math.cos(physics.yaw) * 7.5
+      );
+    }
 
-    this.desiredPos.set(
-      physics.x + leftX * 3.4 + fwdX * 2.8,
-      physics.y + 4.3,
-      physics.z + leftZ * 3.4 + fwdZ * 2.8
-    );
-    this.desiredLook.set(
-      physics.trailerX - Math.sin(physics.trailerYaw) * 6.5,
-      physics.trailerY + 1.1,
-      physics.trailerZ - Math.cos(physics.trailerYaw) * 6.5
-    );
-
-    this.camera.fov += (58 - this.camera.fov) * Math.min(1, dtSec * 8);
+    this.camera.fov += (56 - this.camera.fov) * Math.min(1, dtSec * 8);
     this.camera.updateProjectionMatrix();
 
     if (!this.initialized) {

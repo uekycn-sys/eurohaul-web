@@ -17,6 +17,13 @@ interface HUDProps {
   onRefreshJobs: () => void;
   onCompleteDelivery: (manual: boolean) => void;
   onSetTimeOfDay: (hours: number) => void;
+  onRest: () => void;
+  onRoadsideRescue: () => void;
+  getNearestStation: () => {
+    name: string;
+    cityName: string;
+    distanceKm: number;
+  } | null;
   onBeginExam: () => void;
   onRestartExam: () => void;
   onSelectExamLevel: (levelId: A2ExamLevelId) => void;
@@ -33,6 +40,9 @@ export function HUD({
   onRefreshJobs,
   onCompleteDelivery,
   onSetTimeOfDay,
+  onRest,
+  onRoadsideRescue,
+  getNearestStation,
   onBeginExam,
   onRestartExam,
   onSelectExamLevel,
@@ -47,7 +57,6 @@ export function HUD({
   const parkingGuide = useGameStore((s) => s.parkingGuide);
   const notifications = useGameStore((s) => s.notifications);
   const speedCameraFlashAt = useGameStore((s) => s.speedCameraFlashAt);
-  const timeOfDayHours = useGameStore((s) => s.telemetry.timeOfDayHours);
   const refuelFull = useGameStore((s) => s.refuelFull);
   const repairTruckFull = useGameStore((s) => s.repairTruckFull);
 
@@ -96,7 +105,9 @@ export function HUD({
         </div>
       )}
 
-      {nearbyInteraction && activeModal === 'none' && (
+      {nearbyInteraction &&
+        activeModal === 'none' &&
+        !(parkingGuide.active && nearbyInteraction.kind === 'delivery_bay') && (
         <div className="fixed bottom-44 left-1/2 z-20 -translate-x-1/2">
           <div className="flex items-center gap-3 rounded-2xl border border-amber-400/50 bg-slate-900/92 px-4 py-2.5 shadow-2xl backdrop-blur-md">
             <div>
@@ -133,7 +144,7 @@ export function HUD({
               nearbyInteraction.kind === 'service_hub') && (
               <button
                 type="button"
-                onClick={() => onSetTimeOfDay((timeOfDayHours + 8) % 24)}
+                onClick={onRest}
                 className="shrink-0 rounded-lg border border-sky-400/50 bg-sky-500/20 px-2.5 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-500/35"
               >
                 休息 8h [R]
@@ -165,7 +176,7 @@ export function HUD({
                   ? '入库精准停稳！正在结算 +30% 技巧奖金...'
                   : parkingGuide.aligned
                   ? '位置角度已对齐！请完全刹停车辆'
-                  : '倒车入库指引 (绿色框可获 +30% 奖金)'}
+                  : '手动倒车入库 (+30% 技巧奖金) · 或选快速停靠'}
               </div>
               <div className="mt-0.5 font-mono text-[11px] text-slate-300">
                 距离框心: {parkingGuide.distanceMeters}m · 偏角: {parkingGuide.angleErrorDeg}°
@@ -174,9 +185,9 @@ export function HUD({
             <button
               type="button"
               onClick={() => onCompleteDelivery(false)}
-              className="rounded-lg border border-slate-600 bg-slate-800 px-2.5 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700"
+              className="shrink-0 rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-[11px] font-semibold text-slate-200 hover:bg-slate-700"
             >
-              跳过倒车
+              快速停靠
             </button>
           </div>
         </div>
@@ -196,6 +207,8 @@ export function HUD({
       <SettingsAndSummaryModals
         onRefreshJobs={onRefreshJobs}
         onSetTimeOfDay={onSetTimeOfDay}
+        onRoadsideRescue={onRoadsideRescue}
+        getNearestStation={getNearestStation}
       />
     </>
   );

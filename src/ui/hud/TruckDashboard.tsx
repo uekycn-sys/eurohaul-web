@@ -35,6 +35,8 @@ export const TruckDashboard = memo(function TruckDashboard() {
   const clutchPedal = useGameStore((s) => s.telemetry.clutchPedal);
   const frontWheelAngleDeg = useGameStore((s) => s.telemetry.frontWheelAngleDeg);
   const hitchAngleDeg = useGameStore((s) => s.telemetry.hitchAngleDeg);
+  const escActive = useGameStore((s) => s.telemetry.escActive);
+  const cabLightOn = useGameStore((s) => s.telemetry.cabLightOn);
 
   const maxFuel = getMaxFuelLiters(tankTier);
   const fuelPct = Math.round((fuelLiters / maxFuel) * 100);
@@ -101,6 +103,16 @@ export const TruckDashboard = memo(function TruckDashboard() {
           {retarderLevel > 0 && (
             <span className="rounded bg-amber-500/25 px-1.5 py-0.5 text-amber-300">
               R{retarderLevel}
+            </span>
+          )}
+          {escActive && (
+            <span className="animate-pulse rounded bg-amber-500 px-1.5 py-0.5 text-slate-950">
+              ESC
+            </span>
+          )}
+          {cabLightOn && (
+            <span className="rounded bg-amber-300/25 px-1.5 py-0.5 text-amber-200">
+              顶灯
             </span>
           )}
           {brakeTempC > 180 && (
@@ -232,7 +244,11 @@ export const TruckDashboard = memo(function TruckDashboard() {
           >
             <span className="font-mono text-lg font-black text-amber-400">{gearLabel}</span>
             <span className="text-[9px] uppercase text-slate-400">
-              {transmissionMode === 'auto' ? 'AT' : 'MT'}
+              {transmissionMode === 'auto'
+                ? 'AT'
+                : transmissionMode === 'real_auto'
+                ? 'DNR'
+                : 'MT'}
             </span>
           </button>
           <div className="flex items-center gap-1 text-[10px] font-semibold">
@@ -252,6 +268,11 @@ export const TruckDashboard = memo(function TruckDashboard() {
             >
               R{retarderLevel}
             </span>
+            {escActive && (
+              <span className="animate-pulse rounded bg-amber-500 px-1.5 py-0.5 text-slate-950">
+                ESC
+              </span>
+            )}
             {exhaustBrakeActive && (
               <span className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-300">排气</span>
             )}

@@ -94,6 +94,11 @@ export class GameEngine {
   private wipersManualOverride = false;
   private prevRainIntensity = 0;
   private redLightCooldownByNode = new Map<string, number>();
+  private signalPrevDistByNode = new Map<string, number>();
+  private pendingThunderSec: number | null = null;
+  private avgConsumptionLPer100Km = 32;
+  private fatigueWarn80Sent = false;
+  private fatigueWarn95Sent = false;
   private upcomingSignal: SignalState | null = null;
   private upcomingSignalDistMeters: number | null = null;
 
@@ -155,10 +160,17 @@ export class GameEngine {
       depthBuffer: true,
       stencilBuffer: false,
     });
+    this.mirrorRtLeft.texture.wrapS = THREE.RepeatWrapping;
+    this.mirrorRtLeft.texture.repeat.set(-1, 1);
+    this.mirrorRtLeft.texture.offset.set(1, 0);
+
     this.mirrorRtRight = new THREE.WebGLRenderTarget(initMirrorW, initMirrorH, {
       depthBuffer: true,
       stencilBuffer: false,
     });
+    this.mirrorRtRight.texture.wrapS = THREE.RepeatWrapping;
+    this.mirrorRtRight.texture.repeat.set(-1, 1);
+    this.mirrorRtRight.texture.offset.set(1, 0);
     this.mirrorBlitScene = new THREE.Scene();
     this.mirrorBlitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.mirrorBlitMat = new THREE.MeshBasicMaterial({
@@ -172,6 +184,7 @@ export class GameEngine {
     this.textures = new ProceduralTextures();
     this.textures.configureQuality(store.qualityPreset);
     this.env = new EnvironmentSystem(this.scene, this.renderer);
+    this.env.setParticleTexture(this.textures.getSoftParticleTexture());
     this.mapBuilder = new MapBuilder(this.textures, this.env);
     this.examArenaBuilder = new A2ExamArenaBuilder(this.textures);
 
@@ -182,6 +195,7 @@ export class GameEngine {
     this.truckMeshBuilder = new TruckMeshBuilder(this.textures);
     this.lastPaintHex = store.paintHex;
     this.truckVisuals = this.truckMeshBuilder.build(store.paintHex);
+    this.truckVisuals.setDoorMirrorTextures(this.mirrorRtLeft.texture, this.mirrorRtRight.texture);
     this.scene.add(this.truckVisuals.tractorRoot);
     this.scene.add(this.truckVisuals.trailerRoot);
 
@@ -213,11 +227,23 @@ export class GameEngine {
       onToggleParkingBrake: () => this.physics.toggleParkingBrake(),
       onToggleCruiseControl: () =>
         this.physics.toggleCruiseControl(useGameStore.getState().speedLimiterEnabled),
+      onCruiseIncrease: () =>
+        this.physics.adjustCruiseControl(5, useGameStore.getState().speedLimiterEnabled),
+      onCruiseDecrease: () =>
+        this.physics.adjustCruiseControl(-5, useGameStore.getState().speedLimiterEnabled),
       onCycleRetarder: () => this.physics.cycleRetarder(),
       onToggleTrailer: () => this.handleToggleTrailer(),
       onToggleIgnition: () => this.handleToggleIgnition(),
       onToggleExhaustBrake: () => this.handleToggleExhaustBrake(),
       onToggleDiffLock: () => this.handleToggleDiffLock(),
+      onToggleCabLight: () => {
+        this.physics.cabLightOn = !this.physics.cabLightOn;
+      },
+      onToggleRescueModal: () => {
+        const s = useGameStore.getState();
+        if (s.gamePhase !== 'playing' || s.gameMode === 'a2_exam') return;
+        s.setActiveModal(s.activeModal === 'rescue' ? 'none' : 'rescue');
+      },
       onCenterSteering: () =>
         useGameStore.getState().pushNotification('info', '方向盘正在回正', '前轮自动回正至直线行驶位置'),
       onRestartExam: () => {
@@ -445,7 +471,7 @@ export class GameEngine {
   private handleToggleTrailer(): void {
     const res = this.physics.tryToggleTrailer();
     if (res.changed) {
-      this.audio.playAirBrake();
+      this.audio.playFifthWheelLock(res.attached);
       useGameStore
         .getState()
         .pushNotification(
@@ -560,6 +586,59 @@ export class GameEngine {
     }
   }
 
+  public getNearestServiceStation(): {
+    name: string;
+    cityName: string;
+    distanceKm: number;
+    position: [number, number, number];
+    headingRad: number;
+  } {
+    let best = {
+      name: '慕尼黑 MAN 综合服务站',
+      cityName: '慕尼黑物流枢纽',
+      distanceKm: 0,
+      position: this.builtMap.manifest.defaultSpawnPosition as [number, number, number],
+      headingRad: this.builtMap.manifest.defaultSpawnHeadingRad,
+    };
+    let bestDistSq = Infinity;
+    for (const city of this.builtMap.manifest.cities) {
+      for (const st of city.stations) {
+        const dx = st.position[0] - this.physics.x;
+        const dz = st.position[2] - this.physics.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < bestDistSq) {
+          bestDistSq = dSq;
+          best = {
+            name: st.name,
+            cityName: city.name,
+            distanceKm: Number((Math.sqrt(dSq) / 1000).toFixed(2)),
+            position: [st.position[0], st.position[1], st.position[2]],
+            headingRad: st.headingRad,
+          };
+        }
+      }
+    }
+    return best;
+  }
+
+  public performRoadsideRescue(): void {
+    const store = useGameStore.getState();
+    if (store.gameMode === 'a2_exam') return;
+    const station = this.getNearestServiceStation();
+    store.applyRoadsideRescue(450, station.name);
+    this.physics.forcePose(
+      station.position[0],
+      station.position[1],
+      station.position[2],
+      station.headingRad,
+      station.headingRad,
+      this.physics.trailerAttached,
+      true
+    );
+    this.physics.airPressureBar = 8.0;
+    this.audio.playAirBrake();
+  }
+
   public handleStationRest(): void {
     const s = useGameStore.getState();
     const inter = s.nearbyInteraction;
@@ -571,8 +650,11 @@ export class GameEngine {
       return;
     }
     this.env.timeOfDayHours = (this.env.timeOfDayHours + 8) % 24;
+    s.resetDriverFatigue();
+    this.fatigueWarn80Sent = false;
+    this.fatigueWarn95Sent = false;
     this.audio.playAirBrake();
-    s.pushNotification('info', '服务区休息完成 (+8 小时)', '精力已恢复，注意随时关注昼夜灯光变化');
+    s.pushNotification('info', '服务区休息完成 (+8 小时)', '精力与行车记录仪时长已完全恢复');
   }
 
   public cycleWipers(): void {
@@ -733,14 +815,52 @@ export class GameEngine {
       interpAlpha
     );
     this.truckVisuals.updateWipers(this.elapsedSec, this.wipersMode);
+    const isPlayingActive = store.gamePhase === 'playing' && store.activeModal === 'none';
+    const isCabRainVisible =
+      isPlayingActive && store.cameraMode === 1 && this.env.rainIntensity > 0.05;
+    this.truckVisuals.updateInteriorDetails({
+      dtSec: frameDtSec,
+      leftBlinker: this.physics.leftBlinker || this.physics.hazardLights,
+      rightBlinker: this.physics.rightBlinker || this.physics.hazardLights,
+      retarderLevel: this.physics.retarderLevel,
+      cabRoll: this.physics.cabRoll,
+      cabPitch: this.physics.cabPitch,
+      nightFactor: this.env.nightFactor,
+      cabLightOn: this.physics.cabLightOn,
+      trailerAttached: this.physics.trailerAttached,
+      showRainGlass: isCabRainVisible,
+    });
+    if (isPlayingActive && store.cameraMode === 1) {
+      this.textures.updateWindshieldRain(
+        frameDtSec,
+        this.env.rainIntensity,
+        this.truckVisuals.getWiperAngle(),
+        this.wipersMode
+      );
+    }
+
+    const quickLookDir: -1 | 0 | 1 = this.input.lookLeft ? 1 : this.input.lookRight ? -1 : 0;
     this.cameraRig.update(
       frameDtSec,
       store.cameraMode,
       this.physics,
       this.truckVisuals,
       store.gamePhase === 'menu',
-      store.cabMotionEnabled
+      store.cabMotionEnabled,
+      quickLookDir
     );
+
+    const effectiveRetarderActive =
+      (this.physics.retarderLevel > 0 || this.physics.ccAutoRetarderLevel > 0) &&
+      Math.abs(this.physics.speedMs) > 2 &&
+      this.input.throttle < 0.05;
+    const effectiveExhaustActive =
+      (this.physics.exhaustBrakeActive || this.physics.ccAutoExhaustBrake) &&
+      this.physics.engineRunning &&
+      this.physics.gear >= 1 &&
+      this.input.throttle < 0.05 &&
+      this.physics.rpm > 1050 &&
+      Math.abs(this.physics.speedMs) > 1.5;
 
     this.audio.setSettings(store.audioEnabled, store.masterVolume);
     this.audio.update({
@@ -752,17 +872,15 @@ export class GameEngine {
       parkingBrake: this.physics.parkingBrake,
       gear: this.physics.gear,
       engineRunning: this.physics.engineRunning,
-      retarderActive:
-        this.physics.retarderLevel > 0 &&
-        Math.abs(this.physics.speedMs) > 2 &&
-        this.input.throttle < 0.05,
-      exhaustBrakeActive:
-        this.physics.exhaustBrakeActive &&
-        this.physics.engineRunning &&
-        this.physics.gear >= 1 &&
-        this.input.throttle < 0.05 &&
-        this.physics.rpm > 1050 &&
-        Math.abs(this.physics.speedMs) > 1.5,
+      engineTier: store.engineTier,
+      turboBoostNorm: Math.max(0, Math.min(1, (this.physics.turboBoost - 0.48) / 0.52)),
+      speedKmh: Math.abs(this.physics.speedMs) * 3.6,
+      onRoad: this.physics.onRoad,
+      isInteriorCam: store.cameraMode === 1,
+      wipersMode: this.wipersMode,
+      wiperAngleRad: this.truckVisuals.getWiperAngle(),
+      retarderActive: effectiveRetarderActive,
+      exhaustBrakeActive: effectiveExhaustActive,
       lowAirWarning: this.physics.lowAirWarning,
       rainIntensity: this.env.rainIntensity,
       dtSec: frameDtSec,
@@ -780,6 +898,9 @@ export class GameEngine {
       if (this.physics.airDryerPurgeEvent) {
         this.audio.playAirDryerPurge();
       }
+      if (this.physics.turboBlowoffEvent > 0) {
+        this.audio.playTurboBlowoff(this.physics.turboBlowoffEvent);
+      }
     }
 
     this.telemetryAccumSec += frameDtSec;
@@ -791,6 +912,10 @@ export class GameEngine {
     this.frameIndex += 1;
     this.renderFrame(
       store.gamePhase === 'playing' && store.activeModal === 'none' && store.mirrorsEnabled,
+      store.gamePhase === 'playing' &&
+        store.activeModal === 'none' &&
+        store.cameraMode === 1 &&
+        store.qualityPreset !== 'mobile_fast',
       nowMs
     );
   };
@@ -832,15 +957,18 @@ export class GameEngine {
     }
   }
 
-  private renderFrame(renderMirrors: boolean, nowMs: number): void {
+  private renderFrame(renderHudMirrors: boolean, render3dCabMirrors: boolean, nowMs: number): void {
     const w = this.viewportWidth;
     const h = this.viewportHeight;
     this.renderer.info.reset();
 
-    // Odd/even alternating side mirror pass, capped at max 20Hz per mirror, skipping shadows & Layer 1 props
-    const canShowMirrors = renderMirrors && w >= 640;
-    const mirrorMinIntervalMs = Math.max(50, this.mirrorUpdateInterval * 16.6);
-    if (canShowMirrors) {
+    // Odd/even alternating side mirror pass, capped at max 20Hz per mirror (or ~8Hz for 3D door mirrors only)
+    const canShowHudMirrors = renderHudMirrors && w >= 640;
+    const shouldRenderMirrorRt = canShowHudMirrors || render3dCabMirrors;
+    const mirrorMinIntervalMs = canShowHudMirrors
+      ? Math.max(50, this.mirrorUpdateInterval * 16.6)
+      : Math.max(120, this.mirrorUpdateInterval * 32);
+    if (shouldRenderMirrorRt) {
       const renderLeft = this.frameIndex % 2 === 0 && nowMs - this.lastLeftMirrorMs >= mirrorMinIntervalMs;
       const renderRight = !renderLeft && this.frameIndex % 2 === 1 && nowMs - this.lastRightMirrorMs >= mirrorMinIntervalMs;
 
@@ -853,7 +981,7 @@ export class GameEngine {
           this.lastLeftMirrorMs = nowMs;
           this.tempVecA.set(1.87, 2.48, 2.45);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-          this.tempVecB.set(3.0, 1.9, -22);
+          this.tempVecB.set(1.65, 1.95, -22);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
           this.leftMirrorCam.position.copy(this.tempVecA);
           this.leftMirrorCam.lookAt(this.tempVecB);
@@ -866,7 +994,7 @@ export class GameEngine {
           this.lastRightMirrorMs = nowMs;
           this.tempVecA.set(-1.87, 2.48, 2.45);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecA);
-          this.tempVecB.set(-3.0, 1.9, -22);
+          this.tempVecB.set(-1.65, 1.95, -22);
           this.truckVisuals.tractorRoot.localToWorld(this.tempVecB);
           this.rightMirrorCam.position.copy(this.tempVecA);
           this.rightMirrorCam.lookAt(this.tempVecB);
@@ -889,7 +1017,7 @@ export class GameEngine {
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
 
-    if (canShowMirrors) {
+    if (canShowHudMirrors) {
       // Blit cached 16:10 mirror textures into top-corner viewports (2 quad draws total)
       const mirrorW = 196;
       const mirrorH = 122;
@@ -1036,7 +1164,8 @@ export class GameEngine {
           this.physics.trailerX,
           this.physics.trailerZ,
           this.env.nightFactor,
-          this.env.rainIntensity
+          this.env.rainIntensity,
+          this.input.horn
         );
 
         const impact = this.physics.lastCollision ?? trafficCollision;
@@ -1061,8 +1190,42 @@ export class GameEngine {
           this.audio.playCameraFlash();
         }
 
+        // Evaluate interactive motorway toll booths
+        const tollEvent = this.builtMap.evaluateTollBooths(this.physics.x, this.physics.z, kmh, dtSec);
+        if (tollEvent) {
+          if (tollEvent.kind === 'paid') {
+            store.payToll(25, tollEvent.label);
+            this.audio.playTollChime();
+          } else {
+            store.applyFine(200, `${tollEvent.label} 高速冲卡违章 (>42 km/h)`);
+            store.triggerSpeedCameraFlash();
+            this.audio.playCameraFlash();
+          }
+        }
+
         // Check upcoming intersection traffic signals & enforce red-light violation fines
         this.evaluateTrafficSignals(kmh, nowPerf);
+
+        // EU Tachograph gentle driver fatigue accumulation
+        if (store.fatigueEnabled && Math.abs(this.physics.speedMs) > 1.0) {
+          store.addDriverFatigue(dtSec * 0.085);
+          const fatigue = useGameStore.getState().driverFatiguePct;
+          if (fatigue >= 80 && !this.fatigueWarn80Sent) {
+            this.fatigueWarn80Sent = true;
+            store.pushNotification(
+              'warning',
+              '欧盟行车记录仪提醒',
+              '连续驾驶时间接近上限，建议驶入沿途服务区按 R 休息'
+            );
+          } else if (fatigue >= 95 && !this.fatigueWarn95Sent) {
+            this.fatigueWarn95Sent = true;
+            store.pushNotification(
+              'warning',
+              '疲劳驾驶警报！',
+              '请尽快驶入高速服务区停车并按 R 休息 8 小时'
+            );
+          }
+        }
 
         if (store.activeJob) {
           store.tickJobTimer(dtSec);
@@ -1104,6 +1267,43 @@ export class GameEngine {
     }
     if (!isA2Exam) {
       this.builtMap.setRainWetness(this.env.rainIntensity);
+      if (this.env.lightningTriggered && this.pendingThunderSec === null) {
+        this.pendingThunderSec = 0.75 + Math.random() * 0.65;
+      }
+      if (this.pendingThunderSec !== null) {
+        this.pendingThunderSec -= dtSec;
+        if (this.pendingThunderSec <= 0) {
+          this.pendingThunderSec = null;
+          this.audio.playThunder();
+        }
+      }
+
+      const fwdX = Math.sin(this.physics.yaw);
+      const fwdZ = Math.cos(this.physics.yaw);
+      const sideX = Math.cos(this.physics.yaw);
+      const sideZ = -Math.sin(this.physics.yaw);
+      const emitters: [number, number, number][] = [
+        [this.physics.x - fwdX * 2.1 + sideX * 1.0, this.physics.y, this.physics.z - fwdZ * 2.1 + sideZ * 1.0],
+        [this.physics.x - fwdX * 2.1 - sideX * 1.0, this.physics.y, this.physics.z - fwdZ * 2.1 - sideZ * 1.0],
+      ];
+      if (this.physics.trailerAttached) {
+        const trFwdX = Math.sin(this.physics.trailerYaw);
+        const trFwdZ = Math.cos(this.physics.trailerYaw);
+        const trSideX = Math.cos(this.physics.trailerYaw);
+        const trSideZ = -Math.sin(this.physics.trailerYaw);
+        emitters.push(
+          [this.physics.trailerX - trFwdX * 5.2 + trSideX * 1.0, this.physics.trailerY, this.physics.trailerZ - trFwdZ * 5.2 + trSideZ * 1.0],
+          [this.physics.trailerX - trFwdX * 5.2 - trSideX * 1.0, this.physics.trailerY, this.physics.trailerZ - trFwdZ * 5.2 - trSideZ * 1.0]
+        );
+      }
+      this.env.updateTireSpray(
+        dtSec,
+        drivingActive && this.physics.onRoad,
+        emitters,
+        fwdX,
+        fwdZ,
+        this.physics.speedMs
+      );
     }
 
     // Rain-sensing automatic wipers (yields to manual P-key override)
@@ -1132,7 +1332,12 @@ export class GameEngine {
       const toNodeX = node.position[0] - this.physics.x;
       const toNodeZ = node.position[2] - this.physics.z;
       const dist = Math.hypot(toNodeX, toNodeZ);
-      if (dist > 56) continue;
+      const prevDist = this.signalPrevDistByNode.get(node.id);
+      if (dist > 65) {
+        this.signalPrevDistByNode.delete(node.id);
+        continue;
+      }
+      this.signalPrevDistByNode.set(node.id, dist);
 
       const forwardProj = (toNodeX * fwdX + toNodeZ * fwdZ) / Math.max(0.1, dist);
       if (dist > 10 && forwardProj < 0.45) continue;
@@ -1143,7 +1348,15 @@ export class GameEngine {
         bestSignal = sig;
       }
 
-      if (dist < 10.5 && speedKmh > 18 && sig === 'red') {
+      // Only trigger red-light violation when crossing from outside stop line (>12m) to inside (<=11m) on RED
+      if (
+        prevDist !== undefined &&
+        prevDist > 12.0 &&
+        dist <= 11.0 &&
+        speedKmh > 12 &&
+        forwardProj > 0.35 &&
+        sig === 'red'
+      ) {
         const lastFineAt = this.redLightCooldownByNode.get(node.id) ?? 0;
         if (nowMs - lastFineAt > 14000) {
           this.redLightCooldownByNode.set(node.id, nowMs);
@@ -1169,7 +1382,13 @@ export class GameEngine {
         ? 'R1'
         : this.physics.gear === 0
         ? 'N'
-        : `${store.transmissionMode === 'auto' ? 'A' : 'M'}${this.physics.gear}`;
+        : `${
+            store.transmissionMode === 'auto'
+              ? 'A'
+              : store.transmissionMode === 'real_auto'
+              ? 'D'
+              : 'M'
+          }${this.physics.gear}`;
     const hitchDeg = (this.physics.hitchAngleRad * 180) / Math.PI;
 
     const isA2Exam = store.gameMode === 'a2_exam';
@@ -1206,6 +1425,17 @@ export class GameEngine {
       kmh
     );
     store.setParkingGuide(parkingGuide);
+    if (parkingGuide.active) {
+      this.builtMap.setDestinationBayAligned(parkingGuide.aligned);
+    }
+
+    if (this.physics.instantFuelLPer100Km > 2) {
+      this.avgConsumptionLPer100Km +=
+        (this.physics.instantFuelLPer100Km - this.avgConsumptionLPer100Km) * 0.06;
+    }
+    const estFuelRangeKm = Math.round(
+      (store.fuelLiters / Math.max(18, this.avgConsumptionLPer100Km)) * 100
+    );
 
     if (isA2Exam && this.examController) {
       store.setA2ExamState(this.examController.getSnapshot());
@@ -1297,6 +1527,12 @@ export class GameEngine {
       frontWheelAngleDeg: this.physics.frontWheelAngleDeg,
       totalWeightTons: this.physics.totalWeightTons,
       instantFuelLPer100Km: this.physics.instantFuelLPer100Km,
+      turboBoostNorm: Number(((this.physics.turboBoost - 0.48) / 0.52).toFixed(2)),
+      escActive: this.physics.escActive,
+      cabLightOn: this.physics.cabLightOn,
+      navTurnDir: guidance.nextTurnDir,
+      navTurnDistMeters: guidance.nextTurnDistMeters,
+      estFuelRangeKm,
     });
   }
 }

@@ -194,6 +194,7 @@ export class EnvironmentSystem {
   public nightFactor = 0;
   public rainIntensity = 0; // 0 = dry, 1 = heavy European rain
   public weatherSetting: WeatherSetting = 'auto';
+  public lightningTriggered = false;
 
   private readonly scene: THREE.Scene;
   private readonly sunLight: THREE.DirectionalLight;
@@ -213,6 +214,19 @@ export class EnvironmentSystem {
   private rainDropBudget = 320;
   private readonly overcastZenith = new THREE.Color('#3b4658');
   private readonly overcastHorizon = new THREE.Color('#647285');
+
+  // Single-draw-call tire water spray Points (high/ultra/pc_igpu only)
+  private readonly sprayCount = 90;
+  private readonly sprayPositions: Float32Array;
+  private readonly sprayVelocities: Float32Array;
+  private readonly sprayAges: Float32Array;
+  private readonly sprayGeo: THREE.BufferGeometry;
+  private readonly sprayMat: THREE.PointsMaterial;
+  private readonly sprayPoints: THREE.Points;
+  private sprayEnabled = true;
+  private sprayCursor = 0;
+  private lightningCooldownSec = 16;
+  private lightningFlashTimer = 0;
 
   private readonly zenithColor = new THREE.Color();
   private readonly horizonColor = new THREE.Color();
@@ -320,7 +334,32 @@ export class EnvironmentSystem {
     this.rainLines.layers.set(1); // Skip rain streaks inside virtual mirror passes
     this.scene.add(this.rainLines);
 
+    // Lightweight single-DC tire water spray (Layer 1)
+    this.sprayPositions = new Float32Array(this.sprayCount * 3);
+    this.sprayVelocities = new Float32Array(this.sprayCount * 3);
+    this.sprayAges = new Float32Array(this.sprayCount);
+    this.sprayAges.fill(99);
+    this.sprayGeo = new THREE.BufferGeometry();
+    this.sprayGeo.setAttribute('position', new THREE.BufferAttribute(this.sprayPositions, 3));
+    this.sprayMat = new THREE.PointsMaterial({
+      color: '#dbeafe',
+      size: 1.45,
+      transparent: true,
+      opacity: 0.36,
+      depthWrite: false,
+    });
+    this.sprayPoints = new THREE.Points(this.sprayGeo, this.sprayMat);
+    this.sprayPoints.frustumCulled = false;
+    this.sprayPoints.visible = false;
+    this.sprayPoints.layers.set(1);
+    this.scene.add(this.sprayPoints);
+
     this.applyAtmosphere(0, 0);
+  }
+
+  public setParticleTexture(tex: THREE.CanvasTexture): void {
+    this.sprayMat.map = tex;
+    this.sprayMat.needsUpdate = true;
   }
 
   public setRenderer(renderer: THREE.WebGLRenderer): void {
@@ -354,16 +393,19 @@ export class EnvironmentSystem {
       this.skyMat.uniforms.uEnableClouds!.value = 0.0;
       this.scene.environment = null;
       this.rainDropBudget = 0;
+      this.sprayEnabled = false;
     } else if (preset === 'mobile_balanced') {
       this.iblEnabled = true;
       this.iblIntensity = 0.48;
       this.skyMat.uniforms.uEnableClouds!.value = 1.0;
       this.rainDropBudget = 140;
+      this.sprayEnabled = false;
     } else {
       this.iblEnabled = true;
       this.iblIntensity = 0.78;
       this.skyMat.uniforms.uEnableClouds!.value = 1.0;
       this.rainDropBudget = this.maxRainDrops;
+      this.sprayEnabled = true;
     }
 
     this.scene.environmentIntensity = this.iblIntensity;
@@ -376,6 +418,7 @@ export class EnvironmentSystem {
 
   public update(dtSec: number, focusX: number, focusZ: number, focusY = 0): void {
     this.elapsedSec += dtSec;
+    this.lightningTriggered = false;
     this.timeOfDayHours = (this.timeOfDayHours + dtSec * this.timeScaleHoursPerSec) % 24;
     this.skyMat.uniforms.uTime!.value = this.elapsedSec;
 
@@ -388,9 +431,71 @@ export class EnvironmentSystem {
         : THREE.MathUtils.clamp(Math.sin(this.elapsedSec * 0.032 - 0.85) * 1.4, 0, 0.92);
     this.rainIntensity += (targetRain - this.rainIntensity) * Math.min(1, dtSec * 0.55);
 
+    if (this.lightningFlashTimer > 0) {
+      this.lightningFlashTimer = Math.max(0, this.lightningFlashTimer - dtSec);
+    }
+    if (this.rainIntensity > 0.65) {
+      this.lightningCooldownSec -= dtSec;
+      if (this.lightningCooldownSec <= 0) {
+        this.lightningCooldownSec = 14 + Math.random() * 12;
+        this.lightningFlashTimer = 0.16;
+        this.lightningTriggered = true;
+      }
+    }
+
     this.updateRainParticles(dtSec, focusX, focusY, focusZ);
     this.applyAtmosphere(focusX, focusZ);
     this.refreshIblIfNeeded(false);
+  }
+
+  public updateTireSpray(
+    dtSec: number,
+    active: boolean,
+    emitters: readonly [number, number, number][],
+    fwdX: number,
+    fwdZ: number,
+    speedMs: number
+  ): void {
+    if (!this.sprayEnabled || !active || this.rainIntensity < 0.25 || Math.abs(speedMs) < 7) {
+      this.sprayPoints.visible = false;
+      return;
+    }
+
+    this.sprayPoints.visible = true;
+    const speedFactor = THREE.MathUtils.clamp((Math.abs(speedMs) - 7) / 18, 0, 1);
+    this.sprayMat.opacity = (0.18 + this.rainIntensity * 0.25) * speedFactor;
+
+    const spawnPerStep = Math.min(4, Math.ceil(speedFactor * emitters.length));
+    for (let s = 0; s < spawnPerStep; s++) {
+      const em = emitters[(this.sprayCursor + s) % emitters.length]!;
+      const idx = this.sprayCursor;
+      this.sprayCursor = (this.sprayCursor + 1) % this.sprayCount;
+
+      const b = idx * 3;
+      this.sprayPositions[b] = em[0] + (Math.random() - 0.5) * 0.35;
+      this.sprayPositions[b + 1] = em[1] + 0.28;
+      this.sprayPositions[b + 2] = em[2] + (Math.random() - 0.5) * 0.35;
+
+      this.sprayVelocities[b] = -fwdX * speedMs * 0.25 + (Math.random() - 0.5) * 1.6;
+      this.sprayVelocities[b + 1] = 1.6 + Math.random() * 1.4;
+      this.sprayVelocities[b + 2] = -fwdZ * speedMs * 0.25 + (Math.random() - 0.5) * 1.6;
+      this.sprayAges[idx] = 0;
+    }
+
+    for (let i = 0; i < this.sprayCount; i++) {
+      const age = this.sprayAges[i]!;
+      const b = i * 3;
+      if (age > 0.55) {
+        this.sprayPositions[b + 1] = -999;
+        continue;
+      }
+      this.sprayAges[i] = age + dtSec;
+      this.sprayPositions[b] = this.sprayPositions[b]! + this.sprayVelocities[b]! * dtSec;
+      this.sprayPositions[b + 1] = this.sprayPositions[b + 1]! + this.sprayVelocities[b + 1]! * dtSec;
+      this.sprayPositions[b + 2] = this.sprayPositions[b + 2]! + this.sprayVelocities[b + 2]! * dtSec;
+      this.sprayVelocities[b + 1] = this.sprayVelocities[b + 1]! - 4.8 * dtSec;
+    }
+    (this.sprayGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
   }
 
   private updateRainParticles(dtSec: number, fx: number, fy: number, fz: number): void {
@@ -538,9 +643,16 @@ export class EnvironmentSystem {
       (1 + this.rainIntensity * 0.45);
 
     this.sunLight.color.copy(kfA.sunColor).lerp(kfB.sunColor, t);
+    const lightningBoost = this.lightningFlashTimer > 0 ? 1.85 : 0;
     this.sunLight.intensity =
       THREE.MathUtils.lerp(kfA.sunIntensity, kfB.sunIntensity, t) *
-      (1 - this.rainIntensity * 0.45);
+        (1 - this.rainIntensity * 0.45) +
+      lightningBoost;
+    if (lightningBoost > 0) {
+      this.horizonColor.lerp(new THREE.Color('#cbd5e1'), 0.42);
+      (this.scene.background as THREE.Color).copy(this.horizonColor);
+      this.fog.color.copy(this.horizonColor);
+    }
     (this.skyMat.uniforms.uSunColor!.value as THREE.Color).copy(this.sunLight.color);
 
     this.hemiLight.color.copy(kfA.hemiSky).lerp(kfB.hemiSky, t);
@@ -620,6 +732,8 @@ export class EnvironmentSystem {
     this.skyMat.dispose();
     this.rainGeo.dispose();
     this.rainMat.dispose();
+    this.sprayGeo.dispose();
+    this.sprayMat.dispose();
     this.envTarget?.dispose();
     this.envTarget = null;
   }

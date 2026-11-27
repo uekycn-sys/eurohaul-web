@@ -1,7 +1,11 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowUp,
+  CornerUpLeft,
   CornerUpRight,
+  Flag,
+  LifeBuoy,
   Link2,
   Link2Off,
 } from 'lucide-react';
@@ -26,12 +30,17 @@ function formatEta(sec: number): string {
   return `${m}m ${String(s).padStart(2, '0')}s`;
 }
 
+type MinimapZoomMode = 'auto' | 'close' | 'mid' | 'far';
+
 export const RouteAdvisor = memo(function RouteAdvisor({
   mapManifest,
   getRoutePoints,
   onRefreshJobs,
 }: RouteAdvisorProps) {
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
+  const [zoomMode, setZoomMode] = useState<MinimapZoomMode>('auto');
+  const zoomModeRef = useRef<MinimapZoomMode>('auto');
+  zoomModeRef.current = zoomMode;
 
   const advisorTab = useGameStore((s) => s.advisorTab);
   const setAdvisorTab = useGameStore((s) => s.setAdvisorTab);
@@ -43,12 +52,17 @@ export const RouteAdvisor = memo(function RouteAdvisor({
   const truckHealth = useGameStore((s) => s.truckHealth);
   const mirrorsEnabled = useGameStore((s) => s.mirrorsEnabled);
   const mobileControlsEnabled = useGameStore((s) => s.mobileControlsEnabled);
+  const fatigueEnabled = useGameStore((s) => s.fatigueEnabled);
+  const driverFatiguePct = useGameStore((s) => s.driverFatiguePct);
 
   const speedLimitKmh = useGameStore((s) => s.telemetry.speedLimitKmh);
   const isSpeeding = useGameStore((s) => s.telemetry.isSpeeding);
   const upcomingSignal = useGameStore((s) => s.telemetry.upcomingSignal);
   const upcomingSignalDistMeters = useGameStore((s) => s.telemetry.upcomingSignalDistMeters);
   const navInstruction = useGameStore((s) => s.telemetry.navInstruction);
+  const navTurnDir = useGameStore((s) => s.telemetry.navTurnDir);
+  const navTurnDistMeters = useGameStore((s) => s.telemetry.navTurnDistMeters);
+  const estFuelRangeKm = useGameStore((s) => s.telemetry.estFuelRangeKm);
   const navDistanceMeters = useGameStore((s) => s.telemetry.navDistanceMeters);
   const navEtaSeconds = useGameStore((s) => s.telemetry.navEtaSeconds);
   const trailerAttached = useGameStore((s) => s.telemetry.trailerAttached);
@@ -57,6 +71,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
 
   const maxFuel = getMaxFuelLiters(tankTier);
   const engineSpec = ENGINE_TIERS[engineTier] ?? ENGINE_TIERS[0]!;
+  const restHoursRemain = Math.max(0, ((100 - driverFatiguePct) / 100) * 11).toFixed(1);
 
   // Draw rotating 2D Route Advisor Minimap directly via store subscription (zero React re-renders!)
   useEffect(() => {
@@ -69,7 +84,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
       if (!ctx) return;
 
       const state = useGameStore.getState();
-      const { truckX, truckZ, truckHeadingRad } = state.telemetry;
+      const { truckX, truckZ, truckHeadingRad, speedKmh } = state.telemetry;
       const currentJob = state.activeJob;
 
       const w = canvas.width;
@@ -78,7 +93,15 @@ export const RouteAdvisor = memo(function RouteAdvisor({
       ctx.fillStyle = '#0b1220';
       ctx.fillRect(0, 0, w, h);
 
-      const scale = 0.24;
+      const mode = zoomModeRef.current;
+      const scale =
+        mode === 'close'
+          ? 0.44
+          : mode === 'mid'
+          ? 0.25
+          : mode === 'far'
+          ? 0.14
+          : Math.max(0.15, Math.min(0.42, 0.42 - (Math.min(100, speedKmh) / 100) * 0.26));
       const cx = w * 0.5;
       const cy = h * 0.68;
 
@@ -173,13 +196,14 @@ export const RouteAdvisor = memo(function RouteAdvisor({
         state.telemetry.truckX !== prev.telemetry.truckX ||
         state.telemetry.truckZ !== prev.telemetry.truckZ ||
         state.telemetry.truckHeadingRad !== prev.telemetry.truckHeadingRad ||
+        state.telemetry.speedKmh !== prev.telemetry.speedKmh ||
         state.activeJob !== prev.activeJob
       ) {
         drawMinimap();
       }
     });
     return unsub;
-  }, [advisorTab, mapManifest, getRoutePoints]);
+  }, [advisorTab, mapManifest, getRoutePoints, zoomMode]);
 
   return (
     <div
@@ -227,7 +251,27 @@ export const RouteAdvisor = memo(function RouteAdvisor({
         {advisorTab === 'nav' && (
           <div>
             <div className="relative overflow-hidden rounded-xl border border-slate-800">
-              <canvas ref={minimapRef} width={254} height={148} className="block w-full" />
+              <canvas
+                ref={minimapRef}
+                width={254}
+                height={148}
+                onClick={() =>
+                  setZoomMode((z) =>
+                    z === 'auto' ? 'close' : z === 'close' ? 'mid' : z === 'mid' ? 'far' : 'auto'
+                  )
+                }
+                title="点击切换小地图缩放 (自适应 / 近 / 中 / 远)"
+                className="block w-full cursor-pointer"
+              />
+              <span className="pointer-events-none absolute right-2 bottom-1.5 rounded bg-slate-950/80 px-1.5 py-0.5 font-mono text-[9px] font-bold text-slate-300">
+                {zoomMode === 'auto'
+                  ? 'AUTO'
+                  : zoomMode === 'close'
+                  ? '近'
+                  : zoomMode === 'mid'
+                  ? '中'
+                  : '远'}
+              </span>
               <div
                 className={`absolute top-2 right-2 flex h-9 w-9 items-center justify-center rounded-full border-[3px] font-mono text-xs font-black shadow-md ${
                   isSpeeding
@@ -259,11 +303,24 @@ export const RouteAdvisor = memo(function RouteAdvisor({
                 </div>
               )}
             </div>
-            <div className="mt-2 flex items-center justify-between text-[11px]">
-              <span className="flex items-center gap-1 truncate font-medium text-sky-300">
-                <CornerUpRight className="h-3.5 w-3.5 shrink-0" />
-                {navInstruction}
+            <div className="mt-2 flex items-center justify-between gap-1.5 text-[11px]">
+              <span className="flex min-w-0 items-center gap-1.5 truncate font-medium text-sky-300">
+                {navTurnDir === 'left' ? (
+                  <CornerUpLeft className="h-4 w-4 shrink-0 text-amber-300" />
+                ) : navTurnDir === 'right' ? (
+                  <CornerUpRight className="h-4 w-4 shrink-0 text-amber-300" />
+                ) : navTurnDir === 'arrive' ? (
+                  <Flag className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                ) : (
+                  <ArrowUp className="h-3.5 w-3.5 shrink-0 text-sky-300" />
+                )}
+                <span className="truncate">{navInstruction}</span>
               </span>
+              {navTurnDistMeters !== null && (
+                <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-amber-300">
+                  {navTurnDistMeters}m
+                </span>
+              )}
             </div>
             {activeJob ? (
               <div className="mt-1 flex items-center justify-between font-mono text-[11px] text-slate-300">
@@ -285,6 +342,14 @@ export const RouteAdvisor = memo(function RouteAdvisor({
                 </button>
               </div>
             )}
+            <div className="mt-1 flex items-center justify-between border-t border-slate-800/80 pt-1 font-mono text-[10px] text-slate-400">
+              <span>续航 ~{estFuelRangeKm} km</span>
+              {fatigueEnabled && (
+                <span className={driverFatiguePct > 80 ? 'animate-pulse text-rose-400' : 'text-sky-300'}>
+                  记录仪 剩余 {restHoursRemain}h
+                </span>
+              )}
+            </div>
           </div>
         )}
 
@@ -345,9 +410,17 @@ export const RouteAdvisor = memo(function RouteAdvisor({
             <div className="flex justify-between">
               <span className="text-slate-400">油箱余量</span>
               <span className="font-mono text-amber-300">
-                {Math.round(fuelLiters)} / {maxFuel} L
+                {Math.round(fuelLiters)} / {maxFuel} L (~{estFuelRangeKm}km)
               </span>
             </div>
+            {fatigueEnabled && (
+              <div className="flex justify-between">
+                <span className="text-slate-400">行车记录仪</span>
+                <span className={`font-mono ${driverFatiguePct > 80 ? 'text-rose-400' : 'text-sky-300'}`}>
+                  剩余 {restHoursRemain}h (疲劳 {Math.round(driverFatiguePct)}%)
+                </span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-slate-400">半挂车状态</span>
               <span className="inline-flex items-center gap-1 font-semibold text-emerald-400">
@@ -366,6 +439,14 @@ export const RouteAdvisor = memo(function RouteAdvisor({
               <span className="text-slate-400">整车完整度</span>
               <span className="font-mono text-sky-400">{Math.round(truckHealth)}%</span>
             </div>
+            <button
+              type="button"
+              onClick={() => setActiveModal('rescue')}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 py-1.5 text-[11px] font-bold text-rose-200 hover:bg-rose-500/30"
+            >
+              <LifeBuoy className="h-3.5 w-3.5" />
+              呼叫道路救援拖车 [F7]
+            </button>
             {parkingBrake && (
               <div className="flex items-center gap-1 rounded bg-rose-500/20 px-2 py-1 text-[11px] text-rose-300">
                 <AlertTriangle className="h-3.5 w-3.5" />
@@ -376,7 +457,7 @@ export const RouteAdvisor = memo(function RouteAdvisor({
         )}
 
         {advisorTab === 'controls' && (
-          <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-slate-300">
+          <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10.5px] text-slate-300">
             <span>
               <b className="text-amber-300">W / S</b> 油门 / 刹车
             </span>
@@ -399,19 +480,25 @@ export const RouteAdvisor = memo(function RouteAdvisor({
               <b className="text-amber-300">Q / E</b> 左右转向灯
             </span>
             <span>
-              <b className="text-amber-300">L / X</b> 大灯 / 双闪
+              <b className="text-amber-300">L / X / O</b> 车灯/双闪/顶灯
             </span>
             <span>
-              <b className="text-amber-300">C / T / H</b> 巡航 / 摘挂 / 喇叭
+              <b className="text-amber-300">C / [ / ]</b> 巡航与调速
             </span>
             <span>
-              <b className="text-amber-300">1 - 5 / V</b> 切换视角
+              <b className="text-amber-300">T / H / F7</b> 挂车/喇叭/救援
             </span>
             <span>
-              <b className="text-amber-300">Shift/Ctrl</b> 升降档
+              <b className="text-amber-300">1-5 / V / N4·6</b> 视角/观望
             </span>
             <span>
-              <b className="text-amber-300">P / F / R</b> 雨刷 / 全屏 / 休
+              <b className="text-amber-300">Shift/Ctrl</b> 升降档/DNR
+            </span>
+            <span>
+              <b className="text-amber-300">P / F / R</b> 雨刷/全屏/休息
+            </span>
+            <span>
+              <b className="text-amber-300">M / Enter</b> 全图 / 交互
             </span>
           </div>
         )}

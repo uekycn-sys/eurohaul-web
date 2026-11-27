@@ -5,11 +5,15 @@ export interface InputActions {
   onCycleHeadlights?: () => void;
   onToggleParkingBrake?: () => void;
   onToggleCruiseControl?: () => void;
+  onCruiseIncrease?: () => void;
+  onCruiseDecrease?: () => void;
   onCycleRetarder?: () => void;
   onToggleTrailer?: () => void;
   onToggleIgnition?: () => void;
   onToggleExhaustBrake?: () => void;
   onToggleDiffLock?: () => void;
+  onToggleCabLight?: () => void;
+  onToggleRescueModal?: () => void;
   onCenterSteering?: () => void;
   onRestartExam?: () => void;
   onShiftUp?: () => void;
@@ -40,7 +44,12 @@ export class InputManager {
   public clutch = 0; // 0 = engaged, 1 = fully depressed
   public trailerBrake = false;
   public horn = false;
+  public lookLeft = false;
+  public lookRight = false;
 
+  private rawSteer = 0;
+  private steerHoldSec = 0;
+  private lastSteerDir = 0;
   private centeringSteer = false;
   private touchSteer: number | null = null;
   private touchThrottle = 0;
@@ -60,6 +69,8 @@ export class InputManager {
       this.keys.clear();
       this.horn = false;
       this.trailerBrake = false;
+      this.lookLeft = false;
+      this.lookRight = false;
       this.centeringSteer = false;
       this.touchSteer = null;
       this.touchThrottle = 0;
@@ -93,9 +104,12 @@ export class InputManager {
       this.throttle = Math.max(0, this.throttle - dtSec * 4);
       this.brake = Math.max(0, this.brake - dtSec * 4);
       this.clutch = Math.max(0, this.clutch - dtSec * 5);
+      this.rawSteer *= Math.max(0, 1 - dtSec * 6);
       this.steer *= Math.max(0, 1 - dtSec * 6);
       this.trailerBrake = false;
       this.horn = false;
+      this.lookLeft = false;
+      this.lookRight = false;
       return;
     }
 
@@ -107,6 +121,8 @@ export class InputManager {
 
     this.horn = this.keys.has('KeyH') || this.touchHorn;
     this.trailerBrake = this.keys.has('KeyY');
+    this.lookLeft = this.keys.has('Numpad4');
+    this.lookRight = this.keys.has('Numpad6');
 
     // Progressive throttle, brake, and clutch pedal (controlled release for half-clutch hill starts)
     const targetThrottle = Math.max(kbThrottle, this.touchThrottle);
@@ -123,9 +139,10 @@ export class InputManager {
       this.clutch = Math.max(0, this.clutch - dtSec * 1.9);
     }
 
-    // Speed-sensitive steering ramp & caster self-centering
+    // Speed-sensitive steering ramp & caster self-centering (1:1 for touch wheel/buttons)
     if (this.touchSteer !== null) {
       this.steer += (this.touchSteer - this.steer) * Math.min(1, dtSec * 14);
+      this.rawSteer = this.steer;
       return;
     }
 
@@ -143,7 +160,7 @@ export class InputManager {
       ? Math.max(0.85, 1.85 - absSpeed * 0.012)
       : Math.max(1.15, 2.5 - absSpeed * 0.015);
     const centerSpeed = this.centeringSteer
-      ? 5.5
+      ? 6.0
       : realisticSteeringReturn
       ? absSpeed < 1.5
         ? 0
@@ -151,22 +168,40 @@ export class InputManager {
       : 3.2 + Math.min(3.0, absSpeed * 0.04);
 
     if (targetSteer !== 0) {
-      const diff = targetSteer - this.steer;
-      const step = Math.sign(diff) * speedSteerSpeed * dtSec;
-      if (Math.abs(diff) <= Math.abs(step)) {
-        this.steer = targetSteer;
+      if (targetSteer !== this.lastSteerDir) {
+        this.steerHoldSec = 0;
+        this.lastSteerDir = targetSteer;
       } else {
-        this.steer += step;
+        this.steerHoldSec += dtSec;
       }
-    } else if (centerSpeed > 0) {
-      const step = centerSpeed * dtSec;
-      if (Math.abs(this.steer) <= step) {
-        this.steer = 0;
-        this.centeringSteer = false;
+      const holdRamp =
+        absSpeed < 22
+          ? Math.min(1.0, Math.max(0.55, 0.55 + this.steerHoldSec * 1.8))
+          : Math.min(1.0, Math.max(0.28, 0.28 + this.steerHoldSec * 1.6));
+      const diff = targetSteer - this.rawSteer;
+      const step = Math.sign(diff) * speedSteerSpeed * holdRamp * dtSec;
+      if (Math.abs(diff) <= Math.abs(step)) {
+        this.rawSteer = targetSteer;
       } else {
-        this.steer -= Math.sign(this.steer) * step;
+        this.rawSteer += step;
+      }
+    } else {
+      this.steerHoldSec = 0;
+      this.lastSteerDir = 0;
+      if (centerSpeed > 0) {
+        const step = centerSpeed * dtSec;
+        if (Math.abs(this.rawSteer) <= step) {
+          this.rawSteer = 0;
+          this.centeringSteer = false;
+        } else {
+          this.rawSteer -= Math.sign(this.rawSteer) * step;
+        }
       }
     }
+
+    // Non-linear progressive steering curve: surgical center precision for lane-keeping, full lock on hold
+    const absRaw = Math.abs(this.rawSteer);
+    this.steer = Math.sign(this.rawSteer) * (0.5 * absRaw + 0.5 * absRaw * absRaw);
   }
 
   private readonly handleKeyDown = (e: KeyboardEvent): void => {
@@ -203,6 +238,11 @@ export class InputManager {
       this.actions.onToggleMap?.();
       return;
     }
+    if (e.code === 'F7') {
+      e.preventDefault();
+      this.actions.onToggleRescueModal?.();
+      return;
+    }
 
     if (!this.enabled) return;
 
@@ -227,6 +267,17 @@ export class InputManager {
         break;
       case 'KeyC':
         this.actions.onToggleCruiseControl?.();
+        break;
+      case 'BracketRight':
+      case 'Equal':
+        this.actions.onCruiseIncrease?.();
+        break;
+      case 'BracketLeft':
+      case 'Minus':
+        this.actions.onCruiseDecrease?.();
+        break;
+      case 'KeyO':
+        this.actions.onToggleCabLight?.();
         break;
       case 'KeyB':
         this.actions.onCycleRetarder?.();
@@ -299,6 +350,8 @@ export class InputManager {
   private readonly handleBlur = (): void => {
     this.keys.clear();
     this.horn = false;
+    this.lookLeft = false;
+    this.lookRight = false;
   };
 
   public dispose(): void {

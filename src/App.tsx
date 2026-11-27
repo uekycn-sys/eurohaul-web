@@ -75,6 +75,18 @@ export function App() {
     engineRef.current?.setTimeOfDay(hours);
   }, []);
 
+  const handleStationRest = useCallback(() => {
+    engineRef.current?.handleStationRest();
+  }, []);
+
+  const handleRoadsideRescue = useCallback(() => {
+    engineRef.current?.performRoadsideRescue();
+  }, []);
+
+  const getNearestStation = useCallback(() => {
+    return engineRef.current?.getNearestServiceStation() ?? null;
+  }, []);
+
   const getRoutePoints = useCallback(() => {
     return engineRef.current?.getActiveRoutePoints() ?? [];
   }, []);
@@ -120,6 +132,9 @@ export function App() {
             onRefreshJobs={handleRefreshJobs}
             onCompleteDelivery={handleCompleteDelivery}
             onSetTimeOfDay={handleSetTimeOfDay}
+            onRest={handleStationRest}
+            onRoadsideRescue={handleRoadsideRescue}
+            getNearestStation={getNearestStation}
             onBeginExam={handleBeginExam}
             onRestartExam={handleRestartExam}
             onSelectExamLevel={handleEnterA2Exam}

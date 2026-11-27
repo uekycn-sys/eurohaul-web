@@ -69,6 +69,13 @@ export interface BuiltMap {
   querySurface: (x: number, z: number, out: SurfaceQueryResult) => void;
   getTrafficLightState: (nodeId: string, approachDirX: number, approachDirZ: number) => SignalState;
   highlightDestinationDepot: (depotId: string | null) => void;
+  setDestinationBayAligned: (aligned: boolean) => void;
+  evaluateTollBooths: (
+    x: number,
+    z: number,
+    speedKmh: number,
+    dtSec: number
+  ) => { kind: 'paid' | 'violation'; label: string } | null;
   setFoliageDensity: (ratio: number, isLowSpec?: boolean) => void;
   setPbrDetailEnabled: (enabled: boolean) => void;
   setRainWetness: (wet01: number) => void;
@@ -586,6 +593,7 @@ export class MapBuilder {
       roadGeo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
       roadGeo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
       roadGeo.setIndex(indices);
+      roadGeo.computeVertexNormals();
       batcher.add(segMat, roadGeo, { receiveShadow: true });
       disposables.push(roadGeo);
 
@@ -726,6 +734,41 @@ export class MapBuilder {
 
         addSignalCorner(nx - 10.5, nz - 10.5, 0, true);
         addSignalCorner(nx + 10.5, nz + 10.5, Math.PI / 2, false);
+      }
+
+      // Add crisp white stop-lines on all incoming approaches to signalized junctions
+      const stopLineMat = new THREE.MeshStandardMaterial({
+        color: '#f8fafc',
+        roughness: 0.7,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+      });
+      disposables.push(stopLineMat);
+      for (const node of signalNodes) {
+        for (const seg of segments) {
+          const isTo = seg.def.toNodeId === node.id;
+          const isFrom = seg.def.fromNodeId === node.id && !seg.def.oneWay;
+          if (!isTo && !isFrom) continue;
+          const sTarget = isTo ? Math.max(0, seg.lengthMeters - 13.5) : Math.min(seg.lengthMeters, 13.5);
+          const tVal = THREE.MathUtils.clamp(sTarget / seg.lengthMeters, 0.02, 0.98);
+          const pt = seg.curve.getPointAt(tVal);
+          const tan = seg.curve.getTangentAt(tVal);
+          const hLen = Math.hypot(tan.x, tan.z) || 1;
+          const dirSign = isTo ? 1 : -1;
+          const inTx = (tan.x / hLen) * dirSign;
+          const inTz = (tan.z / hLen) * dirSign;
+          const rx = -inTz;
+          const rz = inTx;
+          const laneCenter = seg.def.width * 0.24;
+          const stopGeo = new THREE.BoxGeometry(seg.def.width * 0.42, 0.025, 0.55);
+          batcher.add(stopLineMat, stopGeo, {
+            x: pt.x + rx * laneCenter,
+            y: pt.y + 0.075,
+            z: pt.z + rz * laneCenter,
+            rotY: Math.atan2(inTx, inTz),
+          });
+          disposables.push(stopGeo);
+        }
       }
 
       for (const inst of [nsRedInst, nsAmberInst, nsGreenInst, ewRedInst, ewAmberInst, ewGreenInst]) {
@@ -1172,16 +1215,223 @@ export class MapBuilder {
       root.add(mastInst, floodHeadInst);
     }
 
-    // 7. Landmarks (batched per material; rotors on Layer 1)
+    // 7. Landmarks & Interactive Toll Booths (batched per material; rotors & barriers animated)
     const rotatingRotors: THREE.Object3D[] = [];
+    interface TollBoothRuntime {
+      x: number;
+      z: number;
+      label: string;
+      armPivots: THREE.Group[];
+      lightMat: THREE.MeshBasicMaterial;
+      openTarget: number;
+      openRatio: number;
+      cooldownSec: number;
+    }
+    const tollBooths: TollBoothRuntime[] = [];
+
     for (const lm of manifest.landmarks) {
-      this.buildLandmark(lm, root, batcher, sharedMats, rotatingRotors, colliders, disposables);
+      if (lm.kind === 'toll_booth') {
+        const [tx, ty, tz] = lm.position;
+        const rotY = lm.rotationY ?? 0;
+        const boothGroup = new THREE.Group();
+        boothGroup.position.set(tx, ty, tz);
+        boothGroup.rotation.y = rotY;
+        boothGroup.updateMatrixWorld(true);
+
+        const canopyGeo = new THREE.BoxGeometry(24, 1.4, 7.2);
+        const postGeo = new THREE.BoxGeometry(1.0, 6.6, 2.8);
+        const lightGeo = new THREE.BoxGeometry(0.7, 0.5, 0.3);
+        const armGeo = new THREE.BoxGeometry(3.4, 0.14, 0.14);
+        const boothLightMat = new THREE.MeshBasicMaterial({ color: '#f59e0b' });
+        const armMat = new THREE.MeshStandardMaterial({ color: '#ef4444', roughness: 0.45 });
+        disposables.push(canopyGeo, postGeo, lightGeo, armGeo, boothLightMat, armMat);
+
+        const child = new THREE.Object3D();
+        boothGroup.add(child);
+        child.position.set(0, 6.8, 0);
+        child.updateMatrixWorld();
+        batcher.add(sharedMats.worldVertexMat, canopyGeo, {
+          matrix: child.matrixWorld,
+          colorHex: '#1e3a8a',
+        });
+        for (const px of [-9.8, -3.2, 3.2, 9.8]) {
+          child.position.set(px, 3.3, 0);
+          child.updateMatrixWorld();
+          batcher.add(sharedMats.worldVertexMat, postGeo, {
+            matrix: child.matrixWorld,
+            colorHex: '#e2e8f0',
+          });
+        }
+        boothGroup.remove(child);
+
+        const armPivots: THREE.Group[] = [];
+        for (const lx of [-6.5, 0, 6.5]) {
+          const lFront = new THREE.Mesh(lightGeo, boothLightMat);
+          lFront.position.set(lx, 6.6, 3.65);
+          const lBack = new THREE.Mesh(lightGeo, boothLightMat);
+          lBack.position.set(lx, 6.6, -3.65);
+          boothGroup.add(lFront, lBack);
+
+          const pivot = new THREE.Group();
+          pivot.position.set(lx - 1.6, 1.35, 0);
+          const arm = new THREE.Mesh(armGeo, armMat);
+          arm.position.set(1.7, 0, 0);
+          pivot.add(arm);
+          boothGroup.add(pivot);
+          armPivots.push(pivot);
+        }
+        root.add(boothGroup);
+        tollBooths.push({
+          x: tx,
+          z: tz,
+          label: lm.id === 'lm_toll_west' ? 'A9 西部 E-Toll 收费站' : 'A2 北部 E-Toll 收费站',
+          armPivots,
+          lightMat: boothLightMat,
+          openTarget: 0,
+          openRatio: 0,
+          cooldownSec: 0,
+        });
+      } else {
+        this.buildLandmark(lm, root, batcher, sharedMats, rotatingRotors, colliders, disposables);
+      }
+    }
+
+    // 7b. European Motorway Exit Countdown Signs, Alpine Chevrons & City Welcome Signs (Layer 1)
+    const signPostSpots: { x: number; y: number; z: number; h: number }[] = [];
+    const exit300Spots: { x: number; y: number; z: number; rotY: number }[] = [];
+    const exit200Spots: { x: number; y: number; z: number; rotY: number }[] = [];
+    const exit100Spots: { x: number; y: number; z: number; rotY: number }[] = [];
+    const chevronSpots: { x: number; y: number; z: number; rotY: number }[] = [];
+    const decorativeSignMeshes: THREE.Object3D[] = [];
+
+    for (const segId of ['seg_a9_south', 'seg_a7_north', 'seg_a2_east', 'seg_bavaria_express']) {
+      const seg = segmentMap.get(segId);
+      if (!seg) continue;
+      for (const [tVal, targetArr] of [
+        [0.72, exit300Spots],
+        [0.80, exit200Spots],
+        [0.88, exit100Spots],
+      ] as const) {
+        const pt = seg.curve.getPointAt(tVal);
+        const tan = seg.curve.getTangentAt(tVal);
+        const len = Math.hypot(tan.x, tan.z) || 1;
+        const rx = -tan.z / len;
+        const rz = tan.x / len;
+        const sx = pt.x + rx * (seg.def.width * 0.5 + 2.3);
+        const sz = pt.z + rz * (seg.def.width * 0.5 + 2.3);
+        const rotY = Math.atan2(tan.x, tan.z) + Math.PI;
+        targetArr.push({ x: sx, y: pt.y, z: sz, rotY });
+        signPostSpots.push({ x: sx, y: pt.y, z: sz, h: 2.5 });
+      }
+    }
+
+    for (const segId of ['seg_alpine_climb', 'seg_alpine_ridge']) {
+      const seg = segmentMap.get(segId);
+      if (!seg || seg.samples.length < 8) continue;
+      for (let i = 4; i < seg.samples.length - 4; i += 3) {
+        const pPrev = seg.samples[i - 2]!;
+        const pCurr = seg.samples[i]!;
+        const pNext = seg.samples[i + 2]!;
+        const cross = pPrev.tx * pNext.tz - pPrev.tz * pNext.tx;
+        if (Math.abs(cross) > 0.14) {
+          // Outer curve shoulder
+          const outSign = cross > 0 ? 1 : -1;
+          const rx = -pCurr.tz;
+          const rz = pCurr.tx;
+          const sx = pCurr.x + rx * outSign * (seg.def.width * 0.5 + 2.1);
+          const sz = pCurr.z + rz * outSign * (seg.def.width * 0.5 + 2.1);
+          const rotY = Math.atan2(pCurr.tx, pCurr.tz) + Math.PI;
+          chevronSpots.push({ x: sx, y: pCurr.y, z: sz, rotY });
+          signPostSpots.push({ x: sx, y: pCurr.y, z: sz, h: 1.9 });
+        }
+      }
+    }
+
+    const buildInstancedSign = (
+      spots: { x: number; y: number; z: number; rotY: number }[],
+      w: number,
+      h: number,
+      yOff: number,
+      tex: THREE.CanvasTexture
+    ) => {
+      if (spots.length === 0) return;
+      const geo = new THREE.PlaneGeometry(w, h);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
+      const inst = new THREE.InstancedMesh(geo, mat, spots.length);
+      for (let i = 0; i < spots.length; i++) {
+        const sp = spots[i]!;
+        dummy.position.set(sp.x, sp.y + yOff, sp.z);
+        dummy.rotation.set(0, sp.rotY, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        inst.setMatrixAt(i, dummy.matrix);
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      inst.layers.set(1);
+      root.add(inst);
+      decorativeSignMeshes.push(inst);
+      disposables.push(geo, mat);
+    };
+
+    buildInstancedSign(exit300Spots, 1.05, 2.0, 2.2, this.textures.getExitCountdownTexture(300));
+    buildInstancedSign(exit200Spots, 1.05, 2.0, 2.2, this.textures.getExitCountdownTexture(200));
+    buildInstancedSign(exit100Spots, 1.05, 2.0, 2.2, this.textures.getExitCountdownTexture(100));
+    buildInstancedSign(chevronSpots, 2.1, 1.05, 1.75, this.textures.getCurveChevronTexture());
+
+    // 4 European City Welcome Signs
+    const cityWelcomePairs: [string, string, string][] = [
+      ['seg_munich_spur', 'München', '德国'],
+      ['seg_hamburg_spur', 'Hamburg', '德国'],
+      ['seg_frankfurt_spur', 'Frankfurt', '德国'],
+      ['seg_innsbruck_spur', 'Innsbruck', '奥地利'],
+    ];
+    const welcomeGeo = new THREE.PlaneGeometry(2.8, 1.4);
+    disposables.push(welcomeGeo);
+    for (const [segId, label, country] of cityWelcomePairs) {
+      const seg = segmentMap.get(segId);
+      if (!seg) continue;
+      const pt = seg.curve.getPointAt(0.5);
+      const tan = seg.curve.getTangentAt(0.5);
+      const len = Math.hypot(tan.x, tan.z) || 1;
+      const rx = -tan.z / len;
+      const rz = tan.x / len;
+      const sx = pt.x - rx * (seg.def.width * 0.5 + 2.2);
+      const sz = pt.z - rz * (seg.def.width * 0.5 + 2.2);
+      const tex = this.textures.getCityWelcomeSignTexture(label, country);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(welcomeGeo, mat);
+      mesh.position.set(sx, pt.y + 2.35, sz);
+      mesh.rotation.y = Math.atan2(tan.x, tan.z);
+      mesh.layers.set(1);
+      root.add(mesh);
+      decorativeSignMeshes.push(mesh);
+      disposables.push(mat);
+      signPostSpots.push({ x: sx, y: pt.y, z: sz, h: 2.3 });
+    }
+
+    if (signPostSpots.length > 0) {
+      const sPostGeo = new THREE.CylinderGeometry(0.06, 0.07, 1, 6);
+      const sPostMat = new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.6 });
+      const sPostInst = new THREE.InstancedMesh(sPostGeo, sPostMat, signPostSpots.length);
+      for (let i = 0; i < signPostSpots.length; i++) {
+        const sp = signPostSpots[i]!;
+        dummy.position.set(sp.x, sp.y + sp.h * 0.5, sp.z);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, sp.h, 1);
+        dummy.updateMatrix();
+        sPostInst.setMatrixAt(i, dummy.matrix);
+      }
+      sPostInst.instanceMatrix.needsUpdate = true;
+      sPostInst.layers.set(1);
+      root.add(sPostInst);
+      decorativeSignMeshes.push(sPostInst);
+      disposables.push(sPostGeo, sPostMat);
     }
 
     batcher.flush(root, disposables);
 
     // 8. Multi-Tier Natural Ecology (3 Tree Species + Bushes) & Distant Rural Props (Power Pylons + Cottages)
-    const updateSceneryDensity = this.buildEcologyAndRuralProps(
+    const updateSceneryDensityBase = this.buildEcologyAndRuralProps(
       manifest,
       root,
       findNearestRoadDistanceAndY,
@@ -1198,6 +1448,12 @@ export class MapBuilder {
       yardPalletSpots.length,
       disposables
     );
+    const updateSceneryDensity = (ratio: number, isLowSpec = false) => {
+      updateSceneryDensityBase(ratio, isLowSpec);
+      for (let i = 0; i < decorativeSignMeshes.length; i++) {
+        decorativeSignMeshes[i]!.visible = !isLowSpec;
+      }
+    };
 
     // 9. Surface Query (O(1) spatial hash + linear slope interpolation + full paved yards/rest stops)
     const querySurface = (x: number, z: number, out: SurfaceQueryResult): void => {
@@ -1317,6 +1573,7 @@ export class MapBuilder {
       }
     };
 
+    let bayAligned = false;
     const highlightDestinationDepot = (depotId: string | null): void => {
       const bayInfo = depotId ? depotBayTransforms.get(depotId) : undefined;
       if (bayInfo) {
@@ -1325,10 +1582,59 @@ export class MapBuilder {
         activeBayMesh.visible = true;
       } else {
         activeBayMesh.visible = false;
+        bayAligned = false;
       }
       for (const [id, beacon] of parkingBeaconMeshes.entries()) {
         beacon.visible = id === depotId;
       }
+    };
+
+    const setDestinationBayAligned = (aligned: boolean): void => {
+      bayAligned = aligned;
+      activeBayMat.color.setHex(aligned ? 0x10b981 : 0xf59e0b);
+    };
+
+    const evaluateTollBooths = (
+      tx: number,
+      tz: number,
+      speedKmh: number,
+      dtSec: number
+    ): { kind: 'paid' | 'violation'; label: string } | null => {
+      let event: { kind: 'paid' | 'violation'; label: string } | null = null;
+      for (let i = 0; i < tollBooths.length; i++) {
+        const tb = tollBooths[i]!;
+        if (tb.cooldownSec > 0) {
+          tb.cooldownSec = Math.max(0, tb.cooldownSec - dtSec);
+        }
+        const dist = Math.hypot(tx - tb.x, tz - tb.z);
+        if (dist < 26) {
+          if (speedKmh <= 42) {
+            tb.openTarget = 1;
+            tb.lightMat.color.setHex(0x22c55e);
+            if (dist < 13 && tb.cooldownSec <= 0) {
+              tb.cooldownSec = 10;
+              event = { kind: 'paid', label: tb.label };
+            }
+          } else {
+            tb.openTarget = 0;
+            tb.lightMat.color.setHex(0xef4444);
+            if (dist < 9.5 && tb.openRatio < 0.45 && tb.cooldownSec <= 0) {
+              tb.cooldownSec = 10;
+              event = { kind: 'violation', label: tb.label };
+            }
+          }
+        } else {
+          tb.openTarget = 0;
+          tb.lightMat.color.setHex(0xf59e0b);
+        }
+
+        tb.openRatio += (tb.openTarget - tb.openRatio) * Math.min(1, dtSec * 4.5);
+        const angle = tb.openRatio * 1.28;
+        for (let a = 0; a < tb.armPivots.length; a++) {
+          tb.armPivots[a]!.rotation.z = angle;
+        }
+      }
+      return event;
     };
 
     const setPbrDetailEnabled = (enabled: boolean): void => {
@@ -1400,7 +1706,8 @@ export class MapBuilder {
         rotatingRotors[i]!.rotation.z += dtSec * 1.15;
       }
       if (activeBayMesh.visible) {
-        activeBayMat.opacity = 0.72 + Math.sin(elapsedSec * 4.2) * 0.22;
+        const pulseSpeed = bayAligned ? 9.0 : 4.2;
+        activeBayMat.opacity = (bayAligned ? 0.8 : 0.68) + Math.sin(elapsedSec * pulseSpeed) * 0.22;
       }
       for (const beacon of parkingBeaconMeshes.values()) {
         if (beacon.visible) {
@@ -1429,6 +1736,8 @@ export class MapBuilder {
       querySurface,
       getTrafficLightState,
       highlightDestinationDepot,
+      setDestinationBayAligned,
+      evaluateTollBooths,
       setFoliageDensity: updateSceneryDensity,
       setPbrDetailEnabled,
       setRainWetness,

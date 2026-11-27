@@ -6,8 +6,8 @@ export type QualityPreset = 'mobile_fast' | 'mobile_balanced' | 'pc_igpu' | 'hig
 export type MobileSteeringStyle = 'wheel' | 'buttons';
 export type GamePhase = 'menu' | 'playing';
 export type GameMode = 'career' | 'a2_exam';
-export type ActiveModal = 'none' | 'jobs' | 'garage' | 'map' | 'settings' | 'delivery_summary' | 'exam_select';
-export type TransmissionMode = 'auto' | 'sequential';
+export type ActiveModal = 'none' | 'jobs' | 'garage' | 'map' | 'settings' | 'delivery_summary' | 'exam_select' | 'rescue';
+export type TransmissionMode = 'auto' | 'real_auto' | 'sequential';
 export type HeadlightMode = 0 | 1 | 2; // 0: Off, 1: Low/DRL, 2: High Beam
 export type CameraMode = 1 | 2 | 3 | 4 | 5;
 export type AdvisorTab = 'nav' | 'cargo' | 'truck' | 'controls';
@@ -348,6 +348,12 @@ export interface TelemetrySnapshot {
   frontWheelAngleDeg: number;
   totalWeightTons: number;
   instantFuelLPer100Km: number;
+  turboBoostNorm: number;
+  escActive: boolean;
+  cabLightOn: boolean;
+  navTurnDir: 'straight' | 'left' | 'right' | 'arrive';
+  navTurnDistMeters: number | null;
+  estFuelRangeKm: number;
 }
 
 interface PersistedCareerState {
@@ -377,6 +383,8 @@ interface PersistedCareerState {
   realisticSteeringReturn: boolean;
   examVoiceEnabled: boolean;
   examStrictCamera: boolean;
+  fatigueEnabled: boolean;
+  driverFatiguePct: number;
   a2ExamProgress: Partial<Record<A2ExamLevelId, A2LevelBestRecord>>;
 }
 
@@ -426,6 +434,9 @@ interface GameStoreState extends PersistedCareerState {
   setRealisticSteeringReturn: (enabled: boolean) => void;
   setExamVoiceEnabled: (enabled: boolean) => void;
   setExamStrictCamera: (enabled: boolean) => void;
+  setFatigueEnabled: (enabled: boolean) => void;
+  addDriverFatigue: (deltaPct: number) => void;
+  resetDriverFatigue: () => void;
 
   // Gameplay & economy actions
   setAvailableJobs: (jobs: FreightJob[]) => void;
@@ -437,6 +448,8 @@ interface GameStoreState extends PersistedCareerState {
   refuelFull: () => number;
   repairTruckFull: () => number;
   applyFine: (amountEur: number, reason: string) => void;
+  payToll: (amountEur: number, label: string) => void;
+  applyRoadsideRescue: (costEur: number, stationName: string) => void;
   upgradeEngine: (tier: number) => boolean;
   upgradeTank: (tier: number) => boolean;
   setPaintHex: (hex: string) => void;
@@ -507,6 +520,12 @@ const DEFAULT_TELEMETRY: TelemetrySnapshot = {
   frontWheelAngleDeg: 0,
   totalWeightTons: 15,
   instantFuelLPer100Km: 0,
+  turboBoostNorm: 0,
+  escActive: false,
+  cabLightOn: false,
+  navTurnDir: 'straight',
+  navTurnDistMeters: null,
+  estFuelRangeKm: 1200,
 };
 
 const DEFAULT_PARKING_GUIDE: ParkingGuideState = {
@@ -548,6 +567,8 @@ const INITIAL_PERSISTED: PersistedCareerState = {
   realisticSteeringReturn: true,
   examVoiceEnabled: true,
   examStrictCamera: false,
+  fatigueEnabled: true,
+  driverFatiguePct: 0,
   a2ExamProgress: {},
 };
 
@@ -641,7 +662,12 @@ export const useGameStore = create<GameStoreState>()(
       setAdvisorTab: (advisorTab) => set({ advisorTab }),
       toggleTransmissionMode: () =>
         set((s) => ({
-          transmissionMode: s.transmissionMode === 'auto' ? 'sequential' : 'auto',
+          transmissionMode:
+            s.transmissionMode === 'auto'
+              ? 'real_auto'
+              : s.transmissionMode === 'real_auto'
+              ? 'sequential'
+              : 'auto',
         })),
       setQualityPreset: (qualityPreset, syncDefaults = true) =>
         set((s) => ({
@@ -662,6 +688,12 @@ export const useGameStore = create<GameStoreState>()(
       setRealisticSteeringReturn: (realisticSteeringReturn) => set({ realisticSteeringReturn }),
       setExamVoiceEnabled: (examVoiceEnabled) => set({ examVoiceEnabled }),
       setExamStrictCamera: (examStrictCamera) => set({ examStrictCamera }),
+      setFatigueEnabled: (fatigueEnabled) => set({ fatigueEnabled }),
+      addDriverFatigue: (deltaPct) =>
+        set((s) => ({
+          driverFatiguePct: Math.min(100, Math.max(0, s.driverFatiguePct + deltaPct)),
+        })),
+      resetDriverFatigue: () => set({ driverFatiguePct: 0 }),
 
       setAvailableJobs: (availableJobs) => set({ availableJobs }),
 
@@ -781,6 +813,30 @@ export const useGameStore = create<GameStoreState>()(
             : null,
         }));
         get().pushNotification('fine', `交通违章罚款 -€${amountEur}`, reason);
+      },
+
+      payToll: (amountEur, label) => {
+        set((s) => ({
+          moneyEur: Math.max(0, s.moneyEur - amountEur),
+        }));
+        get().pushNotification('info', `E-Toll 收费站自动扣费 -€${amountEur}`, label);
+      },
+
+      applyRoadsideRescue: (costEur, stationName) => {
+        const s = get();
+        const actualCost = Math.min(s.moneyEur, costEur);
+        const maxFuel = getMaxFuelLiters(s.tankTier);
+        const fuelBonus = s.fuelLiters < 40 ? Math.min(80, maxFuel - s.fuelLiters) : 0;
+        set({
+          moneyEur: Math.max(0, s.moneyEur - actualCost),
+          fuelLiters: Math.min(maxFuel, s.fuelLiters + fuelBonus),
+          activeModal: 'none',
+        });
+        s.pushNotification(
+          'info',
+          `道路救援拖车完成 (-€${actualCost})`,
+          `已拖至 ${stationName}${fuelBonus > 0 ? ` · 附赠 ${Math.round(fuelBonus)}L 应急柴油` : ''}`
+        );
       },
 
       upgradeEngine: (tier) => {
@@ -960,7 +1016,7 @@ export const useGameStore = create<GameStoreState>()(
     }),
     {
       name: 'eurohaul_save_v1',
-      version: 4,
+      version: 5,
       migrate: (persistedState) => {
         const st = (persistedState ?? {}) as Partial<PersistedCareerState>;
         return {
@@ -1000,6 +1056,8 @@ export const useGameStore = create<GameStoreState>()(
         realisticSteeringReturn: state.realisticSteeringReturn,
         examVoiceEnabled: state.examVoiceEnabled,
         examStrictCamera: state.examStrictCamera,
+        fatigueEnabled: state.fatigueEnabled,
+        driverFatiguePct: state.driverFatiguePct,
         a2ExamProgress: state.a2ExamProgress,
       }),
     }
